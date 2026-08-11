@@ -53,3 +53,26 @@ On an unrestricted Windows machine, log in as an administrator, open Settings, a
 ## Service deployment
 
 v0.1 produces portable Windows and Linux binaries only. Install the binary under a dedicated, least-privileged service account and provide an absolute configuration path. A service installer/unit is deliberately not bundled.
+# Template import development
+
+The representative 7 Days to Die fixture is `internal/templates/testdata/7-days-to-die.json`. It mirrors the upstream Pelican Egg structures relevant to GameNode while avoiding a full third-party snapshot. Parser, startup, expansion, SteamCMD detection, limits, secret handling, and persistence tests live in `internal/templates`; endpoint/RBAC/CSRF/audit tests live in `internal/api/templates_test.go`; pure UI helpers are covered by `web/tests/templates-helpers.test.ts`.
+
+The normal test suite performs no network access, launches no shell, starts no Docker runtime, and downloads no SteamCMD archive. When extending compatibility, add stable finding codes and tests before changing status behavior. Do not broaden the startup parser into shell emulation.
+
+# SteamCMD provisioning development
+
+SteamCMD unit tests use mocked downloaders/runners and in-memory archives. Provisioning tests cover success, validation, cancellation, target conflicts, concurrency, interrupted jobs, installation/database failure, platform gating, and absence of ghost servers. API tests cover authentication, independent RBAC, CSRF, ownership, audit, sanitized errors, and secret redaction.
+
+Run race-sensitive packages explicitly:
+
+```sh
+go test -race ./internal/steamcmd ./internal/provisioning
+```
+
+An opt-in official bootstrap smoke test is available and is skipped by default:
+
+```sh
+GAMENODE_STEAMCMD_INTEGRATION=1 go test ./internal/steamcmd -run TestManagedBootstrapIntegration
+```
+
+Manual 7 Days to Die acceptance (large download): import `internal/templates/testdata/7-days-to-die.json`, open Templates, select Create server, choose a new directory name, configure variables, and start provisioning. Confirm App ID `294420`, completion to a normal server record, safe expanded executable/arguments, Files/Console/Monitoring behavior, and Stop. The representative imported launch is Linux-specific; perform start/runtime acceptance on Linux. On Windows, provisionability must reject it unless the template contains an independently safe Windows launch—do not substitute a guessed executable. Do not enable automatic update-on-start when testing `AUTO_UPDATE`.

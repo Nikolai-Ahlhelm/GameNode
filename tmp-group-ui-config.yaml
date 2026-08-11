@@ -1,0 +1,13 @@
+server:
+  listen: "127.0.0.1:18766"
+data:
+  directory: "I:/GameNode/tmp-group-ui-data"
+database:
+  path: "I:/GameNode/tmp-group-ui-data/gamenode.db"
+logging:
+  level: "error"
+filesystem:
+  max_upload_bytes: 67108864
+monitoring:
+  sample_interval_seconds: 5
+  history_limit: 300

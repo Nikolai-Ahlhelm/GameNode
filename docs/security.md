@@ -37,3 +37,26 @@
 - Downloads open only sandbox-validated regular files and stream directly to the HTTP response. Attachment filenames are derived from the validated relative basename and encoded with `Content-Disposition`; absolute host paths, request paths, and file content are not logged.
 
 For production, configure TLS (`server.tls_cert` and `server.tls_key`) so cookies receive the `Secure` attribute. The default HTTP listener is intended for local development only.
+# Egg import threat model
+
+Egg JSON is untrusted template input. Import is bounded to 256 KiB, 32 nesting levels, 128 variables, 128 compatibility findings, and 16 KiB per relevant string. Variable keys must be process-environment identifiers and are unique case-insensitively. Unknown harmless top-level fields are ignored and reported; malformed documents and important invalid structures receive controlled API errors without parser internals.
+
+GameNode never executes Egg installation scripts, `bash`, `sh`, PowerShell, `cmd`, Docker images, or arbitrary URLs. There is no URL import, remote repository sync, image pull, or generic downloader. Recognized SteamCMD shell patterns provide facts to a GameNode-native plan only. The original script is neither persisted nor placed in audit metadata.
+
+Startup remains a direct process boundary. Pipes, redirection, `&&`, `||`, semicolons, background operators, command substitution, backticks, shell builtins/compound commands, unterminated quoting, and absolute executable paths cannot become a launch definition. A direct prefix may be extracted, while all shell content after the first operator is discarded and reported. Placeholder expansion accepts only `{{KNOWN_KEY}}` and `${KNOWN_KEY}` from the template schema; it does not read host environment variables, evaluate strings, or invoke a shell.
+
+Sensitive-variable detection is intentionally conservative and heuristic (`PASSWORD`, `PASS`, `TOKEN`, `SECRET`, `API_KEY`/`APIKEY`, and `AUTH` patterns, case-insensitive). Sensitive source defaults are discarded during normalization. The UI always masks them. Template audit events contain only ID/name, source type, compatibility status, variable count, and installer type—never variable values, raw startup, scripts, Egg JSON, credentials, or paths. Existing diagnostics and support bundles use fixed whitelists and do not query template-variable rows.
+
+`Templates.View` and `Templates.Manage` are independent, global-only permissions. Every template endpoint enforces authorization in the backend; server-scoped assignments never authorize global templates. Mutations require same-origin CSRF validation, and enabled administrators retain the existing bypass.
+
+# Native SteamCMD provisioning threat model
+
+Provisioning requires independent global `Templates.View` and `Server.Create` capabilities; neither `Templates.Manage` nor a server-scoped assignment implies them. Start and cancel are CSRF-protected mutations. Job reads/cancellation are limited to the initiating user except for the existing administrator bypass.
+
+SteamCMD bootstrap uses only compile-time official Valve HTTPS URLs. The downloader applies a timeout, status checks, bounded redirects restricted to the same HTTPS host, and a 128 MiB archive cap. Extraction rejects absolute, drive, UNC, traversal, mixed-separator traversal, symlink/hardlink, special-file, excessive-entry, and excessive-expanded-size inputs. Bootstrap occurs in a sibling temporary directory and is atomically renamed while a manager mutex prevents competing installs.
+
+The install command is an executable plus a constructed argument slice. App IDs are positive integers; beta branches use a narrow identifier grammar; authentication is anonymous; beta passwords, credentialed login, Egg flags, and user-supplied commands are rejected. Server targets are names underneath `<data>/servers`, never arbitrary paths. Populated targets and concurrent jobs for one root are rejected. Eggs cannot select a download URL or tool path.
+
+Template values are accepted only for declared editable variables and revalidated by the normalized schema. Expansion substitutes a value into one existing executable/argument field; values cannot add arguments or commands. Sensitive placeholders are forbidden in the executable and masked in returned arguments. The API omits sensitive environment values, audit events contain no values/paths/output, provisioning errors are fixed summaries, and support bundles do not query server environment data. Values remain plaintext in SQLite through the existing environment persistence, and may be visible to privileged local database/process inspection; application-level at-rest secret encryption is a future hardening item.
+
+Installation failure never creates a server record. Database finalization failure can leave an owned target directory, which is reported by `files_may_remain`; GameNode does not recursively delete it automatically. Cancellation kills the installer and prevents subsequent finalization. Restart recovery marks active jobs interrupted and does not claim a resumable transaction.

@@ -3,6 +3,8 @@ import * as monaco from 'monaco-editor';
 import { ChangeEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { breadcrumbs, classifyFile, formatFileSize, isSafeRelativePath, joinRelativePath, parentRelativePath } from './files-helpers';
 import { hasCapability } from './capabilities';
+import { ArrowUp, Download, File, FilePlus2, Folder, FolderPlus, RefreshCw, Upload } from 'lucide-react';
+import { EmptyState, LoadingState } from './ui';
 import './files.css';
 
 loader.config({ monaco });
@@ -154,17 +156,17 @@ export function FilesTab({ serverID, token, permissions }: { serverID: string; t
   const trail = useMemo(() => breadcrumbs(currentPath), [currentPath]);
   const classification = openFile ? classifyFile(openFile.entry.name) : undefined;
   return <section className="files-panel">
-    <div className="row"><h3>Files</h3><span className="muted">Server-relative paths only</span></div>
+    <div className="row"><div><h2>File browser</h2><p className="muted">Browse and edit files inside the configured server root.</p></div><span className="status">Server-relative paths</span></div>
     <div className="files-toolbar">
-      <button className="quiet" onClick={() => navigate(parentRelativePath(currentPath))} disabled={!currentPath}>Up</button>
-      <button className="quiet" onClick={() => void load()} disabled={loading}>Reload</button>
-      {can('Files.Edit') && <><button onClick={() => void create(false)}>New file</button><button onClick={() => void create(true)}>New folder</button></>}
-      {can('Files.Upload') && <label className="upload-button"><span>{uploading ? 'Uploading…' : 'Upload'}</span><input type="file" onChange={upload} disabled={uploading} /></label>}
+      <button className="quiet" onClick={() => navigate(parentRelativePath(currentPath))} disabled={!currentPath}><ArrowUp />Up</button>
+      <button className="quiet" onClick={() => void load()} disabled={loading}><RefreshCw />Reload</button>
+      {can('Files.Edit') && <><button onClick={() => void create(false)}><FilePlus2 />New file</button><button onClick={() => void create(true)}><FolderPlus />New folder</button></>}
+      {can('Files.Upload') && <label className="upload-button"><Upload /><span>{uploading ? 'Uploading…' : 'Upload'}</span><input type="file" onChange={upload} disabled={uploading} /></label>}
     </div>
     <nav className="breadcrumbs">{trail.map((crumb, index) => <span key={crumb.path}>{index > 0 && ' / '}<button className="quiet" onClick={() => navigate(crumb.path)}>{crumb.label}</button></span>)}</nav>
     {error && <p className="error">{error}</p>}
     <div className="files-table" role="table"><div className="files-header" role="row"><span>Name</span><span>Type</span><span>Size</span><span>Modified</span><span>Actions</span></div>
-      {loading ? <p className="muted">Loading files…</p> : entries.length === 0 ? <p className="muted">This directory is empty.</p> : entries.map(entry => <div className="files-row" role="row" key={entry.path}><button className="file-name" onClick={() => void open(entry)}>{entry.type === 'directory' ? '📁 ' : '📄 '}{entry.name}</button><span>{entry.type}</span><span>{entry.type === 'file' ? formatFileSize(entry.size) : '—'}</span><span>{new Date(entry.modified_at).toLocaleString()}</span><span className="file-actions">{entry.type === 'file' && can('Files.Download') && <button className="quiet" onClick={() => download(entry)}>Download</button>}{can('Files.Rename') && <><button className="quiet" onClick={() => void renameOrMove(entry, true)}>Rename</button><button className="quiet" onClick={() => void renameOrMove(entry, false)}>Move</button></>}{can('Files.Delete') && <button className="danger quiet" onClick={() => void remove(entry)}>Delete</button>}</span></div>)}</div>
+      {loading ? <LoadingState label="Loading directory…" /> : entries.length === 0 ? <EmptyState compact title="This directory is empty" description="Create a file or folder, or upload content into this directory." icon={Folder} /> : entries.map(entry => <div className="files-row" role="row" key={entry.path}><button className="file-name" onClick={() => void open(entry)}>{entry.type === 'directory' ? <Folder /> : <File />}{entry.name}</button><span>{entry.type}</span><span>{entry.type === 'file' ? formatFileSize(entry.size) : '—'}</span><span>{new Date(entry.modified_at).toLocaleString()}</span><span className="file-actions">{entry.type === 'file' && can('Files.Download') && <button className="quiet" aria-label={`Download ${entry.name}`} onClick={() => download(entry)}><Download />Download</button>}{can('Files.Rename') && <><button className="quiet" onClick={() => void renameOrMove(entry, true)}>Rename</button><button className="quiet" onClick={() => void renameOrMove(entry, false)}>Move</button></>}{can('Files.Delete') && <button className="danger quiet" onClick={() => void remove(entry)}>Delete</button>}</span></div>)}</div>
     {openFile && <section className="file-editor panel"><div className="row"><div><h3>{openFile.entry.path}</h3><p className="muted">{formatFileSize(openFile.entry.size)} · {openFile.binary ? 'Binary or unsupported file' : classification?.readOnly || !can('Files.Edit') ? 'Read-only' : dirty ? 'Unsaved changes' : 'Saved'}</p></div><div className="actions">{can('Files.Download') && <button className="quiet" onClick={() => download(openFile.entry)}>Download</button>}<button className="quiet" onClick={() => { if (requestDiscard()) void open(openFile.entry); }}>Reload</button>{!openFile.binary && !classification?.readOnly && can('Files.Edit') && <button onClick={() => void save()} disabled={!dirty || saving}>{saving ? 'Saving…' : 'Save'}</button>}</div></div>{openFile.binary ? <p className="muted">This file is not rendered as text. Download it to inspect its contents.</p> : <Editor height="480px" language={classification?.language} value={editorValue} onChange={value => setEditorValue(value ?? '')} options={{ readOnly: classification?.readOnly || !can('Files.Edit'), minimap: { enabled: false }, wordWrap: 'on', automaticLayout: true }} />}</section>}
   </section>;
 }

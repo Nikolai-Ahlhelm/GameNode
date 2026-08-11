@@ -22,40 +22,42 @@ import (
 )
 
 const (
-	CreationNew    = "new"
-	CreationAdopt  = "adopt"
-	CreationCustom = "custom"
-	StateStopped   = "stopped"
-	StateRunning   = "running"
-	StateStarting  = "starting"
-	StateStopping  = "stopping"
-	StateCrashed   = "crashed"
-	StateUnknown   = "unknown"
+	CreationNew      = "new"
+	CreationAdopt    = "adopt"
+	CreationCustom   = "custom"
+	CreationTemplate = "template"
+	StateStopped     = "stopped"
+	StateRunning     = "running"
+	StateStarting    = "starting"
+	StateStopping    = "stopping"
+	StateCrashed     = "crashed"
+	StateUnknown     = "unknown"
 )
 
 var environmentKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 type Server struct {
-	ID                       string            `json:"id"`
-	CreationMode             string            `json:"creation_mode"`
-	Name                     string            `json:"name"`
-	Description              string            `json:"description"`
-	WorkingDirectory         string            `json:"working_directory"`
-	Executable               string            `json:"executable"`
-	Arguments                []string          `json:"arguments"`
-	EnvironmentVariables     map[string]string `json:"environment_variables"`
-	RuntimeType              string            `json:"runtime_type"`
-	AutoStart                bool              `json:"auto_start"`
-	RestartPolicy            string            `json:"restart_policy"`
-	StopMethod               string            `json:"stop_method"`
-	StopCommand              string            `json:"stop_command"`
-	StopTimeoutSeconds       int               `json:"stop_timeout_seconds"`
-	AutoRestartEnabled       bool              `json:"auto_restart_enabled"`
-	AutoRestartMaxAttempts   int               `json:"auto_restart_max_attempts"`
-	AutoRestartWindowSeconds int               `json:"auto_restart_window_seconds"`
-	AutoRestartDelaySeconds  int               `json:"auto_restart_delay_seconds"`
-	CreatedAt                time.Time         `json:"created_at"`
-	UpdatedAt                time.Time         `json:"updated_at"`
+	ID                            string            `json:"id"`
+	CreationMode                  string            `json:"creation_mode"`
+	Name                          string            `json:"name"`
+	Description                   string            `json:"description"`
+	WorkingDirectory              string            `json:"working_directory"`
+	Executable                    string            `json:"executable"`
+	Arguments                     []string          `json:"arguments"`
+	EnvironmentVariables          map[string]string `json:"environment_variables"`
+	SensitiveEnvironmentVariables []string          `json:"sensitive_environment_variables,omitempty"`
+	RuntimeType                   string            `json:"runtime_type"`
+	AutoStart                     bool              `json:"auto_start"`
+	RestartPolicy                 string            `json:"restart_policy"`
+	StopMethod                    string            `json:"stop_method"`
+	StopCommand                   string            `json:"stop_command"`
+	StopTimeoutSeconds            int               `json:"stop_timeout_seconds"`
+	AutoRestartEnabled            bool              `json:"auto_restart_enabled"`
+	AutoRestartMaxAttempts        int               `json:"auto_restart_max_attempts"`
+	AutoRestartWindowSeconds      int               `json:"auto_restart_window_seconds"`
+	AutoRestartDelaySeconds       int               `json:"auto_restart_delay_seconds"`
+	CreatedAt                     time.Time         `json:"created_at"`
+	UpdatedAt                     time.Time         `json:"updated_at"`
 }
 
 type RuntimeState struct {
@@ -92,7 +94,7 @@ func (s *Server) Validate() error {
 	if s.CreationMode == "" {
 		s.CreationMode = CreationCustom
 	}
-	if s.CreationMode != CreationNew && s.CreationMode != CreationAdopt && s.CreationMode != CreationCustom {
+	if s.CreationMode != CreationNew && s.CreationMode != CreationAdopt && s.CreationMode != CreationCustom && s.CreationMode != CreationTemplate {
 		return errors.New("invalid creation mode")
 	}
 	if !filepath.IsAbs(s.WorkingDirectory) {
@@ -211,6 +213,71 @@ func (store *Store) Create(ctx context.Context, server Server) (Record, error) {
 	}
 	return Record{Server: server, Runtime: RuntimeState{CurrentState: StateStopped}}, nil
 }
+
+type ProvisionedVariable struct {
+	Key       string
+	Sensitive bool
+}
+
+// CreateProvisioned atomically publishes a fully installed native server and
+// its template-variable sensitivity metadata. Filesystem installation has
+// already completed and is deliberately outside this database transaction.
+func (store *Store) CreateProvisioned(ctx context.Context, server Server, templateID string, variables []ProvisionedVariable) (Record, error) {
+	if err := server.Validate(); err != nil {
+		return Record{}, err
+	}
+	id, err := newID()
+	if err != nil {
+		return Record{}, err
+	}
+	now := time.Now().UTC()
+	server.ID = id
+	server.CreatedAt = now
+	server.UpdatedAt = now
+	args, _ := json.Marshal(server.Arguments)
+	env, _ := json.Marshal(server.EnvironmentVariables)
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Record{}, err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `INSERT INTO servers(id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
+	if err != nil {
+		return Record{}, fmt.Errorf("create provisioned server: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO server_runtime_state(server_id,current_state,updated_at) VALUES(?,?,?)`, server.ID, StateStopped, stamp(now)); err != nil {
+		return Record{}, err
+	}
+	for _, variable := range variables {
+		if !environmentKey.MatchString(variable.Key) {
+			return Record{}, errors.New("invalid provisioned variable key")
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO server_template_variables(server_id,template_id,variable_key,sensitive) VALUES(?,?,?,?)`, server.ID, templateID, variable.Key, variable.Sensitive); err != nil {
+			return Record{}, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return Record{}, err
+	}
+	return Record{Server: server, Runtime: RuntimeState{CurrentState: StateStopped}}, nil
+}
+
+func (store *Store) SensitiveEnvironmentKeys(ctx context.Context, id string) ([]string, error) {
+	rows, err := store.db.QueryContext(ctx, `SELECT variable_key FROM server_template_variables WHERE server_id=? AND sensitive=1 ORDER BY variable_key`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err = rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
 func (store *Store) List(ctx context.Context) ([]Record, error) {
 	rows, err := store.db.QueryContext(ctx, selectSQL+` ORDER BY s.name`)
 	if err != nil {
@@ -238,6 +305,25 @@ func (store *Store) Update(ctx context.Context, id string, server Server) (Recor
 	}
 	server.ID = id
 	server.CreatedAt = existing.Server.CreatedAt
+	sensitive, err := store.SensitiveEnvironmentKeys(ctx, id)
+	if err != nil {
+		return Record{}, err
+	}
+	if server.EnvironmentVariables == nil {
+		server.EnvironmentVariables = map[string]string{}
+	}
+	for _, key := range sensitive {
+		if value, ok := server.EnvironmentVariables[key]; !ok || value == "********" {
+			server.EnvironmentVariables[key] = existing.Server.EnvironmentVariables[key]
+		}
+	}
+	if len(sensitive) > 0 {
+		for index, argument := range server.Arguments {
+			if strings.Contains(argument, "********") && index < len(existing.Server.Arguments) {
+				server.Arguments[index] = existing.Server.Arguments[index]
+			}
+		}
+	}
 	if err = server.Validate(); err != nil {
 		return Record{}, err
 	}
@@ -419,6 +505,12 @@ func (s *Service) MonitoringHistory(ctx context.Context, id string) ([]monitorin
 }
 func (s *Service) Create(ctx context.Context, server Server) (Record, error) {
 	return s.store.Create(ctx, server)
+}
+func (s *Service) CreateProvisioned(ctx context.Context, server Server, templateID string, variables []ProvisionedVariable) (Record, error) {
+	return s.store.CreateProvisioned(ctx, server, templateID, variables)
+}
+func (s *Service) SensitiveEnvironmentKeys(ctx context.Context, id string) ([]string, error) {
+	return s.store.SensitiveEnvironmentKeys(ctx, id)
 }
 func (s *Service) List(ctx context.Context) ([]Record, error)         { return s.refreshAll(ctx) }
 func (s *Service) Get(ctx context.Context, id string) (Record, error) { return s.refresh(ctx, id) }

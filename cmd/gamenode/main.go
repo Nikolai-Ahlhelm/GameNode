@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
+	goRuntime "runtime"
 	"strings"
 	"time"
 
@@ -21,9 +23,12 @@ import (
 	"gamenode/internal/diagnostics"
 	"gamenode/internal/filesystem"
 	"gamenode/internal/monitoring"
+	"gamenode/internal/provisioning"
 	"gamenode/internal/runtime"
 	"gamenode/internal/servers"
 	"gamenode/internal/settings"
+	"gamenode/internal/steamcmd"
+	"gamenode/internal/templates"
 )
 
 //go:embed webassets
@@ -82,7 +87,20 @@ func main() {
 	}
 	files := filesystem.New(filesystem.Options{MaxUploadBytes: cfg.Filesystem.MaxUploadBytes})
 	diagnosticService := diagnostics.New(db, settingService, diagnostics.MonitoringEffective{SampleIntervalSeconds: currentSettings.Monitoring.SampleIntervalSeconds, HistoryLimit: currentSettings.Monitoring.HistoryLimit}, time.Now().UTC())
-	handler := api.New(auth.New(db), serverService, log, secure, api.Options{Filesystem: files, Settings: settingService, Diagnostics: diagnosticService}).Handler(static)
+	templateService := templates.NewService(templates.NewStore(db))
+	steamPlatform, err := steamcmd.CurrentPlatform(goRuntime.GOOS)
+	if err != nil {
+		log.Error("SteamCMD platform unavailable", "error", err.Error())
+		os.Exit(1)
+	}
+	steamManager := steamcmd.New(filepath.Join(cfg.Data.Directory, "tools", "steamcmd"), steamPlatform, nil, nil)
+	provisioner := provisioning.New(db, templateService, steamManager, serverService, cfg.Data.Directory)
+	defer provisioner.Close()
+	if err = provisioner.Initialize(context.Background()); err != nil {
+		log.Error("provisioning recovery failed", "error", err.Error())
+		os.Exit(1)
+	}
+	handler := api.New(auth.New(db), serverService, log, secure, api.Options{Filesystem: files, Settings: settingService, Diagnostics: diagnosticService, Templates: templateService, Provisioning: provisioner}).Handler(static)
 	server := &http.Server{Addr: cfg.Server.Listen, Handler: handler, ReadHeaderTimeout: 0, ReadTimeout: 15e9, WriteTimeout: 15e9, IdleTimeout: 60e9}
 	log.Info("GameNode starting", "listen", cfg.Server.Listen, "tls", secure)
 	if secure {
