@@ -1,0 +1,30 @@
+.form-panel {
+  width: min(100%, 920px);
+  margin-inline: auto;
+}
+
+.form-panel form {
+  align-items: start;
+}
+
+.form-panel form > label {
+  align-self: start;
+  align-content: start;
+  width: 100%;
+}
+
+.form-panel form > label > input:not([type='checkbox']),
+.form-panel form > label > select {
+  height: 41px;
+  min-height: 41px;
+}
+
+.form-panel form > label > textarea {
+  align-self: start;
+}
+
+@media (max-width: 760px) {
+  .form-panel {
+    width: 100%;
+  }
+}

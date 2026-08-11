@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,10 +28,23 @@ import (
 	"gamenode/internal/servers"
 )
 
-type consoleInput struct{ data string }
+type consoleInput struct {
+	mu   sync.Mutex
+	data string
+}
 
-func (i *consoleInput) Write(p []byte) (int, error) { i.data += string(p); return len(p), nil }
-func (i *consoleInput) Close() error                { return nil }
+func (i *consoleInput) Write(p []byte) (int, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.data += string(p)
+	return len(p), nil
+}
+func (i *consoleInput) Close() error { return nil }
+func (i *consoleInput) String() string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.data
+}
 
 func consoleFixture(t *testing.T) (*httptest.Server, *servers.Service, *console.Manager, *http.Cookie, servers.Record, *sql.DB) {
 	t.Helper()
@@ -144,15 +158,23 @@ func TestConsoleWebSocketSecurityAndTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
-	for in.data == "" && time.Now().Before(deadline) {
+	for in.String() == "" && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if in.data != input {
-		t.Fatalf("input = %q", in.data)
+	if got := in.String(); got != input {
+		t.Fatalf("input = %q", got)
 	}
 	var actorID, serverID, metadata, resourceName, summary string
-	if err := db.QueryRow(`SELECT actor_user_id,server_id,COALESCE(metadata_json,''),COALESCE(resource_name,''),COALESCE(error_summary,'') FROM audit_log WHERE action='console.input' AND result='success'`).Scan(&actorID, &serverID, &metadata, &resourceName, &summary); err != nil {
-		t.Fatal(err)
+	auditDeadline := time.Now().Add(time.Second)
+	for {
+		err = db.QueryRow(`SELECT actor_user_id,server_id,COALESCE(metadata_json,''),COALESCE(resource_name,''),COALESCE(error_summary,'') FROM audit_log WHERE action='console.input' AND result='success'`).Scan(&actorID, &serverID, &metadata, &resourceName, &summary)
+		if err == nil {
+			break
+		}
+		if err != sql.ErrNoRows || time.Now().After(auditDeadline) {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if actorID == "" || serverID != record.Server.ID || !strings.Contains(metadata, `"bytes":`+strconv.Itoa(len([]byte(input)))) {
 		t.Fatalf("unexpected console audit event: actor=%q server=%q metadata=%q", actorID, serverID, metadata)
@@ -190,8 +212,8 @@ func TestConsoleWebSocketMalformedAndOversizedInput(t *testing.T) {
 		_, _, _ = client.ReadMessage()
 		client.Close()
 	}
-	if in.data != "" {
-		t.Fatalf("invalid input reached stdin: %q", in.data)
+	if got := in.String(); got != "" {
+		t.Fatalf("invalid input reached stdin: %q", got)
 	}
 	if err := session.Input("ok\n"); err != nil {
 		t.Fatal(err)
@@ -262,8 +284,8 @@ func TestConsoleRBACViewAndSendAreIndependent(t *testing.T) {
 	if !denied {
 		t.Fatal("view-only input did not return permission_denied")
 	}
-	if in.data != "" {
-		t.Fatalf("view-only input reached stdin: %q", in.data)
+	if got := in.String(); got != "" {
+		t.Fatalf("view-only input reached stdin: %q", got)
 	}
 	if err = rbac.New(db).ReplacePermissions(ctx, role.ID, []string{"Console.View", "Console.Send"}); err != nil {
 		t.Fatal(err)
@@ -272,10 +294,10 @@ func TestConsoleRBACViewAndSendAreIndependent(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
-	for in.data == "" && time.Now().Before(deadline) {
+	for in.String() == "" && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if in.data != "allowed\n" {
-		t.Fatalf("Console.Send input = %q", in.data)
+	if got := in.String(); got != "allowed\n" {
+		t.Fatalf("Console.Send input = %q", got)
 	}
 }

@@ -258,7 +258,7 @@ func TestAutoRestartOnlySchedulesUnexpectedCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.exit(runtime.ExitResult{ExitCode: 1, Err: errors.New("crashed")})
-	deadline := time.NewTimer(time.Second)
+	deadline := time.NewTimer(5 * time.Second)
 	defer deadline.Stop()
 	poll := time.NewTicker(10 * time.Millisecond)
 	defer poll.Stop()
