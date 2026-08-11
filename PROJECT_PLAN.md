@@ -1,0 +1,1591 @@
+# GameNode – Project Plan
+
+## Vision
+
+**GameNode is a self-contained game server management platform for Windows and Linux.**
+
+Every installation is independently usable through its own local web interface. It manages native applications without requiring containers or templates and treats existing installations as first-class resources.
+
+Security, granular authorization, reliable process management and cross-platform operation take priority over marketplace-style automation.
+
+Future releases may federate multiple GameNodes under a central controller, but no node should depend on a controller for local operation.
+
+---
+
+# 1. Project Goal
+
+Develop a standalone, cross-platform game server management application for **Windows and Linux**.
+
+The first usable version focuses entirely on **a single autonomous node**.
+
+Cluster, Controller, Master/Worker and Multi-Node capabilities are deliberately excluded from v0.1. The architecture should not make future clustering unnecessarily difficult, but no cluster-specific abstraction should be built without an immediate need.
+
+The application should feel conceptually similar to a local hypervisor/server management interface:
+
+- every host has its own full management UI;
+- every host can operate independently;
+- no external controller is required;
+- existing game server installations can be adopted;
+- arbitrary native applications can be managed without templates.
+
+---
+
+# 2. Technology Stack
+
+## Backend / Node Runtime
+
+Use:
+
+- **Go**
+- REST API
+- WebSockets for live console and later live metrics
+- Prefer the Go standard library and small, established dependencies
+- Avoid heavyweight frameworks unless clearly justified
+
+## Frontend
+
+Use:
+
+- **React**
+- **TypeScript**
+- **Vite**
+- component-based UI
+- preferably a Radix UI / shadcn-style component approach
+- **Monaco Editor** for editing text/configuration files
+
+## Database
+
+Use:
+
+- **SQLite**
+- SQL migrations
+- preferably **sqlc** for typed queries
+- avoid a heavyweight ORM unless there is a clear technical reason
+
+## Deployment
+
+The frontend should be built during the release process and embedded into the Go backend using `go:embed`.
+
+Runtime requirements must not include Node.js.
+
+Target release artifacts:
+
+```text
+gamenode-windows-amd64.exe
+gamenode-linux-amd64
+```
+
+Windows:
+
+- installable/runnable as a Windows Service
+
+Linux:
+
+- installable/runnable as a systemd service
+
+---
+
+# 3. High-Level Architecture
+
+GameNode v0.1 should initially run as **one process**.
+
+```text
+GameNode
+├── Web UI
+├── REST API
+├── WebSocket Server
+├── Authentication / RBAC
+├── Server Management
+├── Process Runtime
+├── Console Manager
+├── File Manager
+├── Monitoring
+├── Health Checks
+├── Port Management
+├── Audit Logging
+└── SQLite
+```
+
+Do **not** introduce:
+
+- Microservices
+- Redis
+- RabbitMQ
+- Kafka
+- Kubernetes
+- Separate agent service
+- PostgreSQL requirement
+- External message queues
+
+The GameNode process itself is both:
+
+- the local management backend;
+- the local runtime agent.
+
+---
+
+# 4. Architecture Principles
+
+Keep the following layers logically separated:
+
+```text
+Transport Layer
+REST / WebSocket
+       ↓
+Application Services
+       ↓
+Domain
+       ↓
+Infrastructure
+OS / SQLite / Filesystem / Processes
+```
+
+Business logic must not depend directly on HTTP, WebSocket or React.
+
+Operating-system-specific code must be hidden behind interfaces.
+
+Avoid spreading constructs such as:
+
+```go
+if runtime.GOOS == "windows" {
+    ...
+}
+```
+
+through business logic.
+
+Prefer interfaces such as:
+
+```go
+type Runtime interface {
+    Start(ctx context.Context, server Server) error
+    Stop(ctx context.Context, server Server) error
+    Kill(ctx context.Context, server Server) error
+    Restart(ctx context.Context, server Server) error
+    Status(ctx context.Context, server Server) (ProcessStatus, error)
+    Stats(ctx context.Context, server Server) (ProcessStats, error)
+}
+```
+
+Additional useful abstractions may include:
+
+```text
+ProcessManager
+FileSystem
+PortInspector
+MetricsProvider
+ServiceManager
+HealthChecker
+```
+
+Initial runtime implementations:
+
+```text
+WindowsNativeRuntime
+LinuxNativeRuntime
+```
+
+Future runtime implementations may include:
+
+```text
+DockerRuntime
+PodmanRuntime
+```
+
+but Docker and Podman are **not part of v0.1**.
+
+Avoid speculative abstractions that are not required by the current implementation.
+
+---
+
+# 5. Suggested Repository Structure
+
+Use approximately the following repository layout unless implementation experience reveals a clearly better structure:
+
+```text
+cmd/
+└── gamenode/
+    └── main.go
+
+internal/
+├── api/
+├── auth/
+├── users/
+├── groups/
+├── roles/
+├── rbac/
+├── servers/
+├── runtime/
+│   ├── runtime.go
+│   ├── windows/
+│   └── linux/
+├── console/
+├── filesystem/
+├── monitoring/
+├── health/
+├── ports/
+├── audit/
+├── database/
+└── platform/
+
+migrations/
+
+web/
+├── src/
+├── package.json
+└── vite.config.ts
+
+docs/
+├── architecture.md
+├── security.md
+├── development.md
+├── api.md
+└── adr/
+```
+
+---
+
+# 6. Functional Requirements – v0.1
+
+## 6.1 Authentication
+
+Implement local user accounts.
+
+Requirements:
+
+- Login
+- Logout
+- secure session cookies
+- CSRF protection where appropriate for the chosen session model
+- password hashing with **Argon2id**
+- no default administrator password
+- initial setup flow on first startup
+
+Example first-run setup:
+
+```text
+GameNode Initial Setup
+
+Create administrator
+
+Username:
+Email:
+Password:
+```
+
+---
+
+## 6.2 User Management
+
+Administrators must be able to manage users through the web interface.
+
+Required operations:
+
+- create user
+- edit user
+- disable user
+- delete user
+- reset password
+- assign groups
+
+Each user must have an immutable unique ID.
+
+Do not base authorization or ownership logic on usernames.
+
+---
+
+## 6.3 Groups
+
+Implement groups.
+
+A group contains:
+
+```text
+Group
+├── Name
+├── Description
+└── Members
+```
+
+A user may belong to multiple groups.
+
+Groups may later be assigned roles on servers.
+
+---
+
+## 6.4 RBAC
+
+Implement a real Role-Based Access Control system.
+
+Core entities:
+
+```text
+User
+Group
+Role
+Permission
+RolePermission
+UserGroup
+ResourceAssignment
+```
+
+Permissions must support at least two scopes:
+
+```text
+Global
+Server
+```
+
+### Example global permissions
+
+```text
+Platform.View
+Platform.Settings
+
+Users.View
+Users.Create
+Users.Edit
+Users.Delete
+
+Groups.View
+Groups.Create
+Groups.Edit
+Groups.Delete
+
+Roles.View
+Roles.Create
+Roles.Edit
+Roles.Delete
+
+Server.Create
+```
+
+### Example server-scoped permissions
+
+```text
+Server.View
+Server.Edit
+Server.Start
+Server.Stop
+Server.Restart
+Server.Kill
+Server.Delete
+Server.Reset
+
+Console.View
+Console.Send
+
+Files.View
+Files.Upload
+Files.Download
+Files.Edit
+Files.Delete
+Files.Rename
+
+Monitoring.View
+```
+
+Authorization must always be enforced **server-side**.
+
+Hiding controls in the React frontend does not count as authorization.
+
+---
+
+## 6.5 Game Server Data Model
+
+A server should contain at least:
+
+```text
+ID
+Name
+Description
+WorkingDirectory
+Executable
+Arguments
+EnvironmentVariables
+RuntimeType
+AutoStart
+RestartPolicy
+StopMethod
+StopCommand
+StopTimeout
+CreatedAt
+UpdatedAt
+```
+
+Associated resources:
+
+```text
+Ports
+HealthChecks
+AccessAssignments
+RuntimeState
+```
+
+Prefer storing process arguments as a structured list instead of one shell command string.
+
+---
+
+## 6.6 Add Server Workflows
+
+Support three UI flows:
+
+```text
+Add Server
+
+○ Create New
+○ Adopt Existing
+○ Custom Application
+```
+
+For v0.1, `Create New` and `Custom Application` may share substantial implementation.
+
+### Adopt Existing
+
+This is a first-class feature.
+
+A pre-existing server installation must be registerable without reinstalling or modifying it.
+
+Example:
+
+```text
+Name:
+Project Zomboid
+
+Working Directory:
+D:\GameServers\PZ01
+
+Executable:
+StartServer64.bat
+
+Arguments:
+-port 27000 -udpport 27001
+```
+
+Adding an existing server must not unexpectedly overwrite, move or reinstall its files.
+
+---
+
+## 6.7 Custom Applications
+
+Custom applications must not require a template.
+
+Minimum fields:
+
+```text
+Name
+Working Directory
+Executable
+Arguments
+```
+
+Optional fields:
+
+```text
+Environment Variables
+Stop Method
+Stop Command
+Stop Timeout
+Health Check
+Ports
+```
+
+The architecture should support:
+
+```text
+Windows EXE
+Batch file
+PowerShell script
+Linux binary
+Shell script
+Java JAR
+```
+
+Do not require Docker.
+
+---
+
+## 6.8 Server Lifecycle
+
+Support:
+
+```text
+Start
+Stop
+Restart
+Kill
+Delete
+Reset
+```
+
+`Stop` and `Kill` are separate concepts.
+
+Graceful stop methods may include:
+
+```text
+process signal
+stdin command
+terminate process
+```
+
+Kill should immediately terminate the managed process.
+
+### Reset
+
+For v0.1, avoid pretending every custom server can be automatically reinstalled.
+
+`Reset` should be implemented conservatively and clearly documented.
+
+A full reinstall workflow should only be added when installers/templates exist.
+
+---
+
+## 6.9 Process Tracking
+
+A process must be uniquely associated with a server.
+
+Track at least:
+
+```text
+PID
+Start Timestamp
+Exit Timestamp
+Exit Code
+Last Crash
+Last Error
+```
+
+The runtime design must account for this scenario:
+
+```text
+Game server is running
+        ↓
+GameNode restarts or is upgraded
+        ↓
+Game server should ideally continue running
+        ↓
+GameNode should be able to rediscover its process
+```
+
+Do not force an unreliable reattachment hack into the first implementation.
+
+However, do not design the runtime in a way that makes process survival/re-discovery impossible later.
+
+---
+
+# 7. Console
+
+Implement a live console.
+
+Requirements:
+
+```text
+stdout capture
+stderr capture
+stdin input
+WebSocket streaming
+```
+
+Multiple users may watch the same console simultaneously.
+
+Maintain a per-server in-memory ring buffer, e.g. the latest 1000 lines.
+
+When a client opens the console:
+
+1. send recent buffered output;
+2. continue with live output.
+
+Permissions:
+
+```text
+Console.View
+Console.Send
+```
+
+A user with `Console.View` only must not be able to send commands.
+
+---
+
+# 8. File Browser
+
+Every server has a defined filesystem root.
+
+The web file browser must never expose paths outside that root.
+
+Required features:
+
+```text
+List directories
+Open file
+Edit file
+Create file
+Create directory
+Upload
+Download
+Rename
+Move
+Delete
+```
+
+Use Monaco Editor for text editing.
+
+Typical editable formats:
+
+```text
+txt
+json
+yaml
+yml
+xml
+ini
+cfg
+properties
+```
+
+## Critical Security Requirement
+
+Prevent all forms of path escape.
+
+Test explicitly for:
+
+```text
+../../
+absolute paths
+Windows separator tricks
+Linux separator tricks
+URL encoded traversal
+symlink traversal
+junction/reparse-point escape where relevant
+```
+
+The backend must canonicalize/resolve requested paths and verify that the resolved target remains inside the authorized server root.
+
+Never rely only on frontend validation.
+
+---
+
+# 9. Port Management
+
+Do not build a complex Pterodactyl-style allocation system in v0.1.
+
+Servers may define ports:
+
+```text
+Name
+Protocol
+Port
+Description
+```
+
+Example:
+
+```text
+Game    TCP    25565
+Query   UDP    25566
+RCON    TCP    25575
+```
+
+Supported protocols:
+
+```text
+TCP
+UDP
+```
+
+Maintain an internal GameNode port registry.
+
+Check:
+
+1. whether another registered GameNode server claims the same protocol/port;
+2. whether the operating system reports that port as already in use by an external process.
+
+UI examples:
+
+```text
+25565/TCP
+Available
+```
+
+or:
+
+```text
+25565/TCP
+In use
+```
+
+When safely discoverable, optionally show:
+
+```text
+PID
+Process Name
+```
+
+v0.1 must **not** automatically modify:
+
+```text
+Windows Firewall
+iptables
+nftables
+Router NAT
+UPnP
+Cloud firewall APIs
+```
+
+---
+
+# 10. Monitoring
+
+Collect at least per-server:
+
+```text
+Process State
+CPU Usage
+RAM Usage
+Uptime
+PID
+```
+
+Collect host information:
+
+```text
+Host CPU
+Host RAM
+Host Disk
+Operating System
+GameNode Version
+```
+
+Suggested server state model:
+
+```text
+Stopped
+Starting
+Running
+Stopping
+Crashed
+Unhealthy
+```
+
+Keep runtime state and health state conceptually separate.
+
+A running process is not automatically healthy.
+
+---
+
+# 11. Health Monitoring
+
+Implement an extensible health-check interface.
+
+v0.1 health check types:
+
+```text
+Process
+TCP
+HTTP
+```
+
+Future possibilities:
+
+```text
+UDP protocol-specific probes
+RCON
+Custom command
+Game-specific health checks
+```
+
+Example configuration:
+
+```text
+Health Check Type:
+TCP
+
+Port:
+25565
+
+Interval:
+30 seconds
+
+Timeout:
+5 seconds
+
+Failure Threshold:
+3
+```
+
+---
+
+# 12. Auto Restart
+
+Restart policies:
+
+```text
+Never
+On Crash
+Always
+```
+
+Configuration:
+
+```text
+Restart Delay
+Maximum Restart Attempts
+Restart Window
+```
+
+Prevent endless restart loops.
+
+Example undesired behavior:
+
+```text
+crash
+start
+crash
+start
+crash
+start
+...
+```
+
+Implement backoff/rate limiting or restart-window protection.
+
+---
+
+# 13. Dashboards
+
+## Admin Dashboard
+
+Display information such as:
+
+```text
+Servers:       8
+Running:       5
+Stopped:       2
+Unhealthy:     1
+
+Host CPU
+Host RAM
+Host Disk
+
+Recent crashes
+Recent actions
+```
+
+## User Dashboard
+
+Users see only servers for which they have at least:
+
+```text
+Server.View
+```
+
+Example:
+
+```text
+My Servers
+
+Minecraft
+Running
+CPU 14 %
+RAM 3.7 GB
+
+Project Zomboid
+Stopped
+```
+
+---
+
+# 14. Audit Log
+
+Audit logging is part of v0.1.
+
+Record at least:
+
+```text
+Login
+Failed login
+Server create
+Server edit
+Server start
+Server stop
+Server restart
+Server kill
+Server delete
+File edit
+File upload
+File download
+User changes
+Group changes
+Role changes
+Permission changes
+```
+
+Audit event fields:
+
+```text
+Timestamp
+User ID
+Action
+Resource Type
+Resource ID
+Result
+Source IP
+Metadata
+```
+
+Do not store passwords, session tokens, authorization tokens or other secrets in audit metadata.
+
+---
+
+# 15. Security Requirements
+
+Security is part of the architecture, not a later add-on.
+
+Threats to explicitly consider:
+
+```text
+Path traversal
+Symlink traversal
+Windows reparse-point/junction traversal
+Command injection
+Argument escaping
+Shell injection
+Unauthorized WebSocket access
+RBAC bypass
+CSRF
+Session fixation
+Unsafe file uploads
+Privilege escalation
+Sensitive data in logs
+```
+
+## Process Launching
+
+Do not automatically execute arbitrary server commands through a shell where avoidable.
+
+Prefer:
+
+```text
+Executable
+Arguments[]
+```
+
+and direct OS process execution.
+
+Avoid defaulting to:
+
+```text
+cmd.exe /c "<arbitrary user string>"
+```
+
+or:
+
+```text
+sh -c "<arbitrary user string>"
+```
+
+If shell execution is later supported, make it an explicit execution mode with appropriate warnings and permissions.
+
+---
+
+# 16. API Design
+
+Use a versioned API namespace:
+
+```text
+/api/v1/...
+```
+
+Example endpoints:
+
+```text
+POST   /api/v1/auth/login
+POST   /api/v1/auth/logout
+
+GET    /api/v1/servers
+POST   /api/v1/servers
+GET    /api/v1/servers/{id}
+PATCH  /api/v1/servers/{id}
+DELETE /api/v1/servers/{id}
+
+POST /api/v1/servers/{id}/start
+POST /api/v1/servers/{id}/stop
+POST /api/v1/servers/{id}/restart
+POST /api/v1/servers/{id}/kill
+
+GET /api/v1/servers/{id}/files
+GET /api/v1/servers/{id}/files/content
+PUT /api/v1/servers/{id}/files/content
+
+GET /api/v1/users
+GET /api/v1/groups
+GET /api/v1/roles
+GET /api/v1/audit
+```
+
+Console WebSocket example:
+
+```text
+/api/v1/servers/{id}/console/ws
+```
+
+Use consistent API conventions and a unified error response format.
+
+Do not leak internal errors or filesystem details unnecessarily.
+
+---
+
+# 17. Database
+
+Use migrations from the beginning.
+
+Potential tables:
+
+```text
+users
+sessions
+
+groups
+user_groups
+
+roles
+permissions
+role_permissions
+
+resource_assignments
+
+servers
+server_environment_variables
+server_ports
+server_health_checks
+server_runtime_state
+
+audit_events
+```
+
+Prefer UUIDs for entity IDs unless a strong reason exists otherwise.
+
+Store timestamps in UTC.
+
+Keep migrations deterministic and committed to source control.
+
+Avoid invisible/manual schema mutations.
+
+---
+
+# 18. Frontend Structure
+
+Primary navigation:
+
+```text
+Dashboard
+Servers
+Users
+Groups
+Roles
+Audit Log
+Settings
+```
+
+Server page tabs:
+
+```text
+Overview
+Console
+Files
+Configuration
+Networking
+Monitoring
+Access
+```
+
+The frontend should hide actions the current user cannot perform.
+
+Example:
+
+A user without:
+
+```text
+Server.Start
+```
+
+should not see a Start button.
+
+However, backend authorization remains mandatory.
+
+Desktop administration is the primary target.
+
+Responsive behavior is desirable.
+
+---
+
+# 19. Testing Requirements
+
+Tests are mandatory.
+
+## Unit Tests
+
+At minimum:
+
+```text
+RBAC
+Path validation
+Port collision logic
+Restart policy
+Health-state transitions
+```
+
+## Integration Tests
+
+At minimum:
+
+```text
+Login
+Server CRUD
+Permission enforcement
+File operations
+Runtime lifecycle
+```
+
+## Security Tests
+
+At minimum:
+
+```text
+../../ path traversal
+encoded traversal
+symlink escape
+junction/reparse-point escape where testable
+unauthorized WebSocket access
+server access bypass
+```
+
+Platform-specific runtime tests should be isolated appropriately.
+
+Do not require every OS-specific test to run on every development OS.
+
+---
+
+# 20. Logging
+
+Use structured logging.
+
+Required levels:
+
+```text
+debug
+info
+warn
+error
+```
+
+Never log:
+
+- plaintext passwords;
+- session tokens;
+- API tokens;
+- sensitive environment values unless explicitly marked safe.
+
+Logs should be useful both during development and when GameNode runs as a service.
+
+---
+
+# 21. Configuration
+
+GameNode itself should have a small local configuration.
+
+Example:
+
+```yaml
+server:
+  listen: "0.0.0.0:8443"
+
+data:
+  directory: "./data"
+
+database:
+  path: "./data/gamenode.db"
+
+logging:
+  level: "info"
+```
+
+Game server definitions belong in the database, not YAML configuration files.
+
+---
+
+# 22. Milestones
+
+Do not implement the entire project in one pass.
+
+---
+
+## Milestone 1 — Foundation
+
+Implement:
+
+```text
+Go project
+React/Vite project
+Embedded frontend
+SQLite
+Migrations
+Configuration
+Structured logging
+Initial setup
+Authentication
+Initial admin account
+Basic dashboard shell
+Windows build
+Linux build
+```
+
+### Definition of Done
+
+On Windows and Linux:
+
+- GameNode can start;
+- the local web interface loads;
+- first-run admin setup works;
+- login/logout works;
+- SQLite is initialized through migrations;
+- production frontend is served by the Go binary;
+- tests pass;
+- release builds can be produced.
+
+---
+
+## Milestone 2 — Server Runtime
+
+Implement:
+
+```text
+Server CRUD
+Custom server
+Adopt existing
+Windows native runtime
+Linux native runtime
+Start
+Stop
+Kill
+Restart
+Status
+```
+
+### Definition of Done
+
+A user can register an arbitrary native application and reliably start/stop it.
+
+At least test:
+
+```text
+Windows: simple executable/script
+Linux: simple executable/script
+```
+
+---
+
+## Milestone 3 — Console
+
+Implement:
+
+```text
+stdout capture
+stderr capture
+stdin
+Ring buffer
+WebSocket
+Console UI
+```
+
+### Definition of Done
+
+Two browser sessions can simultaneously view the same live console.
+
+A user with permission can send input.
+
+A user without `Console.Send` cannot send input.
+
+---
+
+## Milestone 4 — Files
+
+Implement:
+
+```text
+sandboxed filesystem
+file browser
+editor
+uploads
+downloads
+rename
+move
+delete
+Monaco Editor
+```
+
+### Definition of Done
+
+Server files can be managed completely from the web UI while no operation can escape the configured server root.
+
+---
+
+## Milestone 5 — RBAC
+
+Implement:
+
+```text
+Users
+Groups
+Roles
+Permissions
+Global scopes
+Server scopes
+Access assignments
+```
+
+### Definition of Done
+
+This scenario must work entirely through backend authorization:
+
+```text
+User A
+→ Minecraft
+→ Start/Stop + Console
+
+User B
+→ Minecraft
+→ Files read-only
+
+User C
+→ no Minecraft access
+```
+
+---
+
+## Milestone 6 — Reliability
+
+Implement:
+
+```text
+Monitoring
+Health checks
+Auto restart
+Port management
+Audit log
+Admin dashboard
+User dashboard
+```
+
+### Definition of Done
+
+GameNode can supervise multiple real game servers over extended runtime and react predictably to configured crash/health states.
+
+---
+
+# 23. Explicit Non-Goals for v0.1
+
+Do not implement the following unless a small supporting abstraction is strictly necessary for current functionality:
+
+```text
+Cluster
+Master/Worker
+Controller Node
+Multi-Node Management
+
+Billing
+Payments
+Subscriptions
+
+Docker Runtime
+Podman Runtime
+
+SteamCMD automation
+Template marketplace
+Game marketplace
+Mod manager
+Plugin system
+
+Backups
+Scheduling
+
+Automatic firewall management
+NAT management
+UPnP
+
+Kubernetes
+Redis
+Message Queue
+PostgreSQL requirement
+```
+
+These may be documented as future ideas but must not delay v0.1.
+
+---
+
+# 24. Future Direction
+
+The architecture should make future additions possible without implementing them prematurely:
+
+```text
+Docker runtime
+Podman runtime
+Game templates
+SteamCMD installer
+Backups
+Scheduled tasks
+Plugins
+Cluster management
+Controller node
+Remote nodes
+mTLS
+gRPC
+Central identity
+Billing
+```
+
+Apply YAGNI.
+
+Do not build generalized distributed-system infrastructure until the single-node product needs it.
+
+---
+
+# 25. Development Workflow
+
+Work iteratively.
+
+Before each milestone:
+
+1. inspect the current architecture;
+2. produce a short implementation plan;
+3. define or adjust data model/API contracts;
+4. implement;
+5. add tests;
+6. run tests;
+7. run linters/formatters;
+8. verify Windows and Linux builds where practical;
+9. document changes.
+
+Avoid large, untested code drops.
+
+When a fundamental architecture decision is required, create an ADR under:
+
+```text
+docs/adr/
+```
+
+Each ADR should describe:
+
+```text
+Problem
+Options
+Trade-offs
+Decision
+Consequences
+```
+
+---
+
+# 26. Documentation
+
+Maintain at least:
+
+```text
+README.md
+docs/architecture.md
+docs/security.md
+docs/development.md
+docs/api.md
+docs/adr/
+```
+
+README must allow a developer after a fresh clone to quickly understand:
+
+```text
+How to run backend
+How to run frontend
+How to run tests
+How to build production artifacts
+```
+
+---
+
+# 27. Quality Priorities
+
+The goal is not a UI mockup or disposable prototype.
+
+The goal is a usable first release of a game server control panel.
+
+Priority order:
+
+```text
+1. Security
+2. Reliable process management
+3. Correct authorization
+4. Data integrity
+5. Cross-platform behavior
+6. Operability
+7. Usability
+8. Visual polish
+```
+
+Prefer fewer complete features over many half-implemented features.
+
+---
+
+# 28. Important Design Rule
+
+A GameNode restart or update should not automatically imply that every managed game server must stop.
+
+The initial implementation does not need perfect process reattachment, but the runtime design must preserve a path toward reliable process rediscovery/reconnection on both Windows and Linux.
+
+Document any limitations explicitly rather than hiding them.
+
+---
+
+# 29. Initial Codex Execution Scope
+
+When starting the project, implement **Milestone 1 only**.
+
+Do not automatically continue to Milestone 2.
+
+The first implementation pass should create:
+
+```text
+1. Repository structure
+2. Architecture documentation
+3. Initial database schema
+4. Migration system
+5. Go HTTP server
+6. React + TypeScript + Vite frontend
+7. Embedded production frontend
+8. Configuration system
+9. Structured logging
+10. Initial setup flow
+11. Authentication
+12. Admin dashboard skeleton
+```
+
+After implementation:
+
+- run all tests;
+- run formatting/linting;
+- produce/verify Windows build;
+- produce/verify Linux build;
+- update documentation;
+- inspect the diff for accidental complexity;
+- stop before Milestone 2.
+
+Provide a final implementation report containing:
+
+```text
+Implemented
+Tests
+Known limitations
+Architecture decisions
+Files changed
+How to run
+How to build
+Recommended next step
+```
+
+Wait for explicit approval before starting Milestone 2.

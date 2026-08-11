@@ -1,0 +1,8 @@
+server:
+  listen: "127.0.0.1:18765"
+data:
+  directory: "I:/GameNode/tmp-e2e-data"
+database:
+  path: "I:/GameNode/tmp-e2e-data/gamenode.db"
+logging:
+  level: "error"

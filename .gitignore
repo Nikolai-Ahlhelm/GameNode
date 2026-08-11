@@ -1,0 +1,5 @@
+data/
+dist/
+config.yaml
+web/node_modules/
+web/tsconfig.tsbuildinfo

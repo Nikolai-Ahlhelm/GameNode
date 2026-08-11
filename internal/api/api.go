@@ -1,0 +1,361 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"gamenode/internal/auth"
+	"gamenode/internal/filesystem"
+	"gamenode/internal/identity"
+	"gamenode/internal/rbac"
+	"gamenode/internal/servers"
+)
+
+const sessionCookie = "gamenode_session"
+
+type Server struct {
+	auth         *auth.Service
+	log          *slog.Logger
+	secureCookie bool
+	servers      *servers.Service
+	files        *filesystem.Service
+	identity     *identity.Service
+	rbac         *rbac.Service
+}
+
+type Options struct {
+	Filesystem *filesystem.Service
+}
+
+func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secureCookie bool, options ...Options) *Server {
+	files := filesystem.New()
+	if len(options) > 0 && options[0].Filesystem != nil {
+		files = options[0].Filesystem
+	}
+	return &Server{auth: a, servers: serverService, files: files, identity: identity.New(a.Database()), rbac: rbac.New(a.Database()), log: log, secureCookie: secureCookie}
+}
+func (s *Server) Handler(static http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/setup/status", s.setupStatus)
+	mux.HandleFunc("/api/v1/setup", s.setup)
+	mux.HandleFunc("/api/v1/auth/login", s.login)
+	mux.HandleFunc("/api/v1/auth/logout", s.logout)
+	mux.HandleFunc("/api/v1/auth/me", s.me)
+	mux.HandleFunc("/api/v1/dashboard", s.dashboard)
+	mux.HandleFunc("/api/v1/users", s.usersHandler)
+	mux.HandleFunc("/api/v1/users/", s.userHandler)
+	mux.HandleFunc("/api/v1/groups", s.groupsHandler)
+	mux.HandleFunc("/api/v1/groups/", s.groupHandler)
+	mux.HandleFunc("/api/v1/permissions", s.permissionsHandler)
+	mux.HandleFunc("/api/v1/roles", s.rolesHandler)
+	mux.HandleFunc("/api/v1/roles/", s.roleHandler)
+	mux.HandleFunc("/api/v1/servers", s.serversHandler)
+	mux.HandleFunc("/api/v1/servers/", s.serverHandler)
+	mux.Handle("/", static)
+	return s.logRequests(mux)
+}
+
+type credentials struct {
+	Username string `json:"username"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		method(w)
+		return
+	}
+	required, e := s.auth.SetupRequired(r.Context())
+	if e != nil {
+		internal(w)
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]bool{"setup_required": required})
+}
+func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		method(w)
+		return
+	}
+	if !sameOrigin(r) {
+		forbidden(w, "cross-origin request rejected")
+		return
+	}
+	var in credentials
+	if !decode(w, r, &in) {
+		return
+	}
+	u, e := s.auth.CreateInitialAdmin(r.Context(), in.Username, in.Email, in.Password)
+	if e != nil {
+		s.log.Warn("initial administrator creation failed", "reason", e.Error())
+		bad(w, "initial setup could not be completed")
+		return
+	}
+	s.log.Info("initial administrator created", "user_id", u.ID)
+	s.issueLogin(w, r, u, in.Password)
+}
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		method(w)
+		return
+	}
+	if !sameOrigin(r) {
+		forbidden(w, "cross-origin request rejected")
+		return
+	}
+	var in credentials
+	if !decode(w, r, &in) {
+		return
+	}
+	s.issueLogin(w, r, auth.User{}, in.Password, in.Username)
+}
+func (s *Server) issueLogin(w http.ResponseWriter, r *http.Request, u auth.User, password string, username ...string) {
+	if len(username) > 0 {
+		var e error
+		var raw, csrf string
+		u, raw, csrf, e = s.auth.Login(r.Context(), username[0], password)
+		if e != nil {
+			s.log.Warn("failed login", "source_ip", r.RemoteAddr)
+			unauthorized(w)
+			return
+		}
+		s.setSessionAndRespond(r.Context(), w, u, raw, csrf)
+		return
+	}
+	raw, csrf, e := s.auth.CreateSession(r.Context(), u)
+	if e != nil {
+		internal(w)
+		return
+	}
+	s.setSessionAndRespond(r.Context(), w, u, raw, csrf)
+}
+func (s *Server) setSessionAndRespond(ctx context.Context, w http.ResponseWriter, u auth.User, raw, csrf string) {
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: raw, Path: "/", HttpOnly: true, Secure: s.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: int((24 * time.Hour).Seconds())})
+	s.log.Info("user logged in", "user_id", u.ID)
+	capabilities, err := s.globalCapabilities(ctx, u)
+	if err != nil {
+		internal(w)
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"user": u, "csrf_token": csrf, "capabilities": capabilities})
+}
+func (s *Server) me(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		method(w)
+		return
+	}
+	u, csrf, ok := s.requireAuth(w, r, false)
+	if !ok {
+		return
+	}
+	capabilities, err := s.globalCapabilities(r.Context(), u)
+	if err != nil {
+		internal(w)
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"user": u, "csrf_token": csrf, "capabilities": capabilities})
+}
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		method(w)
+		return
+	}
+	u, _, ok := s.requireAuth(w, r, true)
+	if !ok {
+		return
+	}
+	c, _ := r.Cookie(sessionCookie)
+	if err := s.auth.Logout(r.Context(), c.Value); err != nil {
+		internal(w)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, Secure: s.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+	s.log.Info("user logged out", "user_id", u.ID)
+	w.WriteHeader(http.StatusNoContent)
+}
+func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		method(w)
+		return
+	}
+	u, _, ok := s.requireAuth(w, r, false)
+	if !ok {
+		return
+	}
+	records, err := s.servers.List(r.Context())
+	if err != nil {
+		internal(w)
+		return
+	}
+	counts := map[string]int{"total": len(records), "running": 0, "stopped": 0, "unhealthy": 0}
+	counts["total"] = 0
+	for _, record := range records {
+		allowed, err := s.allowed(r.Context(), u, "Server.View", rbac.Scope{Type: "server", ID: &record.Server.ID})
+		if err != nil {
+			internal(w)
+			return
+		}
+		if !allowed {
+			continue
+		}
+		counts["total"]++
+		if record.Runtime.CurrentState == servers.StateRunning {
+			counts["running"]++
+		}
+		if record.Runtime.CurrentState == servers.StateStopped {
+			counts["stopped"]++
+		}
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"user": u, "servers": counts})
+}
+
+var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Monitoring.View", "Audit.View"}
+
+func (s *Server) allowed(ctx context.Context, u auth.User, permission string, scope rbac.Scope) (bool, error) {
+	return s.rbac.Allowed(ctx, u.ID, permission, scope)
+}
+
+func (s *Server) requirePermission(w http.ResponseWriter, r *http.Request, permission string, scope rbac.Scope, csrfRequired bool) (auth.User, string, bool) {
+	u, csrf, ok := s.requireAuth(w, r, csrfRequired)
+	if !ok {
+		return auth.User{}, "", false
+	}
+	allowed, err := s.allowed(r.Context(), u, permission, scope)
+	if err != nil {
+		internal(w)
+		return auth.User{}, "", false
+	}
+	if !allowed {
+		forbidden(w, "permission denied")
+		return auth.User{}, "", false
+	}
+	return u, csrf, true
+}
+
+func (s *Server) requireServerPermission(w http.ResponseWriter, r *http.Request, permission, serverID string, csrfRequired bool) (auth.User, string, bool) {
+	return s.requirePermission(w, r, permission, rbac.Scope{Type: "server", ID: &serverID}, csrfRequired)
+}
+
+func (s *Server) requireGlobalPermission(w http.ResponseWriter, r *http.Request, permission string, csrfRequired bool) (auth.User, string, bool) {
+	return s.requirePermission(w, r, permission, rbac.Scope{Type: "global"}, csrfRequired)
+}
+
+func (s *Server) globalCapabilities(ctx context.Context, u auth.User) ([]string, error) {
+	return s.capabilities(ctx, u, rbac.Scope{Type: "global"})
+}
+
+func (s *Server) serverCapabilities(ctx context.Context, u auth.User, serverID string) ([]string, error) {
+	return s.capabilities(ctx, u, rbac.Scope{Type: "server", ID: &serverID})
+}
+
+func (s *Server) capabilities(ctx context.Context, u auth.User, scope rbac.Scope) ([]string, error) {
+	result := make([]string, 0, len(productPermissions))
+	for _, permission := range productPermissions {
+		allowed, err := s.allowed(ctx, u, permission, scope)
+		if err != nil {
+			return nil, err
+		}
+		if allowed {
+			result = append(result, permission)
+		}
+	}
+	return result, nil
+}
+
+func (s *Server) visibleServers(ctx context.Context, u auth.User) ([]map[string]any, error) {
+	records, err := s.servers.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]map[string]any, 0, len(records))
+	for _, record := range records {
+		capabilities, err := s.serverCapabilities(ctx, u, record.Server.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !containsCapability(capabilities, "Server.View") {
+			continue
+		}
+		result = append(result, map[string]any{"server": record.Server, "runtime": record.Runtime, "capabilities": capabilities})
+	}
+	return result, nil
+}
+
+func containsCapability(capabilities []string, permission string) bool {
+	for _, capability := range capabilities {
+		if capability == permission {
+			return true
+		}
+	}
+	return false
+}
+func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request, csrfRequired bool) (auth.User, string, bool) {
+	c, e := r.Cookie(sessionCookie)
+	if e != nil {
+		unauthorized(w)
+		return auth.User{}, "", false
+	}
+	u, csrf, e := s.auth.Current(r.Context(), c.Value)
+	if e != nil {
+		unauthorized(w)
+		return auth.User{}, "", false
+	}
+	if csrfRequired && (!sameOrigin(r) || r.Header.Get("X-CSRF-Token") != csrf) {
+		forbidden(w, "csrf validation failed")
+		return auth.User{}, "", false
+	}
+	return u, csrf, true
+}
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, e := url.Parse(origin)
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return e == nil && u.Host == r.Host && u.Scheme == scheme
+}
+func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	de := json.NewDecoder(r.Body)
+	de.DisallowUnknownFields()
+	if de.Decode(v) != nil {
+		bad(w, "invalid request body")
+		return false
+	}
+	return true
+}
+func jsonOut(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+func errorOut(w http.ResponseWriter, status int, code, message string) {
+	jsonOut(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
+}
+func method(w http.ResponseWriter)        { errorOut(w, 405, "method_not_allowed", "method not allowed") }
+func bad(w http.ResponseWriter, m string) { errorOut(w, 400, "invalid_request", m) }
+func unauthorized(w http.ResponseWriter) {
+	errorOut(w, 401, "unauthenticated", "invalid username or password")
+}
+func forbidden(w http.ResponseWriter, m string) { errorOut(w, 403, "forbidden", m) }
+func internal(w http.ResponseWriter) {
+	errorOut(w, 500, "internal_error", "an internal error occurred")
+}
+func (s *Server) logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		next.ServeHTTP(w, r)
+		s.log.Debug("http request", "method", r.Method, "path", strings.Split(r.URL.Path, "?")[0], "duration", time.Since(start).String())
+	})
+}
