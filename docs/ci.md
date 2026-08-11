@@ -1,26 +1,49 @@
-# Continuous integration and release artifacts
+# Continuous integration and releases
 
-GitHub Actions runs `.github/workflows/ci.yml` for pushes, pull requests, and manual dispatches. The workflow is limited to verification and packaging; it does not deploy or publish a release.
+GameNode uses two deliberately separate GitHub Actions workflows.
 
-## Required checks
+## CI for `master`
 
-- `Go fmt, vet and test` verifies that all Go files are formatted, then runs `go vet ./...` and `go test ./...`.
-- `Go race detector (Linux amd64)` runs `CGO_ENABLED=1 go test -race ./...` on a native Linux amd64 runner. This is intentionally not a cross-compiled job: the race detector needs a runnable binary and a C toolchain, both provided by the Ubuntu GitHub-hosted runner.
-- `Frontend check and build` runs `npm ci`, `npm run check`, and `npm run build` with Node.js 22.
+`.github/workflows/ci.yml` runs on pull requests targeting `master`, pushes to `master`, and manual dispatches. It uses Go 1.23 and Node.js 22 from GitHub-hosted runners; all frontend commands use the repository lockfile and local npm dependencies.
 
-## Build artifacts
+| Job | Runner | Checks |
+| --- | --- | --- |
+| `Backend (Linux)` | Ubuntu | `go mod download`, tracked-file `gofmt` check, `go vet ./...`, `go test ./...`, `go build ./...` |
+| `Backend (Windows)` | Windows | Native `go test ./...` and `go build ./...`, including platform-specific runtime and filesystem coverage |
+| `Go race detector (Linux amd64)` | Ubuntu | `CGO_ENABLED=1 go test -race ./...` |
+| `Frontend` | Ubuntu | `npm ci`, `npm run check`, `npm run test:helpers`, `npm run build` |
+| Windows/Linux package jobs | Native target runner | Fresh `npm ci` and production frontend build before the final embedded binary build |
 
-After the frontend check succeeds, the workflow builds the frontend again in each packaging job so the Go binary embeds the exact generated web assets. It uploads these downloadable workflow artifacts:
+The Go and npm download caches improve run time but are never required for correctness. Native Windows tests retain their normal privilege-dependent skips; the workflow does not disable symlink or reparse-point coverage to force a green result.
 
-| Job | Runner | Artifact | Contents |
-| --- | --- | --- | --- |
-| `Windows amd64 build` | `windows-latest` | `gamenode-windows-amd64` | `gamenode-windows-amd64.exe` |
-| `Linux amd64 build` | `ubuntu-latest` | `gamenode-linux-amd64` | `gamenode-linux-amd64` |
+On successful pushes to `master`, the package jobs upload unsigned development artifacts for 14 days:
 
-Artifacts are CI build outputs, not signed release packages. Before a public release, download the artifacts from the successful workflow run, apply the project's chosen signing and checksum process, and attach the resulting files to the release.
+| Artifact | File |
+| --- | --- |
+| `gamenode-windows-amd64` | `gamenode-windows-amd64.exe` |
+| `gamenode-linux-amd64` | `gamenode-linux-amd64` |
 
-## Temporary E2E helpers
+These artifacts are CI outputs, not official releases.
 
-The root-level `tmp-e2e-helper.go`, `tmp-e2e-client.go`, and related `tmp-e2e-*` files are manual Windows smoke-test helpers. They compile and launch a locally built binary, then exercise setup, server lifecycle, and WebSocket console behavior against fixed paths and a fixed port. They are deliberately excluded from normal Go package discovery with `//go:build ignore`.
+## Versioned releases
 
-When this coverage is formalized, move the helper process into a test-only package such as `internal/testutil` and place the scenario in an `e2e/` Go test package. Use `t.TempDir()` for data and configuration, reserve a loopback port dynamically, start the server through a test harness, and use context-bound cleanup. Keep Windows console scenarios behind a `windows` build tag and add a Linux-compatible scenario where applicable. A dedicated, separately triggered E2E workflow job can then run the suite without changing production APIs, runtime code, or data models.
+`.github/workflows/release.yml` runs only when a pushed tag matches the workflow tag prefix `v*`; its verification job rejects tags that are not semantic versions such as `v0.1.0`, `v0.1.1`, or `v0.2.0` (pre-release and build metadata are also accepted).
+
+The workflow repeats the Linux Go/frontend verification, the Windows Go suite, and the Linux race pass. Only then do native Windows and Linux packaging jobs run. Each packaging job performs `npm ci` and `npm run build` before `go build`, ensuring the executable's `go:embed` frontend is freshly generated. The publish job downloads both binaries, creates `SHA256SUMS.txt` with names matching the assets, creates a draft release with GitHub-generated notes, and publishes it only after the asset upload succeeds.
+
+The resulting GitHub Release contains:
+
+- `gamenode-windows-amd64.exe`
+- `gamenode-linux-amd64`
+- `SHA256SUMS.txt`
+
+Release builds inject the tag, commit SHA, and UTC build time into the safe Diagnostics application metadata. The release workflow has `contents: write` only for this purpose; normal CI has read-only repository contents permission. No repository secrets are needed: publishing uses the workflow `GITHUB_TOKEN`.
+
+To release:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+After downloading a release asset, verify it against `SHA256SUMS.txt` with the platform's SHA-256 tool before deployment.

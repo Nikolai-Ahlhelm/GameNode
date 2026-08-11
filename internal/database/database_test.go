@@ -37,8 +37,12 @@ func TestMigrateFreshAndFromPreIdentityState(t *testing.T) {
 			if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
 				t.Fatal(err)
 			}
-			if count != 5 {
-				t.Fatalf("applied migrations = %d, want 5", count)
+			entries, err := fs.ReadDir(gamenode.MigrationFiles, "migrations")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if count != len(entries) {
+				t.Fatalf("applied migrations = %d, want %d", count, len(entries))
 			}
 			for _, table := range []string{"groups", "group_memberships", "roles", "role_permissions", "user_role_assignments", "group_role_assignments"} {
 				var name string

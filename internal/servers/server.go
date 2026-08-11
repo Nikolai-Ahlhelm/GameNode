@@ -146,7 +146,7 @@ func (s *Server) Validate() error {
 	if s.AutoRestartWindowSeconds == 0 {
 		s.AutoRestartWindowSeconds = 300
 	}
-	if s.AutoRestartDelaySeconds == 0 {
+	if !s.AutoRestartEnabled && s.AutoRestartDelaySeconds == 0 {
 		s.AutoRestartDelaySeconds = 5
 	}
 	if s.AutoRestartMaxAttempts < 1 || s.AutoRestartMaxAttempts > 20 {

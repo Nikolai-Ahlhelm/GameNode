@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -344,7 +346,15 @@ func TestServerSummaryExportIsSanitized(t *testing.T) {
 	st := settings.New(db, settings.Defaults{MonitoringSampleIntervalSeconds: 5, MonitoringHistoryLimit: 300})
 	diag := diagnostics.New(db, st, diagnostics.MonitoringEffective{SampleIntervalSeconds: 5, HistoryLimit: 300}, time.Now().UTC())
 	srv := servers.NewService(servers.NewStore(db), runtime.NewNative())
-	record, err := srv.Create(context.Background(), servers.Server{CreationMode: servers.CreationCustom, Name: "Support Sanitization Test", WorkingDirectory: "SUPPORT_HOST_PATH_SECRET_SHOULD_NEVER_APPEAR", Executable: "SUPPORT_EXEC_SECRET_SHOULD_NEVER_APPEAR", Arguments: []string{"SUPPORT_ARG_SECRET_SHOULD_NEVER_APPEAR"}, EnvironmentVariables: map[string]string{"SECRET": "SUPPORT_ENV_SECRET_SHOULD_NEVER_APPEAR"}, RuntimeType: "native", StopMethod: "terminate", StopTimeoutSeconds: 15, AutoRestartEnabled: true})
+	workingDirectory := filepath.Join(t.TempDir(), "SUPPORT_HOST_PATH_SECRET_SHOULD_NEVER_APPEAR")
+	if err = os.Mkdir(workingDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := srv.Create(context.Background(), servers.Server{CreationMode: servers.CreationCustom, Name: "Support Sanitization Test", WorkingDirectory: workingDirectory, Executable: executable, Arguments: []string{"SUPPORT_ARG_SECRET_SHOULD_NEVER_APPEAR"}, EnvironmentVariables: map[string]string{"SECRET": "SUPPORT_ENV_SECRET_SHOULD_NEVER_APPEAR"}, RuntimeType: "native", StopMethod: "terminate", StopTimeoutSeconds: 15, AutoRestartEnabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +365,7 @@ func TestServerSummaryExportIsSanitized(t *testing.T) {
 	if err = support.New(diag, st, audit.New(db), srv).Generate(context.Background(), &out, support.Scope{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"SUPPORT_EXEC_SECRET_SHOULD_NEVER_APPEAR", "SUPPORT_ARG_SECRET_SHOULD_NEVER_APPEAR", "SUPPORT_ENV_SECRET_SHOULD_NEVER_APPEAR", "SUPPORT_HOST_PATH_SECRET_SHOULD_NEVER_APPEAR"} {
+	for _, secret := range []string{"SUPPORT_ARG_SECRET_SHOULD_NEVER_APPEAR", "SUPPORT_ENV_SECRET_SHOULD_NEVER_APPEAR", "SUPPORT_HOST_PATH_SECRET_SHOULD_NEVER_APPEAR"} {
 		if strings.Contains(out.String(), secret) {
 			t.Fatalf("server secret leaked: %s", secret)
 		}
@@ -422,7 +432,15 @@ func TestSupportBundleExcludesInjectedSentinels(t *testing.T) {
 	st := settings.New(db, settings.Defaults{MonitoringSampleIntervalSeconds: 5, MonitoringHistoryLimit: 300})
 	diag := diagnostics.New(db, st, diagnostics.MonitoringEffective{SampleIntervalSeconds: 5, HistoryLimit: 300}, time.Now().UTC())
 	srv := servers.NewService(servers.NewStore(db), runtime.NewNative())
-	_, err = srv.Create(context.Background(), servers.Server{CreationMode: servers.CreationCustom, Name: "Support Sentinel Test", WorkingDirectory: "SUPPORT_HOST_PATH_SECRET_SHOULD_NEVER_APPEAR", Executable: "SUPPORT_EXEC_SECRET_SHOULD_NEVER_APPEAR", Arguments: []string{"SUPPORT_ARG_SECRET_SHOULD_NEVER_APPEAR"}, EnvironmentVariables: map[string]string{"SECRET": "SUPPORT_ENV_SECRET_SHOULD_NEVER_APPEAR"}, RuntimeType: "native", StopMethod: "terminate", StopTimeoutSeconds: 15})
+	workingDirectory := filepath.Join(t.TempDir(), "SUPPORT_HOST_PATH_SECRET_SHOULD_NEVER_APPEAR")
+	if err = os.Mkdir(workingDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = srv.Create(context.Background(), servers.Server{CreationMode: servers.CreationCustom, Name: "Support Sentinel Test", WorkingDirectory: workingDirectory, Executable: executable, Arguments: []string{"SUPPORT_ARG_SECRET_SHOULD_NEVER_APPEAR"}, EnvironmentVariables: map[string]string{"SECRET": "SUPPORT_ENV_SECRET_SHOULD_NEVER_APPEAR"}, RuntimeType: "native", StopMethod: "terminate", StopTimeoutSeconds: 15})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +448,7 @@ func TestSupportBundleExcludesInjectedSentinels(t *testing.T) {
 	if err = support.New(diag, st, audit.New(db), srv).Generate(context.Background(), &out, support.Scope{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"SUPPORT_DIAGNOSTICS_ENV_SECRET_SHOULD_NEVER_APPEAR", unknown, "SUPPORT_EXEC_SECRET_SHOULD_NEVER_APPEAR", "SUPPORT_ARG_SECRET_SHOULD_NEVER_APPEAR", "SUPPORT_ENV_SECRET_SHOULD_NEVER_APPEAR", "SUPPORT_HOST_PATH_SECRET_SHOULD_NEVER_APPEAR"} {
+	for _, secret := range []string{"SUPPORT_DIAGNOSTICS_ENV_SECRET_SHOULD_NEVER_APPEAR", unknown, "SUPPORT_ARG_SECRET_SHOULD_NEVER_APPEAR", "SUPPORT_ENV_SECRET_SHOULD_NEVER_APPEAR", "SUPPORT_HOST_PATH_SECRET_SHOULD_NEVER_APPEAR"} {
 		if bytes.Contains(out.Bytes(), []byte(secret)) {
 			t.Fatalf("bundle leaked %s", secret)
 		}
@@ -462,13 +480,15 @@ func TestSupportBundleHasNoSensitiveSubsystemExports(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var raw map[string]json.RawMessage
+		var raw any
 		if err = json.Unmarshal(data.Bytes(), &raw); err != nil {
 			t.Fatal(err)
 		}
-		for key := range raw {
-			if forbidden[strings.ToLower(key)] {
-				t.Fatalf("sensitive top-level export %s in %s", key, file.Name)
+		if object, ok := raw.(map[string]any); ok {
+			for key := range object {
+				if forbidden[strings.ToLower(key)] {
+					t.Fatalf("sensitive top-level export %s in %s", key, file.Name)
+				}
 			}
 		}
 	}

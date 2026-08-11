@@ -77,6 +77,10 @@ The **Files** tab is scoped to that server's working directory. It supports non-
 
 ## Verification
 
+### Latest Windows acceptance result (2026-08-11)
+
+On a native Windows amd64 machine, `npm ci`, `npm run check`, `npm run test:helpers`, `npm run build`, `go vet ./...`, `go build ./...`, and `go test ./...` passed. Fresh embedded-release-binary smoke testing covered first-run setup, login/logout, server CRUD, lifecycle, console output/input, RBAC and filesystem operations. The current Windows harnesses produced `E2E_WEBSOCKET_OK`, `E2E_MILESTONE3_OK`, `E2E_RBAC_MILESTONE5B_OK`, and `E2E_FILESYSTEM_MILESTONE4_OK`; Windows junction escape rejection passed. Creating a symbolic link was skipped because the test account lacks the Windows symlink privilege. The Linux amd64 artifact cross-build passed; no Linux runtime was available for a native smoke. Native race testing was unavailable because this Windows installation has neither CGO nor `gcc`.
+
 Run Go formatting, static checks, tests, frontend checks, and release builds:
 
 ```powershell
@@ -99,6 +103,18 @@ Remove-Item Env:GOOS, Env:GOARCH
 ```
 
 The race detector must run natively on the target OS/architecture; CI runs it on Linux amd64. See [development](docs/development.md) for local verification and support-bundle smoke testing, and [CI](docs/ci.md) for the workflow and artifacts.
+
+## CI and releases
+
+Pull requests targeting `master` and pushes to `master` run the GitHub Actions CI workflow. It verifies Go formatting, vet, tests, a Linux race-detector pass, native Windows tests, frontend type/helper tests, and production frontend builds. Successful `master` runs expose unsigned Windows amd64 and Linux amd64 development binaries as workflow artifacts for 14 days.
+
+To publish an official release, push a semantic version tag such as `v0.1.0`. The release workflow repeats the required verification, builds the frontend before each final Go binary so its assets are embedded, and publishes these assets:
+
+- `gamenode-windows-amd64.exe`
+- `gamenode-linux-amd64`
+- `SHA256SUMS.txt`
+
+Release binaries expose the tag in Diagnostics and also include the build commit and UTC build time. Verify the SHA-256 checksums after downloading an asset. See [CI](docs/ci.md) for the exact job structure and release semantics.
 
 ## Documentation
 

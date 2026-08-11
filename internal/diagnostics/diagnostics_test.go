@@ -29,6 +29,9 @@ func TestSnapshotIsSafeAndPopulated(t *testing.T) {
 	if result.Platform.OS == "" || result.Platform.Arch == "" || result.Platform.LogicalCPUs < 1 || !result.Database.Healthy || result.Database.SchemaVersion == "" {
 		t.Fatalf("incomplete diagnostics: %+v", result)
 	}
+	if result.Application.Version == "" {
+		t.Fatal("diagnostics did not expose an application version")
+	}
 	encoded, _ := json.Marshal(result)
 	if strings.Contains(string(encoded), os.Getenv("GAMENODE_DIAGNOSTIC_SECRET")) {
 		t.Fatal("diagnostics leaked environment value")

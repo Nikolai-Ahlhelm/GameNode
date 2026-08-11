@@ -1,5 +1,16 @@
 data/
 dist/
 config.yaml
+
+# Local Go toolchain caches (the module manifest remains go.mod/go.sum).
+.gocache/
+.gomodcache/
+
+# Local npm cache and installed frontend dependencies.
+.npm-cache/
 web/node_modules/
 web/tsconfig.tsbuildinfo
+web/.vite/
+
+# Disposable data created by the Windows acceptance harnesses.
+tmp-e2e-data/

@@ -2,6 +2,8 @@
 
 All endpoints are namespaced below `/api/v1` and return errors as `{ "error": { "code": "...", "message": "..." } }`.
 
+The API integration suite covers setup/login/logout, server CRUD/lifecycle, WebSocket console authorization and malformed-frame handling, filesystem upload/download and sandboxing, RBAC scope enforcement, settings, diagnostics, audit, ports, and support-bundle authorization/ZIP behavior. The 2026-08-11 native Windows acceptance harness additionally exercised the embedded binary's setup, lifecycle, console, RBAC, and filesystem routes.
+
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/v1/setup/status` | Whether initial setup is required |
@@ -108,7 +110,7 @@ The current typed surface is `monitoring.sample_interval_seconds` (1–300) and 
 
 ## Diagnostics
 
-`GET /api/v1/diagnostics` is read-only and requires global-only `Settings.View`. It reports safe application/runtime, platform, SQLite schema-health, and monitoring configuration summaries. It never returns paths, environment values, credentials, network adapters, server roots, or database contents, and it executes no shell commands.
+`GET /api/v1/diagnostics` is read-only and requires global-only `Settings.View`. It reports safe application/runtime, platform, SQLite schema-health, and monitoring configuration summaries. Release binaries additionally report the injected semantic version, commit SHA, and UTC build time in `application`; development builds report `dev`. It never returns paths, environment values, credentials, network adapters, server roots, or database contents, and it executes no shell commands.
 
 ## Support bundle
 

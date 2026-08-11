@@ -12,6 +12,14 @@ import (
 	"gamenode/internal/settings"
 )
 
+// Version, Commit, and BuildTime are set by release builds with -ldflags.
+// Development builds deliberately retain safe, non-empty defaults.
+var (
+	Version   = "dev"
+	Commit    = ""
+	BuildTime = ""
+)
+
 type MonitoringEffective struct {
 	SampleIntervalSeconds int
 	HistoryLimit          int
@@ -25,7 +33,9 @@ type Service struct {
 type Snapshot struct {
 	Status      string `json:"status"`
 	Application struct {
-		Version          string    `json:"version,omitempty"`
+		Version          string    `json:"version"`
+		Commit           string    `json:"commit,omitempty"`
+		BuildTime        string    `json:"build_time,omitempty"`
 		GoVersion        string    `json:"go_version"`
 		ProcessStartedAt time.Time `json:"process_started_at"`
 		UptimeSeconds    int64     `json:"uptime_seconds"`
@@ -62,8 +72,13 @@ func (s *Service) Get(ctx context.Context) Snapshot {
 	if out.Application.UptimeSeconds < 0 {
 		out.Application.UptimeSeconds = 0
 	}
-	if info, ok := debug.ReadBuildInfo(); ok {
-		out.Application.Version = info.Main.Version
+	out.Application.Version = Version
+	out.Application.Commit = Commit
+	out.Application.BuildTime = BuildTime
+	if info, ok := debug.ReadBuildInfo(); ok && (out.Application.Version == "" || out.Application.Version == "dev") {
+		if info.Main.Version != "" && info.Main.Version != "(devel)" {
+			out.Application.Version = info.Main.Version
+		}
 	}
 	out.Platform.OS = runtime.GOOS
 	out.Platform.Arch = runtime.GOARCH

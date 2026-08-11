@@ -1,22 +1,19 @@
-name: CI
+name: Release
 
 on:
-  pull_request:
-    branches: [master]
   push:
-    branches: [master]
-  workflow_dispatch:
+    tags: ["v*"]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  backend-linux:
-    name: Backend (Linux)
+  verify-linux:
+    name: Verify (Linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +21,14 @@ jobs:
         with:
           go-version: "1.23.x"
           cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Validate semantic version tag
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]
       - name: Download Go dependencies
         run: go mod download
       - name: Check Go formatting
@@ -34,11 +39,22 @@ jobs:
         run: go vet ./...
       - name: Go tests
         run: go test ./...
+      - name: Go race tests
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./...
       - name: Go build
         run: go build ./...
+      - name: Verify frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run check
+          npm run test:helpers
+          npm run build
 
-  backend-windows:
-    name: Backend (Windows)
+  verify-windows:
+    name: Verify (Windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,47 +69,9 @@ jobs:
       - name: Go build
         run: go build ./...
 
-  go-race:
-    name: Go race detector (Linux amd64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.23.x"
-          cache: true
-      - name: Download Go dependencies
-        run: go mod download
-      - name: Run race detector
-        env:
-          CGO_ENABLED: "1"
-        run: go test -race ./...
-
-  frontend:
-    name: Frontend
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22.x"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Install dependencies
-        run: npm ci
-      - name: Type check
-        run: npm run check
-      - name: Helper tests
-        run: npm run test:helpers
-      - name: Production build
-        run: npm run build
-
   build-windows-amd64:
-    name: Build Windows amd64
-    needs: [backend-linux, backend-windows, go-race, frontend]
+    name: Package Windows amd64
+    needs: [verify-linux, verify-windows]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -111,26 +89,23 @@ jobs:
         run: |
           npm ci
           npm run build
-      - name: Build Windows binary
+      - name: Build release binary
         shell: pwsh
         run: |
           $buildTime = Get-Date -AsUTC -Format "yyyy-MM-ddTHH:mm:ssZ"
-          $shortSha = "${{ github.sha }}".Substring(0, 12)
-          $ldflags = "-s -w -X gamenode/internal/diagnostics.Version=dev-$shortSha -X gamenode/internal/diagnostics.Commit=${{ github.sha }} -X gamenode/internal/diagnostics.BuildTime=$buildTime"
+          $ldflags = "-s -w -X gamenode/internal/diagnostics.Version=${{ github.ref_name }} -X gamenode/internal/diagnostics.Commit=${{ github.sha }} -X gamenode/internal/diagnostics.BuildTime=$buildTime"
           New-Item -ItemType Directory -Force dist | Out-Null
           go build -trimpath -ldflags $ldflags -o dist/gamenode-windows-amd64.exe ./cmd/gamenode
-      - name: Upload development artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: gamenode-windows-amd64
+          name: release-windows-amd64
           path: dist/gamenode-windows-amd64.exe
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
   build-linux-amd64:
-    name: Build Linux amd64
-    needs: [backend-linux, backend-windows, go-race, frontend]
+    name: Package Linux amd64
+    needs: [verify-linux, verify-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -148,18 +123,35 @@ jobs:
         run: |
           npm ci
           npm run build
-      - name: Build Linux binary
+      - name: Build release binary
         run: |
           build_time="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          short_sha="${GITHUB_SHA::12}"
-          ldflags="-s -w -X gamenode/internal/diagnostics.Version=dev-${short_sha} -X gamenode/internal/diagnostics.Commit=${GITHUB_SHA} -X gamenode/internal/diagnostics.BuildTime=${build_time}"
+          ldflags="-s -w -X gamenode/internal/diagnostics.Version=${GITHUB_REF_NAME} -X gamenode/internal/diagnostics.Commit=${GITHUB_SHA} -X gamenode/internal/diagnostics.BuildTime=${build_time}"
           mkdir -p dist
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o dist/gamenode-linux-amd64 ./cmd/gamenode
-      - name: Upload development artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: gamenode-linux-amd64
+          name: release-linux-amd64
           path: dist/gamenode-linux-amd64
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
+
+  publish:
+    name: Publish GitHub release
+    needs: [build-windows-amd64, build-linux-amd64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Create checksums
+        working-directory: release
+        run: sha256sum gamenode-windows-amd64.exe gamenode-linux-amd64 > SHA256SUMS.txt
+      - name: Create and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/gamenode-windows-amd64.exe release/gamenode-linux-amd64 release/SHA256SUMS.txt --title "$GITHUB_REF_NAME" --generate-notes --draft
+          gh release edit "$GITHUB_REF_NAME" --draft=false
