@@ -17,6 +17,7 @@ func TestMigrateFreshAndFromPreIdentityState(t *testing.T) {
 		{name: "fresh"},
 		{name: "pre-identity", migrations: []string{"001_initial.sql", "002_servers.sql"}},
 		{name: "pre-rbac", migrations: []string{"001_initial.sql", "002_servers.sql", "003_local_users_groups.sql"}},
+		{name: "v0.1-upgrade", migrations: []string{"001_initial.sql", "002_servers.sql", "003_local_users_groups.sql", "004_rbac_core.sql", "005_rbac_global_assignment_uniqueness.sql", "006_monitoring_runtime_state.sql", "007_auto_restart_policy.sql", "008_server_ports.sql", "009_audit_log.sql", "010_app_settings.sql"}},
 	} {
 		t.Run(state.name, func(t *testing.T) {
 			db, err := database.Open(":memory:")
@@ -44,7 +45,7 @@ func TestMigrateFreshAndFromPreIdentityState(t *testing.T) {
 			if count != len(entries) {
 				t.Fatalf("applied migrations = %d, want %d", count, len(entries))
 			}
-			for _, table := range []string{"groups", "group_memberships", "roles", "role_permissions", "user_role_assignments", "group_role_assignments"} {
+			for _, table := range []string{"groups", "group_memberships", "roles", "role_permissions", "user_role_assignments", "group_role_assignments", "game_templates", "game_template_variables", "game_template_findings", "provisioning_jobs", "server_template_variables"} {
 				var name string
 				if err := db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name); err != nil {
 					t.Fatalf("missing table %s: %v", table, err)

@@ -1618,3 +1618,10 @@ Recommended next step
 ```
 
 Wait for explicit approval before starting Milestone 2.
+# v0.2 — Egg template foundation status
+
+The initial v0.2 template-import foundation is implemented. Pelican/Pterodactyl v2 Eggs are treated solely as untrusted import documents and normalized into a GameNode-owned template model. The milestone includes bounded parsing, typed variables and conservative sensitive classification, deterministic compatibility findings, safe direct-process startup extraction, native SteamCMD plan detection, normalized SQLite persistence, global template RBAC, mutation audit events, import/preview API routes, a Templates UI, and a representative 7 Days to Die golden fixture.
+
+The follow-up native provisioning milestone is also implemented: a fixed-source managed SteamCMD installation, safe archive extraction, structured anonymous app installation, persisted asynchronous jobs with cancellation/restart interruption handling, per-server template values and sensitivity metadata, provisionability/platform checks, transactional normal-server creation, API/RBAC/audit coverage, and a Create Server wizard with progress/failure states.
+
+Still deferred are automatic/update-on-start lifecycle integration, credentialed Steam login and Steam Guard, dependable port suggestions where Eggs do not provide a normalized source, and encrypted-at-rest environment secrets. Docker/Podman runtimes, generic Egg shell installers, URL/repository synchronization, marketplace functionality, and generic shell startup remain out of scope.

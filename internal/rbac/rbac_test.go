@@ -140,7 +140,7 @@ func TestPlatformPermissionsAreGlobalOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	platformPermissions := []string{"Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage"}
+	platformPermissions := []string{"Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Templates.View", "Templates.Manage"}
 	if err = service.ReplacePermissions(ctx, role.ID, platformPermissions); err != nil {
 		t.Fatal(err)
 	}

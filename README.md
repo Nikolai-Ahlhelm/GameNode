@@ -2,7 +2,7 @@
 
 GameNode is a self-contained, single-node game-server management platform for Windows and Linux. It manages existing native applications through a local web interface; it does not require containers, templates, or a central controller.
 
-The current implementation covers the foundation, native runtime, live console, server-root file browser, RBAC, monitoring and health state, auto-restart, port management, audit log, dashboards, typed settings, diagnostics, and support bundles. Cluster/controller operation, Docker/Podman, a marketplace, SteamCMD automation, backups, scheduling, and firewall/NAT automation are intentionally out of scope.
+The current implementation covers the foundation, native runtime, live console, server-root file browser, RBAC, monitoring and health state, auto-restart, port management, audit log, dashboards, typed settings, diagnostics, support bundles, safe Egg template import, and native SteamCMD provisioning. Cluster/controller operation, Docker/Podman, a marketplace, automatic server updates, backups, scheduling, and firewall/NAT automation are intentionally out of scope.
 
 ## Capabilities
 
@@ -14,6 +14,8 @@ The current implementation covers the foundation, native runtime, live console, 
 - Assign allow-only roles to local users and groups at global or server scope.
 - Monitor server process health and history, configure bounded auto-restart policies, and register TCP/UDP ports for collision checks before start.
 - Inspect append-only audit records, safe diagnostics, typed monitoring settings, and a bounded sanitized support bundle.
+- Analyze and persist Pelican/Pterodactyl Eggs as normalized GameNode templates with compatibility reports and native SteamCMD/launch plans.
+- Provision supported templates asynchronously through a managed SteamCMD installation, then create an ordinary native GameNode server.
 
 ## Security model
 
@@ -129,3 +131,14 @@ Release binaries expose the tag in Diagnostics and also include the build commit
 ## Operational limitations
 
 GameNode is intentionally a local, single-node product. It provides no distributed controller, remote-node protocol, automatic firewall/NAT management, permanent port reservation, container runtime, or game installer. Port availability probes are best effort and retain the normal bind-time TOCTOU window. A process discovered after GameNode restarts can be identity-verified but remains console-detached. Review [docs/runtime.md](docs/runtime.md) and [docs/security.md](docs/security.md) when deploying under a service account.
+# Egg template import foundation (v0.2)
+
+GameNode can analyze and import Pelican/Pterodactyl v2 Egg JSON files into a normalized, persisted GameNode template. Eggs are an import format only: the native runtime never reads Egg JSON, executes Egg shell scripts, starts Docker images, or maps container paths onto the host. The Templates UI provides upload, compatibility preview, variable inspection, import, detail, and delete workflows protected by independent global `Templates.View` and `Templates.Manage` permissions.
+
+The importer recognizes a conservative SteamCMD pattern and creates a native installer plan containing the App ID, validation flag, login mode, platform, optional beta-variable references, and the semantic `server_root` target. Startup is imported only when a direct executable and argument array can be extracted safely; shell operators and command substitution are reported and never executed.
+
+# Native SteamCMD provisioning (v0.2)
+
+Templates with a supported anonymous SteamCMD plan and a safe launch definition can be provisioned from the Templates UI. GameNode bootstraps SteamCMD from a fixed official Valve HTTPS source into `<data>/tools/steamcmd`, installs game files into `<data>/servers/<directory>`, expands only declared template variables, and transactionally creates a normal GameNode server after installation succeeds. Jobs expose bounded phase/status information, support cancellation, prevent concurrent use of the same target, and retain a clear `files_may_remain` signal after failure.
+
+Egg scripts, arbitrary URLs, free-form SteamCMD flags, credentialed login, Docker images, and update-on-start hooks are not executed. Sensitive values are masked by the server API and excluded from audit/support output; this version stores environment values in the existing SQLite server record without application-level at-rest encryption. Provisioning jobs interrupted by a GameNode restart are marked failed rather than resumed. See [architecture](docs/architecture.md), [security](docs/security.md), and [API](docs/api.md) for the precise boundary.

@@ -1,0 +1,25 @@
+{
+  "meta": {"version": "PTDL_v2", "update_url": null},
+  "exported_at": "2026-04-06T02:01:23+00:00",
+  "name": "7 Days To Die",
+  "author": "fixture@example.test",
+  "uuid": "b7a88721-15c1-4081-beed-e3add926a372",
+  "description": "7 days to die server",
+  "tags": ["steamcmd"],
+  "features": ["steam_disk_space"],
+  "docker_images": {"SteamCMD": "ghcr.io/parkervcp/steamcmd:debian"},
+  "startup": "./7DaysToDieServer.x86_64 -configfile=serverconfig.xml -quit -batchmode -nographics -dedicated -ServerPort=${SERVER_PORT} -ServerDisabledNetworkProtocols=${SERVER_DISABLED_NETWORK_PROTOCOLS} -ServerMaxPlayerCount=${MAX_PLAYERS} -GameDifficulty=${GAME_DIFFICULTY} -TelnetPort=${TELNET_PORT} -TelnetPassword=${PASSWORD} -logfile \"logs/latest.log\" & echo waiting && until nc -z 127.0.0.1 ${TELNET_PORT}; do sleep 5; done && $(printf unsafe)",
+  "config": {"files": "{}", "startup": "{}", "logs": "{}", "stop": "shutdown"},
+  "scripts": {"installation": {"script": "#!/bin/bash\nmkdir -p /mnt/server/steamcmd\n./steamcmd.sh +force_install_dir /mnt/server +login anonymous +app_update ${SRCDS_APPID} $( [[ -z ${SRCDS_BETAID} ]] || printf beta ) validate +quit", "container": "ghcr.io/parkervcp/installers:debian", "entrypoint": "bash"}},
+  "variables": [
+    {"name":"Max Players","description":"Maximum concurrent players","env_variable":"MAX_PLAYERS","default_value":"8","user_viewable":true,"user_editable":false,"rules":"required|string|max:20","field_type":"text"},
+    {"name":"Game Difficulty","description":"0 through 5","env_variable":"GAME_DIFFICULTY","default_value":"2","user_viewable":true,"user_editable":true,"rules":"required|integer|between:0,5","field_type":"text"},
+    {"name":"Source AppID","description":"Steam app","env_variable":"SRCDS_APPID","default_value":"294420","user_viewable":false,"user_editable":false,"rules":"required|string|max:20","field_type":"text"},
+    {"name":"Auto Update","description":"0 or 1","env_variable":"AUTO_UPDATE","default_value":"1","user_viewable":true,"user_editable":true,"rules":"boolean","field_type":"text"},
+    {"name":"Beta Branch","description":"Optional beta","env_variable":"SRCDS_BETAID","default_value":"","user_viewable":true,"user_editable":true,"rules":"nullable|string|max:20","field_type":"text"},
+    {"name":"Beta Password","description":"Optional private beta password","env_variable":"SRCDS_BETAPASS","default_value":"","user_viewable":true,"user_editable":true,"rules":"nullable|string|max:30","field_type":"text"},
+    {"name":"Telnet Password","description":"Optional telnet password","env_variable":"PASSWORD","default_value":"","user_viewable":true,"user_editable":true,"rules":"nullable|string|max:30","field_type":"text"},
+    {"name":"Telnet Port","description":"","env_variable":"TELNET_PORT","default_value":"8081","user_viewable":true,"user_editable":true,"rules":"required|string|max:20","field_type":"text"},
+    {"name":"Network Protocols","description":"Disabled protocols","env_variable":"SERVER_DISABLED_NETWORK_PROTOCOLS","default_value":"","user_viewable":true,"user_editable":true,"rules":"nullable|string|max:20","field_type":"text"}
+  ]
+}

@@ -99,6 +99,11 @@ func (s *Server) serversHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		s.recordServerAudit(r, u, audit.ServerCreate, audit.Success, record.Server.ID, record.Server.Name, nil)
 		s.log.Info("server created", "server_id", record.Server.ID, "mode", record.Server.CreationMode)
+		record, err = s.publicServerRecord(r.Context(), record)
+		if err != nil {
+			internal(w)
+			return
+		}
 		jsonOut(w, http.StatusCreated, record)
 	default:
 		method(w)
@@ -186,6 +191,11 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 				internal(w)
 				return
 			}
+			record, err = s.publicServerRecord(r.Context(), record)
+			if err != nil {
+				internal(w)
+				return
+			}
 			jsonOut(w, http.StatusOK, map[string]any{"server": record.Server, "runtime": record.Runtime, "capabilities": capabilities})
 		case http.MethodPatch:
 			var server servers.Server
@@ -200,6 +210,11 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			s.recordServerAudit(r, u, audit.ServerUpdate, audit.Success, record.Server.ID, record.Server.Name, nil)
 			s.log.Info("server updated", "server_id", id)
+			record, err = s.publicServerRecord(r.Context(), record)
+			if err != nil {
+				internal(w)
+				return
+			}
 			jsonOut(w, http.StatusOK, record)
 		case http.MethodDelete:
 			name := ""
@@ -262,6 +277,11 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 	action := map[string]string{"start": audit.ServerStart, "stop": audit.ServerStop, "restart": audit.ServerRestart, "kill": audit.ServerKill}[parts[1]]
 	s.recordServerAudit(r, u, action, audit.Success, record.Server.ID, record.Server.Name, nil)
 	s.log.Info("server lifecycle action", "server_id", id, "action", parts[1])
+	record, err = s.publicServerRecord(r.Context(), record)
+	if err != nil {
+		internal(w)
+		return
+	}
 	jsonOut(w, http.StatusOK, record)
 }
 

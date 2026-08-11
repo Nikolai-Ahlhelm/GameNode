@@ -20,10 +20,12 @@ import (
 	"gamenode/internal/identity"
 	"gamenode/internal/monitoring"
 	"gamenode/internal/ports"
+	"gamenode/internal/provisioning"
 	"gamenode/internal/rbac"
 	"gamenode/internal/servers"
 	"gamenode/internal/settings"
 	"gamenode/internal/support"
+	"gamenode/internal/templates"
 )
 
 const sessionCookie = "gamenode_session"
@@ -41,6 +43,8 @@ type Server struct {
 	settings     *settings.Service
 	diagnostics  *diagnostics.Service
 	support      supportGenerator
+	templates    *templates.Service
+	provisioning *provisioning.Service
 }
 
 type supportGenerator interface {
@@ -48,10 +52,12 @@ type supportGenerator interface {
 }
 
 type Options struct {
-	Filesystem  *filesystem.Service
-	Settings    *settings.Service
-	Diagnostics *diagnostics.Service
-	Support     supportGenerator
+	Filesystem   *filesystem.Service
+	Settings     *settings.Service
+	Diagnostics  *diagnostics.Service
+	Support      supportGenerator
+	Templates    *templates.Service
+	Provisioning *provisioning.Service
 }
 
 // auditInput deliberately contains only values selected by the application. It
@@ -143,7 +149,19 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	if len(options) > 0 && options[0].Support != nil {
 		supportService = options[0].Support
 	}
-	return &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identity.New(a.Database()), rbac: rbac.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, log: log, secureCookie: secureCookie}
+	templateService := templates.NewService(templates.NewStore(a.Database()))
+	var provisioner *provisioning.Service
+	if len(options) > 0 {
+		if options[0].Templates != nil {
+			templateService = options[0].Templates
+		}
+		provisioner = options[0].Provisioning
+	}
+	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identity.New(a.Database()), rbac: rbac.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, log: log, secureCookie: secureCookie}
+	if provisioner != nil {
+		provisioner.SetObserver(result.recordProvisioningCompletion)
+	}
+	return result
 }
 func (s *Server) Handler(static http.Handler) http.Handler {
 	mux := http.NewServeMux()
@@ -166,6 +184,9 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/roles/", s.roleHandler)
 	mux.HandleFunc("/api/v1/servers", s.serversHandler)
 	mux.HandleFunc("/api/v1/servers/", s.serverHandler)
+	mux.HandleFunc("/api/v1/templates", s.templatesHandler)
+	mux.HandleFunc("/api/v1/templates/", s.templateHandler)
+	mux.HandleFunc("/api/v1/provisioning/jobs/", s.provisioningJobHandler)
 	mux.Handle("/", static)
 	return s.logRequests(mux)
 }
@@ -355,7 +376,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, http.StatusOK, response)
 }
 
-var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Monitoring.View", "Audit.View"}
+var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View"}
 
 func (s *Server) allowed(ctx context.Context, u auth.User, permission string, scope rbac.Scope) (bool, error) {
 	return s.rbac.Allowed(ctx, u.ID, permission, scope)
@@ -422,9 +443,41 @@ func (s *Server) visibleServers(ctx context.Context, u auth.User) ([]map[string]
 		if !containsCapability(capabilities, "Server.View") {
 			continue
 		}
+		record, err = s.publicServerRecord(ctx, record)
+		if err != nil {
+			return nil, err
+		}
 		result = append(result, map[string]any{"server": record.Server, "runtime": record.Runtime, "capabilities": capabilities})
 	}
 	return result, nil
+}
+
+func (s *Server) publicServerRecord(ctx context.Context, record servers.Record) (servers.Record, error) {
+	keys, err := s.servers.SensitiveEnvironmentKeys(ctx, record.Server.ID)
+	if err != nil {
+		return servers.Record{}, err
+	}
+	if len(keys) == 0 {
+		return record, nil
+	}
+	environment := make(map[string]string, len(record.Server.EnvironmentVariables))
+	arguments := append([]string(nil), record.Server.Arguments...)
+	for key, value := range record.Server.EnvironmentVariables {
+		environment[key] = value
+	}
+	for _, key := range keys {
+		secret := record.Server.EnvironmentVariables[key]
+		delete(environment, key)
+		if secret != "" {
+			for index, argument := range arguments {
+				arguments[index] = strings.ReplaceAll(argument, secret, "********")
+			}
+		}
+	}
+	record.Server.Arguments = arguments
+	record.Server.EnvironmentVariables = environment
+	record.Server.SensitiveEnvironmentVariables = keys
+	return record, nil
 }
 
 func containsCapability(capabilities []string, permission string) bool {

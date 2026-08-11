@@ -36,4 +36,39 @@ Dashboard aggregation is read-only: the API filters visible servers by RBAC befo
 
 The port transport routes call `ports.Service`, which validates assignments, checks registry collisions, and performs best-effort temporary OS availability probes. `servers.Service.start` performs port preflight after lifecycle validation but before state mutation, process-instance/console creation, and `Runtime.Start`. Manual restart finalizes the old process before normal start/preflight; auto-restart follows finalizer, delay, and that same start path. Runtime, ConsoleManager, and HTTP transport do not implement collision logic themselves.
 
-v0.1 provides server-root-scoped directory listing, bounded text reads, safe create/edit/move/delete operations, streaming upload/download transport through `internal/filesystem`, and a Files tab with a bounded Monaco text editor. Filesystem sandboxing stays independent from RBAC: RBAC authorizes an action while `internal/filesystem` validates every path. Archive browsing, cluster system, Docker, and SteamCMD remain out of scope.
+v0.1 provides server-root-scoped directory listing, bounded text reads, safe create/edit/move/delete operations, streaming upload/download transport through `internal/filesystem`, and a Files tab with a bounded Monaco text editor. Filesystem sandboxing stays independent from RBAC: RBAC authorizes an action while `internal/filesystem` validates every path. Archive browsing, cluster operation, and Docker remain out of scope.
+# Template import architecture
+
+Pelican/Pterodactyl Eggs enter GameNode through a bounded parser and are converted before persistence:
+
+```text
+Egg JSON -> structural validation -> compatibility analysis
+         -> GameNode Template -> native installer/launch plans
+```
+
+`internal/templates` is transport-independent. Its `Template` owns provenance metadata, an installer definition, an optional structured launch definition, typed variables, and deterministic compatibility findings. The SQLite store persists the normalized root plus ordered variable and finding rows. Only a SHA-256 provenance hash is retained from the original input; raw Egg JSON and install scripts are not the runtime source of truth and are not persisted.
+
+The installer definition supports a detected SteamCMD plan (`app_id`, `validate`, `login_mode`, `platform`, beta branch/password variable references, and semantic `server_root`). Container paths such as `/mnt/server` and `/home/container` collapse to `server_root` semantics and never become host paths.
+
+The launch analyzer tokenizes only a single direct process into `Executable` plus `Arguments[]`. A safe prefix before a shell operator may be retained with a partial-compatibility finding; the remaining shell tail is discarded. Runtime code remains independent of Eggs and continues to use the existing native server model.
+
+# Native SteamCMD provisioning architecture
+
+`internal/steamcmd` is transport-independent. It owns the fixed platform source, bounded HTTPS download, path-safe ZIP/TAR extraction, managed executable detection, serialized atomic bootstrap, structured command arguments, streaming output interface, cancellation, and exit status. Its managed directory is `<data>/tools/steamcmd`; Linux invokes the native `linux32/steamcmd` binary with a controlled library path, and Windows invokes `steamcmd.exe`. SteamCMD performs its normal signed client self-update during invocation; GameNode does not download replacement binaries from template input. No shell participates.
+
+`internal/provisioning` coordinates a short persisted job record and in-memory execution state:
+
+```
+validate template/request -> reserve <data>/servers/<directory>
+  -> ensure managed SteamCMD -> install with structured arguments
+  -> expand direct launch fields -> transactionally create server + variable metadata
+  -> release reservation and finalize exactly once
+```
+
+Actual variable values live only in the existing server environment record; `server_template_variables` retains template/key/sensitive metadata. A normal server row is inserted only after installation and final launch validation. Filesystem writes cannot participate in the SQLite transaction, so a failed final database insert can leave installed files; the job reports this explicitly and GameNode never performs unowned recursive cleanup.
+
+Jobs persist safe phase, actor/template identity, directory name, result, and server ID, but not raw output, values, credentials, or an absolute host path. Active jobs are marked failed/interrupted during startup; v0.2 intentionally has no resume engine. In-memory cancellation terminates the SteamCMD process and gates final server creation. A per-target reservation allows different roots in parallel, while the SteamCMD manager serializes first bootstrap/update access.
+
+Provisionability is narrower than general template compatibility: a partially compatible Egg may proceed only when its native SteamCMD plan, anonymous authentication, current-host launch, variables, and direct launch definition are sufficient. Unsupported templates, beta passwords, credentialed login, absent host launch definitions, and arbitrary flags are rejected before execution.
+
+Compatibility is `compatible`, `partially_compatible`, or `unsupported`. Findings contain stable severity, component, code, and summary fields. Warnings yield partial compatibility and errors yield unsupported status, making the result deterministic and suitable for API/UI rendering and tests.

@@ -128,3 +128,35 @@ An enabled administrator bypasses these checks. `Users.Manage` does not permit s
 `GET /api/v1/dashboard` is read-only and returns capability-filtered server, monitoring, port, and (only with global `Audit.View`) recent audit summaries. It never reports hidden servers or performs port scans or mutations.
 
 `GET /api/v1/audit` is a read-only, global audit endpoint. It requires the global-only `Audit.View` permission (a server-scoped assignment does not grant access); administrators retain the normal bypass. It accepts bounded `limit` (default 100, maximum 500) and `offset`, plus `actor_user_id`, `action`, `resource_type`, `resource_id`, `server_id`, and `result` filters. Results are newest first (`timestamp DESC`, `id DESC`) and return `items`, `limit`, and `offset`. Each item contains its persisted actor/resource snapshots, result, direct remote IP, metadata, and sanitized error fields. Deleted resources remain visible through those snapshots. GameNode exposes no audit mutation, clear, or delete endpoint.
+# Templates API
+
+Templates are global node resources. `Templates.View` and `Templates.Manage` are independent and global-only.
+
+| Method | Path | Authorization and behavior |
+|---|---|---|
+| `POST` | `/api/v1/templates/analyze/egg` | `Templates.Manage` + CSRF; normalize and return a preview without persistence |
+| `POST` | `/api/v1/templates/import/egg` | `Templates.Manage` + CSRF; normalize, persist, and audit exactly one import mutation |
+| `GET` | `/api/v1/templates` | `Templates.View`; list normalized templates |
+| `GET` | `/api/v1/templates/{id}` | `Templates.View`; read one normalized template |
+| `DELETE` | `/api/v1/templates/{id}` | `Templates.Manage` + CSRF; delete and audit the template |
+| `GET` | `/api/v1/templates/{id}/provisionability` | `Templates.View` + `Server.Create`; check current-host provisioning support |
+| `POST` | `/api/v1/templates/{id}/provision` | `Templates.View` + `Server.Create` + CSRF; start an asynchronous native provision |
+
+Analyze/import accept `{"egg": <Egg JSON object>}`. Upload and pasted JSON clients use the same bounded representation. URL input is not supported. Bodies over the bounded envelope or Eggs over 256 KiB return `413 egg_too_large`; invalid Eggs return a controlled `422 invalid_egg` without raw parser errors. Responses use the GameNode template model and never return the original Egg or installation script. Sensitive defaults are discarded before a response or database write.
+
+# Provisioning API
+
+Provisioning is intentionally template-specific rather than a generic job execution API.
+
+| Method | Path | Authorization and behavior |
+| --- | --- | --- |
+| `GET` | `/api/v1/provisioning/jobs/{id}` | Initiating user or admin; return safe persisted status |
+| `POST` | `/api/v1/provisioning/jobs/{id}/cancel` | Initiating user or admin + CSRF; cancel an active installer |
+
+The start body is bounded to 128 KiB and has the form `{"server_name":"...","directory_name":"...","variables":{"KEY":"value"}}`. `directory_name` is a relative storage name, not a path; the target is always resolved below `<data>/servers`. Unknown/non-editable variables, invalid normalized values, unsupported platform plans, populated targets, and unsafe SteamCMD options are rejected with controlled errors.
+
+Start returns `202` with a job. Statuses are `pending`, `preparing`, `downloading_steamcmd`, `steamcmd_ready`, `installing`, `creating_server`, `completed`, `failed`, or `cancelled`. Responses contain phase summaries and `files_may_remain`, but never target absolute paths, raw SteamCMD output, variable values, credentials, or command lines. A completed job contains the normal `server_id`.
+
+Supported source fields include `meta.version`, `exported_at`, `name`, `description`, `author`, `uuid`, `startup`, `variables`, `docker_images` (metadata only), `scripts.installation` (analysis only), `config`, `features`, and tags. Unknown top-level fields become informational findings. Config parser bodies, file rewrite rules, Docker semantics, arbitrary installation hooks, and unknown config structures are not executed and may produce compatibility findings.
+
+Supported variable rules are `required`, `nullable`, `integer`, `numeric`, `string`, `boolean`, `between`, `min`, `max`, and `in`. Other Laravel/Pterodactyl rules remain in `raw_rules` and produce `UNKNOWN_VALIDATION_RULE`; GameNode does not emulate the full validation language.
