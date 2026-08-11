@@ -3,33 +3,127 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"gamenode/internal/audit"
 	"gamenode/internal/auth"
+	"gamenode/internal/dashboard"
+	"gamenode/internal/diagnostics"
 	"gamenode/internal/filesystem"
 	"gamenode/internal/identity"
+	"gamenode/internal/monitoring"
+	"gamenode/internal/ports"
 	"gamenode/internal/rbac"
 	"gamenode/internal/servers"
+	"gamenode/internal/settings"
+	"gamenode/internal/support"
 )
 
 const sessionCookie = "gamenode_session"
 
 type Server struct {
 	auth         *auth.Service
+	audit        *audit.Service
 	log          *slog.Logger
 	secureCookie bool
 	servers      *servers.Service
 	files        *filesystem.Service
 	identity     *identity.Service
 	rbac         *rbac.Service
+	ports        *ports.Service
+	settings     *settings.Service
+	diagnostics  *diagnostics.Service
+	support      supportGenerator
+}
+
+type supportGenerator interface {
+	Generate(context.Context, io.Writer, support.Scope) error
 }
 
 type Options struct {
-	Filesystem *filesystem.Service
+	Filesystem  *filesystem.Service
+	Settings    *settings.Service
+	Diagnostics *diagnostics.Service
+	Support     supportGenerator
+}
+
+// auditInput deliberately contains only values selected by the application. It
+// must never be populated from a request body or credential material.
+type auditInput struct {
+	action       string
+	resourceType string
+	resourceID   *string
+	resourceName string
+	serverID     *string
+	result       string
+	metadata     json.RawMessage
+	errorCode    string
+	errorSummary string
+	actor        *auth.User
+}
+
+func (s *Server) recordAudit(r *http.Request, in auditInput) {
+	event := audit.Event{
+		Action:       in.action,
+		ResourceType: in.resourceType,
+		ResourceID:   in.resourceID,
+		ResourceName: in.resourceName,
+		ServerID:     in.serverID,
+		Result:       in.result,
+		Metadata:     in.metadata,
+		ErrorCode:    in.errorCode,
+		ErrorSummary: in.errorSummary,
+	}
+	if in.actor != nil {
+		actorID := in.actor.ID
+		event.ActorUserID = &actorID
+		event.ActorUsername = in.actor.Username
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		event.RemoteIP = host
+	} else {
+		event.RemoteIP = r.RemoteAddr
+	}
+	if err := s.audit.Record(r.Context(), event); err != nil {
+		s.log.Error("audit write failed", "error", err.Error(), "action", in.action)
+	}
+}
+
+// auditFailure intentionally exposes only stable, non-sensitive summaries.
+// Runtime and persistence errors can include host-specific implementation details.
+func auditFailure(err error) (string, string) {
+	message := err.Error()
+	switch {
+	case strings.HasPrefix(message, "port preflight:"):
+		return "port_preflight_failed", "port preflight failed"
+	case strings.Contains(message, "port conflicts") || strings.Contains(message, "port is already in use"):
+		return "port_conflict", "port assignment conflicts with an existing listener"
+	case strings.Contains(message, "port must be"):
+		return "invalid_port", "invalid port assignment"
+	case strings.Contains(message, "protocol must be"):
+		return "invalid_protocol", "invalid port assignment"
+	case strings.Contains(message, "bind address must be"):
+		return "invalid_bind_address", "invalid port assignment"
+	case strings.Contains(message, "already running") || strings.Contains(message, "not running") || strings.Contains(message, "restart is in progress") || strings.Contains(message, "stop the server before"):
+		return "invalid_state", "server state does not allow this operation"
+	case errors.Is(err, filesystem.ErrInvalidPath), errors.Is(err, filesystem.ErrPathEscapesRoot), errors.Is(err, filesystem.ErrInvalidFilename), errors.Is(err, filesystem.ErrRootOperation), errors.Is(err, filesystem.ErrExpectedFile), errors.Is(err, filesystem.ErrExpectedDir), errors.Is(err, filesystem.ErrSpecialFile):
+		return "invalid_path", "filesystem path is not available"
+	case errors.Is(err, filesystem.ErrAlreadyExists), errors.Is(err, filesystem.ErrDirectoryNotEmpty):
+		return "file_conflict", "filesystem operation conflicts with existing content"
+	case errors.Is(err, filesystem.ErrNotFound):
+		return "not_found", "filesystem path not found"
+	case errors.Is(err, filesystem.ErrTooLarge):
+		return "file_too_large", "filesystem operation exceeds the size limit"
+	default:
+		return "operation_failed", "operation failed"
+	}
 }
 
 func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secureCookie bool, options ...Options) *Server {
@@ -37,7 +131,19 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	if len(options) > 0 && options[0].Filesystem != nil {
 		files = options[0].Filesystem
 	}
-	return &Server{auth: a, servers: serverService, files: files, identity: identity.New(a.Database()), rbac: rbac.New(a.Database()), log: log, secureCookie: secureCookie}
+	settingService := settings.New(a.Database(), settings.Defaults{})
+	if len(options) > 0 && options[0].Settings != nil {
+		settingService = options[0].Settings
+	}
+	diagnosticService := diagnostics.New(a.Database(), settingService, diagnostics.MonitoringEffective{}, time.Now().UTC())
+	if len(options) > 0 && options[0].Diagnostics != nil {
+		diagnosticService = options[0].Diagnostics
+	}
+	var supportService supportGenerator = support.New(diagnosticService, settingService, audit.New(a.Database()), serverService)
+	if len(options) > 0 && options[0].Support != nil {
+		supportService = options[0].Support
+	}
+	return &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identity.New(a.Database()), rbac: rbac.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, log: log, secureCookie: secureCookie}
 }
 func (s *Server) Handler(static http.Handler) http.Handler {
 	mux := http.NewServeMux()
@@ -47,6 +153,10 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/auth/logout", s.logout)
 	mux.HandleFunc("/api/v1/auth/me", s.me)
 	mux.HandleFunc("/api/v1/dashboard", s.dashboard)
+	mux.HandleFunc("/api/v1/audit", s.auditHandler)
+	mux.HandleFunc("/api/v1/settings", s.settingsHandler)
+	mux.HandleFunc("/api/v1/diagnostics", s.diagnosticsHandler)
+	mux.HandleFunc("/api/v1/support/bundle", s.supportBundleHandler)
 	mux.HandleFunc("/api/v1/users", s.usersHandler)
 	mux.HandleFunc("/api/v1/users/", s.userHandler)
 	mux.HandleFunc("/api/v1/groups", s.groupsHandler)
@@ -121,11 +231,13 @@ func (s *Server) issueLogin(w http.ResponseWriter, r *http.Request, u auth.User,
 		var raw, csrf string
 		u, raw, csrf, e = s.auth.Login(r.Context(), username[0], password)
 		if e != nil {
+			s.recordAudit(r, auditInput{action: audit.Login, resourceType: audit.Auth, resourceName: strings.TrimSpace(username[0]), result: audit.Failure, errorCode: "invalid_credentials", errorSummary: "invalid credentials"})
 			s.log.Warn("failed login", "source_ip", r.RemoteAddr)
 			unauthorized(w)
 			return
 		}
 		s.setSessionAndRespond(r.Context(), w, u, raw, csrf)
+		s.recordAudit(r, auditInput{action: audit.Login, resourceType: audit.Auth, result: audit.Success, actor: &u})
 		return
 	}
 	raw, csrf, e := s.auth.CreateSession(r.Context(), u)
@@ -175,6 +287,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		internal(w)
 		return
 	}
+	s.recordAudit(r, auditInput{action: audit.Logout, resourceType: audit.Auth, result: audit.Success, actor: &u})
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, Secure: s.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 	s.log.Info("user logged out", "user_id", u.ID)
 	w.WriteHeader(http.StatusNoContent)
@@ -193,8 +306,8 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		internal(w)
 		return
 	}
-	counts := map[string]int{"total": len(records), "running": 0, "stopped": 0, "unhealthy": 0}
-	counts["total"] = 0
+	visible := []dashboard.Server{}
+	visiblePorts := []dashboard.Port{}
 	for _, record := range records {
 		allowed, err := s.allowed(r.Context(), u, "Server.View", rbac.Scope{Type: "server", ID: &record.Server.ID})
 		if err != nil {
@@ -204,18 +317,45 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		if !allowed {
 			continue
 		}
-		counts["total"]++
-		if record.Runtime.CurrentState == servers.StateRunning {
-			counts["running"]++
+		monitorAllowed, err := s.allowed(r.Context(), u, "Monitoring.View", rbac.Scope{Type: "server", ID: &record.Server.ID})
+		if err != nil {
+			internal(w)
+			return
 		}
-		if record.Runtime.CurrentState == servers.StateStopped {
-			counts["stopped"]++
+		snap := monitoring.Snapshot{}
+		if monitorAllowed {
+			snap, _ = s.servers.MonitoringSnapshot(r.Context(), record.Server.ID)
+		}
+		visible = append(visible, dashboard.Server{State: record.Runtime.CurrentState, Monitoring: snap})
+		portsAllowed, err := s.allowed(r.Context(), u, "Ports.View", rbac.Scope{Type: "server", ID: &record.Server.ID})
+		if err != nil {
+			internal(w)
+			return
+		}
+		if portsAllowed {
+			ps, _ := s.ports.List(r.Context(), record.Server.ID)
+			for _, p := range ps {
+				visiblePorts = append(visiblePorts, dashboard.Port{Protocol: p.Protocol})
+			}
 		}
 	}
-	jsonOut(w, http.StatusOK, map[string]any{"user": u, "servers": counts})
+	summary := dashboard.Aggregate(visible, visiblePorts)
+	auditAvailable, err := s.allowed(r.Context(), u, "Audit.View", rbac.Scope{Type: "global"})
+	if err != nil {
+		internal(w)
+		return
+	}
+	response := map[string]any{"user": u, "servers": summary.Servers, "monitoring": summary.Monitoring, "ports": summary.Ports, "audit": map[string]any{"available": auditAvailable, "recent": []audit.Event{}}}
+	if auditAvailable {
+		events, e := s.audit.List(r.Context(), audit.Filter{Limit: 10})
+		if e == nil {
+			response["audit"] = map[string]any{"available": true, "recent": events}
+		}
+	}
+	jsonOut(w, http.StatusOK, response)
 }
 
-var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Monitoring.View", "Audit.View"}
+var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Monitoring.View", "Audit.View"}
 
 func (s *Server) allowed(ctx context.Context, u auth.User, permission string, scope rbac.Scope) (bool, error) {
 	return s.rbac.Allowed(ctx, u.ID, permission, scope)
@@ -329,6 +469,12 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	de := json.NewDecoder(r.Body)
 	de.DisallowUnknownFields()
 	if de.Decode(v) != nil {
+		bad(w, "invalid request body")
+		return false
+	}
+	// A request body represents exactly one JSON document. Without this check,
+	// a valid prefix followed by a second payload would be silently accepted.
+	if de.Decode(&struct{}{}) != io.EOF {
 		bad(w, "invalid request body")
 		return false
 	}

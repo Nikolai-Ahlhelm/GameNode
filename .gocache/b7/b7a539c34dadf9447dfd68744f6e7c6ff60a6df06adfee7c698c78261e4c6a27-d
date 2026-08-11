@@ -1,0 +1,3 @@
+./server.go
+./console_windows_test.go
+./server_test.go

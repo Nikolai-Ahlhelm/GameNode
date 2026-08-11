@@ -13,3 +13,8 @@ test('console view does not permit input', () => {
   assert.equal(canSendConsole(['Console.View']), false);
   assert.equal(canSendConsole(['Console.View', 'Console.Send']), true);
 });
+
+test('settings manage does not imply settings view', () => {
+  assert.equal(hasCapability(['Settings.Manage'], 'Settings.View'), false);
+  assert.equal(hasCapability(['Settings.View'], 'Settings.View'), true);
+});

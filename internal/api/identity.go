@@ -2,12 +2,33 @@ package api
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 
+	"gamenode/internal/audit"
+	"gamenode/internal/auth"
 	"gamenode/internal/identity"
 )
+
+func (s *Server) recordIdentityAudit(r *http.Request, actor auth.User, action, resourceType, id, name, result string, metadata map[string]any, err error) {
+	var resourceID *string
+	if id != "" {
+		resourceID = &id
+	}
+	in := auditInput{action: action, resourceType: resourceType, resourceID: resourceID, resourceName: name, result: result, actor: &actor}
+	if metadata != nil && result == audit.Success {
+		in.metadata, _ = json.Marshal(metadata)
+	}
+	if err != nil {
+		in.errorCode, in.errorSummary = auditFailure(err)
+		if errors.Is(err, identity.ErrLastActiveAdmin) {
+			in.errorCode, in.errorSummary = "last_active_admin", "last active administrator protection"
+		}
+	}
+	s.recordAudit(r, in)
+}
 
 func (s *Server) usersHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -36,9 +57,11 @@ func (s *Server) usersHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		user, err := s.identity.CreateUser(r.Context(), in)
 		if err != nil {
+			s.recordIdentityAudit(r, actor, audit.UserCreate, audit.User, "", "", audit.Failure, nil, err)
 			identityError(w, err)
 			return
 		}
+		s.recordIdentityAudit(r, actor, audit.UserCreate, audit.User, user.ID, user.Username, audit.Success, map[string]any{"enabled": user.Enabled}, nil)
 		s.log.Info("user created", "user_id", user.ID)
 		jsonOut(w, http.StatusCreated, map[string]any{"user": user})
 	default:
@@ -62,7 +85,8 @@ func (s *Server) userHandler(w http.ResponseWriter, r *http.Request) {
 			method(w)
 			return
 		}
-		if _, _, ok := s.requireGlobalPermission(w, r, "Users.Manage", true); !ok {
+		actor, _, ok := s.requireGlobalPermission(w, r, "Users.Manage", true)
+		if !ok {
 			return
 		}
 		var in struct {
@@ -72,9 +96,15 @@ func (s *Server) userHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.identity.ResetPassword(r.Context(), id, in.Password); err != nil {
+			s.recordIdentityAudit(r, actor, audit.UserPasswordReset, audit.User, id, "", audit.Failure, nil, err)
 			identityError(w, err)
 			return
 		}
+		name := ""
+		if target, err := s.identity.GetUser(r.Context(), id); err == nil {
+			name = target.Username
+		}
+		s.recordIdentityAudit(r, actor, audit.UserPasswordReset, audit.User, id, name, audit.Success, map[string]any{"sessions_invalidated": true}, nil)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -103,24 +133,49 @@ func (s *Server) userHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if in.IsAdmin != nil && !actor.IsAdmin {
+			s.recordIdentityAudit(r, actor, audit.UserUpdate, audit.User, id, "", audit.Failure, nil, errors.New("administrator flag change denied"))
 			forbidden(w, "administrator access required to change administrator flag")
 			return
 		}
 		user, err := s.identity.UpdateUser(r.Context(), actor.ID, id, in)
 		if err != nil {
+			action := audit.UserUpdate
+			if in.Enabled != nil {
+				if *in.Enabled {
+					action = audit.UserEnable
+				} else {
+					action = audit.UserDisable
+				}
+			}
+			s.recordIdentityAudit(r, actor, action, audit.User, id, "", audit.Failure, nil, err)
 			identityError(w, err)
 			return
 		}
+		action := audit.UserUpdate
+		if in.Enabled != nil {
+			if *in.Enabled {
+				action = audit.UserEnable
+			} else {
+				action = audit.UserDisable
+			}
+		}
+		s.recordIdentityAudit(r, actor, action, audit.User, user.ID, user.Username, audit.Success, nil, nil)
 		jsonOut(w, http.StatusOK, map[string]any{"user": user})
 	case http.MethodDelete:
 		actor, _, ok := s.requireGlobalPermission(w, r, "Users.Manage", true)
 		if !ok {
 			return
 		}
+		name := ""
+		if target, err := s.identity.GetUser(r.Context(), id); err == nil {
+			name = target.Username
+		}
 		if err := s.identity.DeleteUser(r.Context(), actor.ID, id); err != nil {
+			s.recordIdentityAudit(r, actor, audit.UserDelete, audit.User, id, name, audit.Failure, nil, err)
 			identityError(w, err)
 			return
 		}
+		s.recordIdentityAudit(r, actor, audit.UserDelete, audit.User, id, name, audit.Success, map[string]any{"sessions_invalidated": true}, nil)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		method(w)
@@ -139,7 +194,8 @@ func (s *Server) groupsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonOut(w, http.StatusOK, map[string]any{"groups": groups})
 	case http.MethodPost:
-		if _, _, ok := s.requireGlobalPermission(w, r, "Groups.Manage", true); !ok {
+		actor, _, ok := s.requireGlobalPermission(w, r, "Groups.Manage", true)
+		if !ok {
 			return
 		}
 		var in identity.CreateGroupInput
@@ -148,9 +204,11 @@ func (s *Server) groupsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		group, err := s.identity.CreateGroup(r.Context(), in)
 		if err != nil {
+			s.recordIdentityAudit(r, actor, audit.GroupCreate, audit.Group, "", "", audit.Failure, nil, err)
 			identityError(w, err)
 			return
 		}
+		s.recordIdentityAudit(r, actor, audit.GroupCreate, audit.Group, group.ID, group.Name, audit.Success, nil, nil)
 		jsonOut(w, http.StatusCreated, map[string]any{"group": group})
 	default:
 		method(w)
@@ -181,7 +239,8 @@ func (s *Server) groupHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			jsonOut(w, http.StatusOK, map[string]any{"users": users})
 		case http.MethodPost:
-			if _, _, ok := s.requireGlobalPermission(w, r, "Groups.Manage", true); !ok {
+			actor, _, ok := s.requireGlobalPermission(w, r, "Groups.Manage", true)
+			if !ok {
 				return
 			}
 			var in struct {
@@ -191,9 +250,19 @@ func (s *Server) groupHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if err := s.identity.AddMember(r.Context(), id, in.UserID); err != nil {
+				s.recordIdentityAudit(r, actor, audit.GroupMemberAdd, audit.Group, id, "", audit.Failure, nil, err)
 				identityError(w, err)
 				return
 			}
+			metadata := map[string]any{"user_id": in.UserID}
+			if target, err := s.identity.GetUser(r.Context(), in.UserID); err == nil {
+				metadata["username"] = target.Username
+			}
+			name := ""
+			if group, err := s.identity.GetGroup(r.Context(), id); err == nil {
+				name = group.Name
+			}
+			s.recordIdentityAudit(r, actor, audit.GroupMemberAdd, audit.Group, id, name, audit.Success, metadata, nil)
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			method(w)
@@ -205,13 +274,16 @@ func (s *Server) groupHandler(w http.ResponseWriter, r *http.Request) {
 			method(w)
 			return
 		}
-		if _, _, ok := s.requireGlobalPermission(w, r, "Groups.Manage", true); !ok {
+		actor, _, ok := s.requireGlobalPermission(w, r, "Groups.Manage", true)
+		if !ok {
 			return
 		}
 		if err := s.identity.RemoveMember(r.Context(), id, parts[2]); err != nil {
+			s.recordIdentityAudit(r, actor, audit.GroupMemberRemove, audit.Group, id, "", audit.Failure, nil, err)
 			identityError(w, err)
 			return
 		}
+		s.recordIdentityAudit(r, actor, audit.GroupMemberRemove, audit.Group, id, "", audit.Success, map[string]any{"user_id": parts[2]}, nil)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -231,7 +303,8 @@ func (s *Server) groupHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonOut(w, http.StatusOK, map[string]any{"group": g})
 	case http.MethodPatch:
-		if _, _, ok := s.requireGlobalPermission(w, r, "Groups.Manage", true); !ok {
+		actor, _, ok := s.requireGlobalPermission(w, r, "Groups.Manage", true)
+		if !ok {
 			return
 		}
 		var in identity.UpdateGroupInput
@@ -240,18 +313,27 @@ func (s *Server) groupHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		g, err := s.identity.UpdateGroup(r.Context(), id, in)
 		if err != nil {
+			s.recordIdentityAudit(r, actor, audit.GroupUpdate, audit.Group, id, "", audit.Failure, nil, err)
 			identityError(w, err)
 			return
 		}
+		s.recordIdentityAudit(r, actor, audit.GroupUpdate, audit.Group, g.ID, g.Name, audit.Success, nil, nil)
 		jsonOut(w, http.StatusOK, map[string]any{"group": g})
 	case http.MethodDelete:
-		if _, _, ok := s.requireGlobalPermission(w, r, "Groups.Manage", true); !ok {
+		actor, _, ok := s.requireGlobalPermission(w, r, "Groups.Manage", true)
+		if !ok {
 			return
 		}
+		name := ""
+		if group, err := s.identity.GetGroup(r.Context(), id); err == nil {
+			name = group.Name
+		}
 		if err := s.identity.DeleteGroup(r.Context(), id); err != nil {
+			s.recordIdentityAudit(r, actor, audit.GroupDelete, audit.Group, id, name, audit.Failure, nil, err)
 			identityError(w, err)
 			return
 		}
+		s.recordIdentityAudit(r, actor, audit.GroupDelete, audit.Group, id, name, audit.Success, nil, nil)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		method(w)

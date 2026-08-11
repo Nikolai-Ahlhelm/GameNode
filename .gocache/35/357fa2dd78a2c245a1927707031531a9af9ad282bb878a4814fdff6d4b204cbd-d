@@ -1,0 +1,13 @@
+./api.go
+./audit.go
+./console.go
+./diagnostics.go
+./identity.go
+./monitoring.go
+./ports.go
+./rbac.go
+./servers.go
+./settings.go
+./support.go
+./capabilities_test.go
+./console_test.go

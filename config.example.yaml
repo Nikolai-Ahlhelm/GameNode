@@ -11,3 +11,6 @@ logging:
 filesystem:
   # Maximum bytes accepted for one multipart upload.
   max_upload_bytes: 67108864
+monitoring:
+  sample_interval_seconds: 5
+  history_limit: 300

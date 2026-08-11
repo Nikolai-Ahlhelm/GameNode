@@ -1,0 +1,486 @@
+# test log
+getenv PATHEXT
+getenv NoDefaultCurrentDirectoryInExePath
+stat ping.exe
+stat ping.exe.com
+stat ping.exe.exe
+stat ping.exe.bat
+stat ping.exe.cmd
+stat ping.exe.vbs
+stat ping.exe.vbe
+stat ping.exe.js
+stat ping.exe.jse
+stat ping.exe.wsf
+stat ping.exe.wsh
+stat ping.exe.msc
+stat ping.exe.py
+stat ping.exe.pyw
+stat ping.exe.cpl
+getenv path
+stat C:\Program Files\Go\bin\ping.exe
+stat C:\Program Files\Go\bin\ping.exe.com
+stat C:\Program Files\Go\bin\ping.exe.exe
+stat C:\Program Files\Go\bin\ping.exe.bat
+stat C:\Program Files\Go\bin\ping.exe.cmd
+stat C:\Program Files\Go\bin\ping.exe.vbs
+stat C:\Program Files\Go\bin\ping.exe.vbe
+stat C:\Program Files\Go\bin\ping.exe.js
+stat C:\Program Files\Go\bin\ping.exe.jse
+stat C:\Program Files\Go\bin\ping.exe.wsf
+stat C:\Program Files\Go\bin\ping.exe.wsh
+stat C:\Program Files\Go\bin\ping.exe.msc
+stat C:\Program Files\Go\bin\ping.exe.py
+stat C:\Program Files\Go\bin\ping.exe.pyw
+stat C:\Program Files\Go\bin\ping.exe.cpl
+stat C:\Program Files\PowerShell\7\ping.exe
+stat C:\Program Files\PowerShell\7\ping.exe.com
+stat C:\Program Files\PowerShell\7\ping.exe.exe
+stat C:\Program Files\PowerShell\7\ping.exe.bat
+stat C:\Program Files\PowerShell\7\ping.exe.cmd
+stat C:\Program Files\PowerShell\7\ping.exe.vbs
+stat C:\Program Files\PowerShell\7\ping.exe.vbe
+stat C:\Program Files\PowerShell\7\ping.exe.js
+stat C:\Program Files\PowerShell\7\ping.exe.jse
+stat C:\Program Files\PowerShell\7\ping.exe.wsf
+stat C:\Program Files\PowerShell\7\ping.exe.wsh
+stat C:\Program Files\PowerShell\7\ping.exe.msc
+stat C:\Program Files\PowerShell\7\ping.exe.py
+stat C:\Program Files\PowerShell\7\ping.exe.pyw
+stat C:\Program Files\PowerShell\7\ping.exe.cpl
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.com
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.exe
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.bat
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.cmd
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.vbs
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.vbe
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.js
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.jse
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.wsf
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.wsh
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.msc
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.py
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.pyw
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.cpl
+stat C:\Python314\Scripts\ping.exe
+stat C:\Python314\Scripts\ping.exe.com
+stat C:\Python314\Scripts\ping.exe.exe
+stat C:\Python314\Scripts\ping.exe.bat
+stat C:\Python314\Scripts\ping.exe.cmd
+stat C:\Python314\Scripts\ping.exe.vbs
+stat C:\Python314\Scripts\ping.exe.vbe
+stat C:\Python314\Scripts\ping.exe.js
+stat C:\Python314\Scripts\ping.exe.jse
+stat C:\Python314\Scripts\ping.exe.wsf
+stat C:\Python314\Scripts\ping.exe.wsh
+stat C:\Python314\Scripts\ping.exe.msc
+stat C:\Python314\Scripts\ping.exe.py
+stat C:\Python314\Scripts\ping.exe.pyw
+stat C:\Python314\Scripts\ping.exe.cpl
+stat C:\Python314\ping.exe
+stat C:\Python314\ping.exe.com
+stat C:\Python314\ping.exe.exe
+stat C:\Python314\ping.exe.bat
+stat C:\Python314\ping.exe.cmd
+stat C:\Python314\ping.exe.vbs
+stat C:\Python314\ping.exe.vbe
+stat C:\Python314\ping.exe.js
+stat C:\Python314\ping.exe.jse
+stat C:\Python314\ping.exe.wsf
+stat C:\Python314\ping.exe.wsh
+stat C:\Python314\ping.exe.msc
+stat C:\Python314\ping.exe.py
+stat C:\Python314\ping.exe.pyw
+stat C:\Python314\ping.exe.cpl
+stat C:\WINDOWS\system32\ping.exe
+getenv PATHEXT
+open C:\WINDOWS\system32\ping.exe
+stat C:\WINDOWS\system32
+getenv PATHEXT
+getenv NoDefaultCurrentDirectoryInExePath
+stat taskkill.exe
+stat taskkill.exe.com
+stat taskkill.exe.exe
+stat taskkill.exe.bat
+stat taskkill.exe.cmd
+stat taskkill.exe.vbs
+stat taskkill.exe.vbe
+stat taskkill.exe.js
+stat taskkill.exe.jse
+stat taskkill.exe.wsf
+stat taskkill.exe.wsh
+stat taskkill.exe.msc
+stat taskkill.exe.py
+stat taskkill.exe.pyw
+stat taskkill.exe.cpl
+getenv path
+stat C:\Program Files\Go\bin\taskkill.exe
+stat C:\Program Files\Go\bin\taskkill.exe.com
+stat C:\Program Files\Go\bin\taskkill.exe.exe
+stat C:\Program Files\Go\bin\taskkill.exe.bat
+stat C:\Program Files\Go\bin\taskkill.exe.cmd
+stat C:\Program Files\Go\bin\taskkill.exe.vbs
+stat C:\Program Files\Go\bin\taskkill.exe.vbe
+stat C:\Program Files\Go\bin\taskkill.exe.js
+stat C:\Program Files\Go\bin\taskkill.exe.jse
+stat C:\Program Files\Go\bin\taskkill.exe.wsf
+stat C:\Program Files\Go\bin\taskkill.exe.wsh
+stat C:\Program Files\Go\bin\taskkill.exe.msc
+stat C:\Program Files\Go\bin\taskkill.exe.py
+stat C:\Program Files\Go\bin\taskkill.exe.pyw
+stat C:\Program Files\Go\bin\taskkill.exe.cpl
+stat C:\Program Files\PowerShell\7\taskkill.exe
+stat C:\Program Files\PowerShell\7\taskkill.exe.com
+stat C:\Program Files\PowerShell\7\taskkill.exe.exe
+stat C:\Program Files\PowerShell\7\taskkill.exe.bat
+stat C:\Program Files\PowerShell\7\taskkill.exe.cmd
+stat C:\Program Files\PowerShell\7\taskkill.exe.vbs
+stat C:\Program Files\PowerShell\7\taskkill.exe.vbe
+stat C:\Program Files\PowerShell\7\taskkill.exe.js
+stat C:\Program Files\PowerShell\7\taskkill.exe.jse
+stat C:\Program Files\PowerShell\7\taskkill.exe.wsf
+stat C:\Program Files\PowerShell\7\taskkill.exe.wsh
+stat C:\Program Files\PowerShell\7\taskkill.exe.msc
+stat C:\Program Files\PowerShell\7\taskkill.exe.py
+stat C:\Program Files\PowerShell\7\taskkill.exe.pyw
+stat C:\Program Files\PowerShell\7\taskkill.exe.cpl
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.com
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.exe
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.bat
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.cmd
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.vbs
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.vbe
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.js
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.jse
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.wsf
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.wsh
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.msc
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.py
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.pyw
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.cpl
+stat C:\Python314\Scripts\taskkill.exe
+stat C:\Python314\Scripts\taskkill.exe.com
+stat C:\Python314\Scripts\taskkill.exe.exe
+stat C:\Python314\Scripts\taskkill.exe.bat
+stat C:\Python314\Scripts\taskkill.exe.cmd
+stat C:\Python314\Scripts\taskkill.exe.vbs
+stat C:\Python314\Scripts\taskkill.exe.vbe
+stat C:\Python314\Scripts\taskkill.exe.js
+stat C:\Python314\Scripts\taskkill.exe.jse
+stat C:\Python314\Scripts\taskkill.exe.wsf
+stat C:\Python314\Scripts\taskkill.exe.wsh
+stat C:\Python314\Scripts\taskkill.exe.msc
+stat C:\Python314\Scripts\taskkill.exe.py
+stat C:\Python314\Scripts\taskkill.exe.pyw
+stat C:\Python314\Scripts\taskkill.exe.cpl
+stat C:\Python314\taskkill.exe
+stat C:\Python314\taskkill.exe.com
+stat C:\Python314\taskkill.exe.exe
+stat C:\Python314\taskkill.exe.bat
+stat C:\Python314\taskkill.exe.cmd
+stat C:\Python314\taskkill.exe.vbs
+stat C:\Python314\taskkill.exe.vbe
+stat C:\Python314\taskkill.exe.js
+stat C:\Python314\taskkill.exe.jse
+stat C:\Python314\taskkill.exe.wsf
+stat C:\Python314\taskkill.exe.wsh
+stat C:\Python314\taskkill.exe.msc
+stat C:\Python314\taskkill.exe.py
+stat C:\Python314\taskkill.exe.pyw
+stat C:\Python314\taskkill.exe.cpl
+stat C:\WINDOWS\system32\taskkill.exe
+getenv PATHEXT
+open NUL
+open C:\WINDOWS\system32\taskkill.exe
+getenv PATHEXT
+getenv NoDefaultCurrentDirectoryInExePath
+stat ping.exe
+stat ping.exe.com
+stat ping.exe.exe
+stat ping.exe.bat
+stat ping.exe.cmd
+stat ping.exe.vbs
+stat ping.exe.vbe
+stat ping.exe.js
+stat ping.exe.jse
+stat ping.exe.wsf
+stat ping.exe.wsh
+stat ping.exe.msc
+stat ping.exe.py
+stat ping.exe.pyw
+stat ping.exe.cpl
+getenv path
+stat C:\Program Files\Go\bin\ping.exe
+stat C:\Program Files\Go\bin\ping.exe.com
+stat C:\Program Files\Go\bin\ping.exe.exe
+stat C:\Program Files\Go\bin\ping.exe.bat
+stat C:\Program Files\Go\bin\ping.exe.cmd
+stat C:\Program Files\Go\bin\ping.exe.vbs
+stat C:\Program Files\Go\bin\ping.exe.vbe
+stat C:\Program Files\Go\bin\ping.exe.js
+stat C:\Program Files\Go\bin\ping.exe.jse
+stat C:\Program Files\Go\bin\ping.exe.wsf
+stat C:\Program Files\Go\bin\ping.exe.wsh
+stat C:\Program Files\Go\bin\ping.exe.msc
+stat C:\Program Files\Go\bin\ping.exe.py
+stat C:\Program Files\Go\bin\ping.exe.pyw
+stat C:\Program Files\Go\bin\ping.exe.cpl
+stat C:\Program Files\PowerShell\7\ping.exe
+stat C:\Program Files\PowerShell\7\ping.exe.com
+stat C:\Program Files\PowerShell\7\ping.exe.exe
+stat C:\Program Files\PowerShell\7\ping.exe.bat
+stat C:\Program Files\PowerShell\7\ping.exe.cmd
+stat C:\Program Files\PowerShell\7\ping.exe.vbs
+stat C:\Program Files\PowerShell\7\ping.exe.vbe
+stat C:\Program Files\PowerShell\7\ping.exe.js
+stat C:\Program Files\PowerShell\7\ping.exe.jse
+stat C:\Program Files\PowerShell\7\ping.exe.wsf
+stat C:\Program Files\PowerShell\7\ping.exe.wsh
+stat C:\Program Files\PowerShell\7\ping.exe.msc
+stat C:\Program Files\PowerShell\7\ping.exe.py
+stat C:\Program Files\PowerShell\7\ping.exe.pyw
+stat C:\Program Files\PowerShell\7\ping.exe.cpl
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.com
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.exe
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.bat
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.cmd
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.vbs
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.vbe
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.js
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.jse
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.wsf
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.wsh
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.msc
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.py
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.pyw
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\ping.exe.cpl
+stat C:\Python314\Scripts\ping.exe
+stat C:\Python314\Scripts\ping.exe.com
+stat C:\Python314\Scripts\ping.exe.exe
+stat C:\Python314\Scripts\ping.exe.bat
+stat C:\Python314\Scripts\ping.exe.cmd
+stat C:\Python314\Scripts\ping.exe.vbs
+stat C:\Python314\Scripts\ping.exe.vbe
+stat C:\Python314\Scripts\ping.exe.js
+stat C:\Python314\Scripts\ping.exe.jse
+stat C:\Python314\Scripts\ping.exe.wsf
+stat C:\Python314\Scripts\ping.exe.wsh
+stat C:\Python314\Scripts\ping.exe.msc
+stat C:\Python314\Scripts\ping.exe.py
+stat C:\Python314\Scripts\ping.exe.pyw
+stat C:\Python314\Scripts\ping.exe.cpl
+stat C:\Python314\ping.exe
+stat C:\Python314\ping.exe.com
+stat C:\Python314\ping.exe.exe
+stat C:\Python314\ping.exe.bat
+stat C:\Python314\ping.exe.cmd
+stat C:\Python314\ping.exe.vbs
+stat C:\Python314\ping.exe.vbe
+stat C:\Python314\ping.exe.js
+stat C:\Python314\ping.exe.jse
+stat C:\Python314\ping.exe.wsf
+stat C:\Python314\ping.exe.wsh
+stat C:\Python314\ping.exe.msc
+stat C:\Python314\ping.exe.py
+stat C:\Python314\ping.exe.pyw
+stat C:\Python314\ping.exe.cpl
+stat C:\WINDOWS\system32\ping.exe
+getenv PATHEXT
+open C:\WINDOWS\system32\ping.exe
+stat C:\WINDOWS\system32
+getenv PATHEXT
+getenv NoDefaultCurrentDirectoryInExePath
+stat taskkill.exe
+stat taskkill.exe.com
+stat taskkill.exe.exe
+stat taskkill.exe.bat
+stat taskkill.exe.cmd
+stat taskkill.exe.vbs
+stat taskkill.exe.vbe
+stat taskkill.exe.js
+stat taskkill.exe.jse
+stat taskkill.exe.wsf
+stat taskkill.exe.wsh
+stat taskkill.exe.msc
+stat taskkill.exe.py
+stat taskkill.exe.pyw
+stat taskkill.exe.cpl
+getenv path
+stat C:\Program Files\Go\bin\taskkill.exe
+stat C:\Program Files\Go\bin\taskkill.exe.com
+stat C:\Program Files\Go\bin\taskkill.exe.exe
+stat C:\Program Files\Go\bin\taskkill.exe.bat
+stat C:\Program Files\Go\bin\taskkill.exe.cmd
+stat C:\Program Files\Go\bin\taskkill.exe.vbs
+stat C:\Program Files\Go\bin\taskkill.exe.vbe
+stat C:\Program Files\Go\bin\taskkill.exe.js
+stat C:\Program Files\Go\bin\taskkill.exe.jse
+stat C:\Program Files\Go\bin\taskkill.exe.wsf
+stat C:\Program Files\Go\bin\taskkill.exe.wsh
+stat C:\Program Files\Go\bin\taskkill.exe.msc
+stat C:\Program Files\Go\bin\taskkill.exe.py
+stat C:\Program Files\Go\bin\taskkill.exe.pyw
+stat C:\Program Files\Go\bin\taskkill.exe.cpl
+stat C:\Program Files\PowerShell\7\taskkill.exe
+stat C:\Program Files\PowerShell\7\taskkill.exe.com
+stat C:\Program Files\PowerShell\7\taskkill.exe.exe
+stat C:\Program Files\PowerShell\7\taskkill.exe.bat
+stat C:\Program Files\PowerShell\7\taskkill.exe.cmd
+stat C:\Program Files\PowerShell\7\taskkill.exe.vbs
+stat C:\Program Files\PowerShell\7\taskkill.exe.vbe
+stat C:\Program Files\PowerShell\7\taskkill.exe.js
+stat C:\Program Files\PowerShell\7\taskkill.exe.jse
+stat C:\Program Files\PowerShell\7\taskkill.exe.wsf
+stat C:\Program Files\PowerShell\7\taskkill.exe.wsh
+stat C:\Program Files\PowerShell\7\taskkill.exe.msc
+stat C:\Program Files\PowerShell\7\taskkill.exe.py
+stat C:\Program Files\PowerShell\7\taskkill.exe.pyw
+stat C:\Program Files\PowerShell\7\taskkill.exe.cpl
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.com
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.exe
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.bat
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.cmd
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.vbs
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.vbe
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.js
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.jse
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.wsf
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.wsh
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.msc
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.py
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.pyw
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.cpl
+stat C:\Python314\Scripts\taskkill.exe
+stat C:\Python314\Scripts\taskkill.exe.com
+stat C:\Python314\Scripts\taskkill.exe.exe
+stat C:\Python314\Scripts\taskkill.exe.bat
+stat C:\Python314\Scripts\taskkill.exe.cmd
+stat C:\Python314\Scripts\taskkill.exe.vbs
+stat C:\Python314\Scripts\taskkill.exe.vbe
+stat C:\Python314\Scripts\taskkill.exe.js
+stat C:\Python314\Scripts\taskkill.exe.jse
+stat C:\Python314\Scripts\taskkill.exe.wsf
+stat C:\Python314\Scripts\taskkill.exe.wsh
+stat C:\Python314\Scripts\taskkill.exe.msc
+stat C:\Python314\Scripts\taskkill.exe.py
+stat C:\Python314\Scripts\taskkill.exe.pyw
+stat C:\Python314\Scripts\taskkill.exe.cpl
+stat C:\Python314\taskkill.exe
+stat C:\Python314\taskkill.exe.com
+stat C:\Python314\taskkill.exe.exe
+stat C:\Python314\taskkill.exe.bat
+stat C:\Python314\taskkill.exe.cmd
+stat C:\Python314\taskkill.exe.vbs
+stat C:\Python314\taskkill.exe.vbe
+stat C:\Python314\taskkill.exe.js
+stat C:\Python314\taskkill.exe.jse
+stat C:\Python314\taskkill.exe.wsf
+stat C:\Python314\taskkill.exe.wsh
+stat C:\Python314\taskkill.exe.msc
+stat C:\Python314\taskkill.exe.py
+stat C:\Python314\taskkill.exe.pyw
+stat C:\Python314\taskkill.exe.cpl
+stat C:\WINDOWS\system32\taskkill.exe
+getenv PATHEXT
+open NUL
+open C:\WINDOWS\system32\taskkill.exe
+getenv PATHEXT
+getenv NoDefaultCurrentDirectoryInExePath
+stat taskkill.exe
+stat taskkill.exe.com
+stat taskkill.exe.exe
+stat taskkill.exe.bat
+stat taskkill.exe.cmd
+stat taskkill.exe.vbs
+stat taskkill.exe.vbe
+stat taskkill.exe.js
+stat taskkill.exe.jse
+stat taskkill.exe.wsf
+stat taskkill.exe.wsh
+stat taskkill.exe.msc
+stat taskkill.exe.py
+stat taskkill.exe.pyw
+stat taskkill.exe.cpl
+getenv path
+stat C:\Program Files\Go\bin\taskkill.exe
+stat C:\Program Files\Go\bin\taskkill.exe.com
+stat C:\Program Files\Go\bin\taskkill.exe.exe
+stat C:\Program Files\Go\bin\taskkill.exe.bat
+stat C:\Program Files\Go\bin\taskkill.exe.cmd
+stat C:\Program Files\Go\bin\taskkill.exe.vbs
+stat C:\Program Files\Go\bin\taskkill.exe.vbe
+stat C:\Program Files\Go\bin\taskkill.exe.js
+stat C:\Program Files\Go\bin\taskkill.exe.jse
+stat C:\Program Files\Go\bin\taskkill.exe.wsf
+stat C:\Program Files\Go\bin\taskkill.exe.wsh
+stat C:\Program Files\Go\bin\taskkill.exe.msc
+stat C:\Program Files\Go\bin\taskkill.exe.py
+stat C:\Program Files\Go\bin\taskkill.exe.pyw
+stat C:\Program Files\Go\bin\taskkill.exe.cpl
+stat C:\Program Files\PowerShell\7\taskkill.exe
+stat C:\Program Files\PowerShell\7\taskkill.exe.com
+stat C:\Program Files\PowerShell\7\taskkill.exe.exe
+stat C:\Program Files\PowerShell\7\taskkill.exe.bat
+stat C:\Program Files\PowerShell\7\taskkill.exe.cmd
+stat C:\Program Files\PowerShell\7\taskkill.exe.vbs
+stat C:\Program Files\PowerShell\7\taskkill.exe.vbe
+stat C:\Program Files\PowerShell\7\taskkill.exe.js
+stat C:\Program Files\PowerShell\7\taskkill.exe.jse
+stat C:\Program Files\PowerShell\7\taskkill.exe.wsf
+stat C:\Program Files\PowerShell\7\taskkill.exe.wsh
+stat C:\Program Files\PowerShell\7\taskkill.exe.msc
+stat C:\Program Files\PowerShell\7\taskkill.exe.py
+stat C:\Program Files\PowerShell\7\taskkill.exe.pyw
+stat C:\Program Files\PowerShell\7\taskkill.exe.cpl
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.com
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.exe
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.bat
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.cmd
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.vbs
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.vbe
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.js
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.jse
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.wsf
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.wsh
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.msc
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.py
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.pyw
+stat C:\Users\ahlhelmn\.codex\tmp\arg0\codex-arg0pvd2Cj\taskkill.exe.cpl
+stat C:\Python314\Scripts\taskkill.exe
+stat C:\Python314\Scripts\taskkill.exe.com
+stat C:\Python314\Scripts\taskkill.exe.exe
+stat C:\Python314\Scripts\taskkill.exe.bat
+stat C:\Python314\Scripts\taskkill.exe.cmd
+stat C:\Python314\Scripts\taskkill.exe.vbs
+stat C:\Python314\Scripts\taskkill.exe.vbe
+stat C:\Python314\Scripts\taskkill.exe.js
+stat C:\Python314\Scripts\taskkill.exe.jse
+stat C:\Python314\Scripts\taskkill.exe.wsf
+stat C:\Python314\Scripts\taskkill.exe.wsh
+stat C:\Python314\Scripts\taskkill.exe.msc
+stat C:\Python314\Scripts\taskkill.exe.py
+stat C:\Python314\Scripts\taskkill.exe.pyw
+stat C:\Python314\Scripts\taskkill.exe.cpl
+stat C:\Python314\taskkill.exe
+stat C:\Python314\taskkill.exe.com
+stat C:\Python314\taskkill.exe.exe
+stat C:\Python314\taskkill.exe.bat
+stat C:\Python314\taskkill.exe.cmd
+stat C:\Python314\taskkill.exe.vbs
+stat C:\Python314\taskkill.exe.vbe
+stat C:\Python314\taskkill.exe.js
+stat C:\Python314\taskkill.exe.jse
+stat C:\Python314\taskkill.exe.wsf
+stat C:\Python314\taskkill.exe.wsh
+stat C:\Python314\taskkill.exe.msc
+stat C:\Python314\taskkill.exe.py
+stat C:\Python314\taskkill.exe.pyw
+stat C:\Python314\taskkill.exe.cpl
+stat C:\WINDOWS\system32\taskkill.exe
+getenv PATHEXT
+open NUL
+open C:\WINDOWS\system32\taskkill.exe

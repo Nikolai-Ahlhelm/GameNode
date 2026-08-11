@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"gamenode"
 	"gamenode/internal/api"
@@ -17,9 +18,12 @@ import (
 	"gamenode/internal/config"
 	"gamenode/internal/console"
 	"gamenode/internal/database"
+	"gamenode/internal/diagnostics"
 	"gamenode/internal/filesystem"
+	"gamenode/internal/monitoring"
 	"gamenode/internal/runtime"
 	"gamenode/internal/servers"
+	"gamenode/internal/settings"
 )
 
 //go:embed webassets
@@ -59,6 +63,12 @@ func main() {
 		log.Error("migration failed", "error", err.Error())
 		os.Exit(1)
 	}
+	settingService := settings.New(db, settings.Defaults{MonitoringSampleIntervalSeconds: cfg.Monitoring.SampleIntervalSeconds, MonitoringHistoryLimit: cfg.Monitoring.HistoryLimit})
+	currentSettings, err := settingService.Get(context.Background())
+	if err != nil {
+		log.Error("load persisted settings failed", "error", err.Error())
+		os.Exit(1)
+	}
 	assets, err := fs.Sub(webAssets, "webassets")
 	if err != nil {
 		log.Error("embedded frontend unavailable", "error", err.Error())
@@ -66,12 +76,13 @@ func main() {
 	}
 	static := spaHandler(assets)
 	secure := cfg.Server.TLSCert != ""
-	serverService := servers.NewService(servers.NewStore(db), runtime.NewNative(), console.NewManager())
+	serverService := servers.NewServiceWithMonitoring(servers.NewStore(db), runtime.NewNative(), console.NewManager(), monitoring.Options{Interval: time.Duration(currentSettings.Monitoring.SampleIntervalSeconds) * time.Second, HistoryLimit: currentSettings.Monitoring.HistoryLimit})
 	if err = serverService.Rediscover(context.Background()); err != nil {
 		log.Error("server rediscovery failed", "error", err.Error())
 	}
 	files := filesystem.New(filesystem.Options{MaxUploadBytes: cfg.Filesystem.MaxUploadBytes})
-	handler := api.New(auth.New(db), serverService, log, secure, api.Options{Filesystem: files}).Handler(static)
+	diagnosticService := diagnostics.New(db, settingService, diagnostics.MonitoringEffective{SampleIntervalSeconds: currentSettings.Monitoring.SampleIntervalSeconds, HistoryLimit: currentSettings.Monitoring.HistoryLimit}, time.Now().UTC())
+	handler := api.New(auth.New(db), serverService, log, secure, api.Options{Filesystem: files, Settings: settingService, Diagnostics: diagnosticService}).Handler(static)
 	server := &http.Server{Addr: cfg.Server.Listen, Handler: handler, ReadHeaderTimeout: 0, ReadTimeout: 15e9, WriteTimeout: 15e9, IdleTimeout: 60e9}
 	log.Info("GameNode starting", "listen", cfg.Server.Listen, "tls", secure)
 	if secure {

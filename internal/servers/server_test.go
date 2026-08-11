@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,22 +17,25 @@ import (
 	"gamenode"
 	"gamenode/internal/console"
 	"gamenode/internal/database"
+	"gamenode/internal/ports"
 	"gamenode/internal/runtime"
 )
 
 type fakeRuntime struct {
-	mu        sync.Mutex
-	exits     chan runtime.ExitResult
-	options   runtime.StartOptions
-	start     func(runtime.StartOptions) error
-	stop      func() error
-	kill      func() error
-	status    runtime.Status
-	statusErr error
-	useStatus bool
-	starts    int
-	stops     int
-	kills     int
+	mu         sync.Mutex
+	exits      chan runtime.ExitResult
+	options    runtime.StartOptions
+	start      func(runtime.StartOptions) error
+	stop       func() error
+	kill       func() error
+	status     runtime.Status
+	statusErr  error
+	metrics    runtime.Metrics
+	metricsErr error
+	useStatus  bool
+	starts     int
+	stops      int
+	kills      int
 }
 
 type testInput struct {
@@ -98,6 +102,11 @@ func (f *fakeRuntime) Status(context.Context, runtime.Identity) (runtime.Status,
 	}
 	return runtime.Status{Running: true, Known: true}, nil
 }
+func (f *fakeRuntime) Metrics(context.Context, runtime.Identity) (runtime.Metrics, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.metrics, f.metricsErr
+}
 func testService(t *testing.T) (*Service, *fakeRuntime, *console.Manager, *sql.DB) {
 	t.Helper()
 	db, err := database.Open(":memory:")
@@ -155,6 +164,125 @@ func TestLifecycleStateTransitions(t *testing.T) {
 	}
 	if record.Runtime.CurrentState != StateStopped || record.Runtime.PID != 0 {
 		t.Fatalf("unexpected stop state: %#v", record.Runtime)
+	}
+}
+
+func TestPortPreflightBlocksExternalListenerBeforeRuntimeOrConsole(t *testing.T) {
+	service, f, manager, db := testService(t)
+	defer db.Close()
+	record, err := service.Create(context.Background(), testServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	if _, err = service.ports.Add(context.Background(), record.Server.ID, ports.Port{Protocol: "tcp", BindAddress: "127.0.0.1", Port: port}); err == nil {
+		t.Fatal("external occupied port must be rejected on add")
+	}
+	// Insert the explicit assignment to exercise start preflight independently
+	// from mutation-time validation.
+	_, err = db.Exec("INSERT INTO server_ports(id,server_id,name,protocol,bind_address,port,created_at,updated_at) VALUES('p',?, '', 'tcp','127.0.0.1',?,?,?)", record.Server.ID, port, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Start(context.Background(), record.Server.ID); err == nil {
+		t.Fatal("start accepted externally occupied port")
+	}
+	f.mu.Lock()
+	starts := f.starts
+	f.mu.Unlock()
+	if starts != 0 {
+		t.Fatalf("runtime started %d times", starts)
+	}
+	if _, ok := manager.CurrentSession(record.Server.ID); ok {
+		t.Fatal("preflight created console session")
+	}
+}
+
+func TestMonitoringCountersFinalizeOnlyOnceAndRestart(t *testing.T) {
+	service, f, _, db := testService(t)
+	defer db.Close()
+	record, err := service.Create(context.Background(), testServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Start(context.Background(), record.Server.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.exit(runtime.ExitResult{ExitCode: 1, Err: errors.New("crashed")})
+	crashed := waitForRuntime(t, service, record.Server.ID, func(state RuntimeState) bool { return state.CurrentState == StateCrashed })
+	if crashed.Runtime.CrashCount != 1 || crashed.Runtime.LastExitAt == nil {
+		t.Fatalf("crash monitoring state = %#v", crashed.Runtime)
+	}
+	// Calling the captured finalizer twice is idempotent and cannot double-count.
+	instance, _ := service.instances.Load(record.Server.ID)
+	if instance != nil {
+		service.finalizeInstance(instance.(*processInstance), runtime.ExitResult{ExitCode: 1})
+	}
+	got, err := service.Get(context.Background(), record.Server.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Runtime.CrashCount != 1 {
+		t.Fatalf("crash count = %d", got.Runtime.CrashCount)
+	}
+	if _, err = service.Start(context.Background(), record.Server.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Restart(context.Background(), record.Server.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err = service.Get(context.Background(), record.Server.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Runtime.RestartCount != 1 {
+		t.Fatalf("restart count = %d", got.Runtime.RestartCount)
+	}
+}
+
+func TestAutoRestartOnlySchedulesUnexpectedCrash(t *testing.T) {
+	service, f, _, db := testService(t)
+	defer db.Close()
+	server := testServer(t)
+	server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds = true, 1, 60, 0
+	record, err := service.Create(context.Background(), server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Start(context.Background(), record.Server.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.exit(runtime.ExitResult{ExitCode: 1, Err: errors.New("crashed")})
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		select {
+		case <-deadline.C:
+			t.Fatal("auto restart was not scheduled")
+		case <-poll.C:
+		}
+		f.mu.Lock()
+		starts := f.starts
+		f.mu.Unlock()
+		if starts == 2 {
+			break
+		}
+	}
+	if _, err = service.Stop(context.Background(), record.Server.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	starts := f.starts
+	f.mu.Unlock()
+	if starts != 2 {
+		t.Fatalf("intentional stop caused restart: %d", starts)
 	}
 }
 func TestDeleteRejectsRunningServer(t *testing.T) {

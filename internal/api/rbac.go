@@ -2,12 +2,30 @@ package api
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 
+	"gamenode/internal/audit"
+	"gamenode/internal/auth"
 	"gamenode/internal/rbac"
 )
+
+func (s *Server) recordRoleAudit(r *http.Request, actor auth.User, action, result, id, name string, metadata map[string]any, err error) {
+	var resourceID *string
+	if id != "" {
+		resourceID = &id
+	}
+	in := auditInput{action: action, resourceType: audit.Role, resourceID: resourceID, resourceName: name, result: result, actor: &actor}
+	if metadata != nil && result == audit.Success {
+		in.metadata, _ = json.Marshal(metadata)
+	}
+	if err != nil {
+		in.errorCode, in.errorSummary = auditFailure(err)
+	}
+	s.recordAudit(r, in)
+}
 
 func (s *Server) permissionsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -33,7 +51,8 @@ func (s *Server) rolesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodPost {
-		if _, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true); !ok {
+		actor, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true)
+		if !ok {
 			return
 		}
 		var in struct {
@@ -45,9 +64,11 @@ func (s *Server) rolesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		x, e := s.rbac.CreateRole(r.Context(), in.Name, in.Description)
 		if e != nil {
+			s.recordRoleAudit(r, actor, audit.RoleCreate, audit.Failure, "", "", nil, e)
 			rbacError(w, e)
 			return
 		}
+		s.recordRoleAudit(r, actor, audit.RoleCreate, audit.Success, x.ID, x.Name, nil, nil)
 		jsonOut(w, http.StatusCreated, map[string]any{"role": x})
 		return
 	}
@@ -74,7 +95,8 @@ func (s *Server) roleHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.Method == http.MethodPut {
-			if _, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true); !ok {
+			actor, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true)
+			if !ok {
 				return
 			}
 			var in struct {
@@ -84,9 +106,20 @@ func (s *Server) roleHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if e := s.rbac.ReplacePermissions(r.Context(), id, in.Permissions); e != nil {
+				s.recordRoleAudit(r, actor, audit.RolePermissionsUpdate, audit.Failure, id, "", nil, e)
 				rbacError(w, e)
 				return
 			}
+			name := ""
+			if role, err := s.rbac.GetRole(r.Context(), id); err == nil {
+				name = role.Name
+			}
+			metadata := map[string]any{"permission_count": len(in.Permissions)}
+			encoded, _ := json.Marshal(map[string]any{"permission_count": len(in.Permissions), "permissions": in.Permissions})
+			if len(encoded) <= audit.MaxMetadataBytes {
+				metadata["permissions"] = in.Permissions
+			}
+			s.recordRoleAudit(r, actor, audit.RolePermissionsUpdate, audit.Success, id, name, metadata, nil)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -114,7 +147,8 @@ func (s *Server) roleHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonOut(w, http.StatusOK, map[string]any{"role": x, "permissions": perms})
 	case http.MethodPatch:
-		if _, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true); !ok {
+		actor, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true)
+		if !ok {
 			return
 		}
 		var in struct {
@@ -126,18 +160,27 @@ func (s *Server) roleHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		x, e := s.rbac.UpdateRole(r.Context(), id, in.Name, in.Description)
 		if e != nil {
+			s.recordRoleAudit(r, actor, audit.RoleUpdate, audit.Failure, id, "", nil, e)
 			rbacError(w, e)
 			return
 		}
+		s.recordRoleAudit(r, actor, audit.RoleUpdate, audit.Success, x.ID, x.Name, nil, nil)
 		jsonOut(w, http.StatusOK, map[string]any{"role": x})
 	case http.MethodDelete:
-		if _, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true); !ok {
+		actor, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true)
+		if !ok {
 			return
 		}
+		name := ""
+		if role, err := s.rbac.GetRole(r.Context(), id); err == nil {
+			name = role.Name
+		}
 		if e := s.rbac.DeleteRole(r.Context(), id); e != nil {
+			s.recordRoleAudit(r, actor, audit.RoleDelete, audit.Failure, id, name, nil, e)
 			rbacError(w, e)
 			return
 		}
+		s.recordRoleAudit(r, actor, audit.RoleDelete, audit.Success, id, name, nil, nil)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		method(w)
@@ -172,7 +215,8 @@ func (s *Server) userRolesHandler(w http.ResponseWriter, r *http.Request, user s
 			}
 			jsonOut(w, http.StatusOK, map[string]any{"assignments": x})
 		case http.MethodPost:
-			if _, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true); !ok {
+			actor, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true)
+			if !ok {
 				return
 			}
 			var in struct {
@@ -184,6 +228,7 @@ func (s *Server) userRolesHandler(w http.ResponseWriter, r *http.Request, user s
 				return
 			}
 			if e := s.rbac.AssignUser(r.Context(), user, in.RoleID, rbac.Scope{Type: in.ScopeType, ID: in.ScopeID}); e != nil {
+				s.recordRoleAudit(r, actor, audit.RoleAssignmentAdd, audit.Failure, in.RoleID, "", nil, e)
 				rbacError(w, e)
 				return
 			}
@@ -192,6 +237,15 @@ func (s *Server) userRolesHandler(w http.ResponseWriter, r *http.Request, user s
 				rbacError(w, e)
 				return
 			}
+			roleName := ""
+			if role, err := s.rbac.GetRole(r.Context(), in.RoleID); err == nil {
+				roleName = role.Name
+			}
+			metadata := map[string]any{"subject_type": "user", "subject_id": user, "scope": in.ScopeType}
+			if in.ScopeID != nil {
+				metadata["server_id"] = *in.ScopeID
+			}
+			s.recordRoleAudit(r, actor, audit.RoleAssignmentAdd, audit.Success, in.RoleID, roleName, metadata, nil)
 			jsonOut(w, http.StatusCreated, map[string]any{"assignment": x[len(x)-1]})
 		default:
 			method(w)
@@ -199,13 +253,29 @@ func (s *Server) userRolesHandler(w http.ResponseWriter, r *http.Request, user s
 		return
 	}
 	if len(parts) == 3 && r.Method == http.MethodDelete {
-		if _, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true); !ok {
+		actor, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true)
+		if !ok {
 			return
 		}
+		var assignment rbac.Assignment
+		if list, err := s.rbac.ListUserAssignments(r.Context(), user); err == nil {
+			for _, candidate := range list {
+				if candidate.ID == parts[2] {
+					assignment = candidate
+					break
+				}
+			}
+		}
 		if e := s.rbac.RemoveUserAssignmentFor(r.Context(), user, parts[2]); e != nil {
+			s.recordRoleAudit(r, actor, audit.RoleAssignmentRemove, audit.Failure, assignment.RoleID, assignment.RoleName, nil, e)
 			rbacError(w, e)
 			return
 		}
+		metadata := map[string]any{"subject_type": "user", "subject_id": user, "scope": assignment.Scope.Type}
+		if assignment.Scope.ID != nil {
+			metadata["server_id"] = *assignment.Scope.ID
+		}
+		s.recordRoleAudit(r, actor, audit.RoleAssignmentRemove, audit.Success, assignment.RoleID, assignment.RoleName, metadata, nil)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -225,7 +295,8 @@ func (s *Server) groupRolesHandler(w http.ResponseWriter, r *http.Request, group
 			}
 			jsonOut(w, http.StatusOK, map[string]any{"assignments": x})
 		case http.MethodPost:
-			if _, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true); !ok {
+			actor, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true)
+			if !ok {
 				return
 			}
 			var in struct {
@@ -237,6 +308,7 @@ func (s *Server) groupRolesHandler(w http.ResponseWriter, r *http.Request, group
 				return
 			}
 			if e := s.rbac.AssignGroup(r.Context(), group, in.RoleID, rbac.Scope{Type: in.ScopeType, ID: in.ScopeID}); e != nil {
+				s.recordRoleAudit(r, actor, audit.RoleAssignmentAdd, audit.Failure, in.RoleID, "", nil, e)
 				rbacError(w, e)
 				return
 			}
@@ -245,6 +317,15 @@ func (s *Server) groupRolesHandler(w http.ResponseWriter, r *http.Request, group
 				rbacError(w, e)
 				return
 			}
+			roleName := ""
+			if role, err := s.rbac.GetRole(r.Context(), in.RoleID); err == nil {
+				roleName = role.Name
+			}
+			metadata := map[string]any{"subject_type": "group", "subject_id": group, "scope": in.ScopeType}
+			if in.ScopeID != nil {
+				metadata["server_id"] = *in.ScopeID
+			}
+			s.recordRoleAudit(r, actor, audit.RoleAssignmentAdd, audit.Success, in.RoleID, roleName, metadata, nil)
 			jsonOut(w, http.StatusCreated, map[string]any{"assignment": x[len(x)-1]})
 		default:
 			method(w)
@@ -252,13 +333,29 @@ func (s *Server) groupRolesHandler(w http.ResponseWriter, r *http.Request, group
 		return
 	}
 	if len(parts) == 3 && r.Method == http.MethodDelete {
-		if _, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true); !ok {
+		actor, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true)
+		if !ok {
 			return
 		}
+		var assignment rbac.Assignment
+		if list, err := s.rbac.ListGroupAssignments(r.Context(), group); err == nil {
+			for _, candidate := range list {
+				if candidate.ID == parts[2] {
+					assignment = candidate
+					break
+				}
+			}
+		}
 		if e := s.rbac.RemoveGroupAssignmentFor(r.Context(), group, parts[2]); e != nil {
+			s.recordRoleAudit(r, actor, audit.RoleAssignmentRemove, audit.Failure, assignment.RoleID, assignment.RoleName, nil, e)
 			rbacError(w, e)
 			return
 		}
+		metadata := map[string]any{"subject_type": "group", "subject_id": group, "scope": assignment.Scope.Type}
+		if assignment.Scope.ID != nil {
+			metadata["server_id"] = *assignment.Scope.ID
+		}
+		s.recordRoleAudit(r, actor, audit.RoleAssignmentRemove, audit.Success, assignment.RoleID, assignment.RoleName, metadata, nil)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}

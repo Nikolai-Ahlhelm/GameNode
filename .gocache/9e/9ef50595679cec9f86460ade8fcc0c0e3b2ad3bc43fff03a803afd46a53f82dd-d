@@ -1,0 +1,3 @@
+./catalog.go
+./rbac.go
+./rbac_test.go

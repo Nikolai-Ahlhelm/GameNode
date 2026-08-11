@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "check": "tsc -b --pretty false",
-    "test:helpers": "node --experimental-strip-types --test tests/files-helpers.test.ts tests/capabilities.test.ts"
+    "test:helpers": "node --experimental-strip-types --test tests/files-helpers.test.ts tests/capabilities.test.ts tests/ports-helpers.test.ts tests/settings-helpers.test.ts tests/support-helpers.test.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

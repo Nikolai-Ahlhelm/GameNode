@@ -1382,6 +1382,35 @@ GameNode can supervise multiple real game servers over extended runtime and reac
 
 ---
 
+## Milestone 7 — Operations & Diagnostics
+
+Implement:
+
+- Persistent platform settings
+- Settings UI
+- Diagnostics / system information
+- Sanitized support bundle
+- Support bundle download
+- Support bundle auditing
+
+Status:
+
+IMPLEMENTATION_COMPLETE
+RUNTIME_ACCEPTANCE_PENDING
+
+---
+
+## Milestone 8 — TBD
+
+Milestone 8 is intentionally not yet defined.
+
+Do not infer Milestone 8 from the numbered functional-requirement sections above.
+In particular, "8. File Browser" is a functional-requirement chapter and was implemented as part of Milestone 4.
+
+Milestone 8 must be explicitly defined before implementation begins.
+
+---
+
 # 23. Explicit Non-Goals for v0.1
 
 Do not implement the following unless a small supporting abstraction is strictly necessary for current functionality:

@@ -26,6 +26,10 @@ type Config struct {
 	Filesystem struct {
 		MaxUploadBytes int64 `yaml:"max_upload_bytes"`
 	} `yaml:"filesystem"`
+	Monitoring struct {
+		SampleIntervalSeconds int `yaml:"sample_interval_seconds"`
+		HistoryLimit          int `yaml:"history_limit"`
+	} `yaml:"monitoring"`
 }
 
 func Default() Config {
@@ -35,6 +39,8 @@ func Default() Config {
 	c.Database.Path = "./data/gamenode.db"
 	c.Logging.Level = "info"
 	c.Filesystem.MaxUploadBytes = 64 << 20
+	c.Monitoring.SampleIntervalSeconds = 5
+	c.Monitoring.HistoryLimit = 300
 	return c
 }
 
@@ -61,6 +67,12 @@ func Load(path string) (Config, error) {
 	}
 	if c.Filesystem.MaxUploadBytes < 1<<20 {
 		return c, fmt.Errorf("filesystem.max_upload_bytes must be at least 1 MiB")
+	}
+	if c.Monitoring.SampleIntervalSeconds < 1 || c.Monitoring.SampleIntervalSeconds > 300 {
+		return c, fmt.Errorf("monitoring.sample_interval_seconds must be between 1 and 300")
+	}
+	if c.Monitoring.HistoryLimit < 1 || c.Monitoring.HistoryLimit > 10000 {
+		return c, fmt.Errorf("monitoring.history_limit must be between 1 and 10000")
 	}
 	return c, nil
 }

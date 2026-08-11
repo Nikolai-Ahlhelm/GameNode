@@ -1,0 +1,2 @@
+CREATE TABLE server_ports (id TEXT PRIMARY KEY, server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE, name TEXT NOT NULL DEFAULT '', protocol TEXT NOT NULL CHECK(protocol IN ('tcp','udp')), bind_address TEXT NOT NULL DEFAULT '', port INTEGER NOT NULL CHECK(port BETWEEN 1 AND 65535), created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE INDEX server_ports_server_idx ON server_ports(server_id);

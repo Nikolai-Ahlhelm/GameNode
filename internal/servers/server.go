@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"gamenode/internal/console"
+	"gamenode/internal/monitoring"
+	"gamenode/internal/ports"
 	"gamenode/internal/runtime"
 )
 
@@ -34,22 +36,26 @@ const (
 var environmentKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 type Server struct {
-	ID                   string            `json:"id"`
-	CreationMode         string            `json:"creation_mode"`
-	Name                 string            `json:"name"`
-	Description          string            `json:"description"`
-	WorkingDirectory     string            `json:"working_directory"`
-	Executable           string            `json:"executable"`
-	Arguments            []string          `json:"arguments"`
-	EnvironmentVariables map[string]string `json:"environment_variables"`
-	RuntimeType          string            `json:"runtime_type"`
-	AutoStart            bool              `json:"auto_start"`
-	RestartPolicy        string            `json:"restart_policy"`
-	StopMethod           string            `json:"stop_method"`
-	StopCommand          string            `json:"stop_command"`
-	StopTimeoutSeconds   int               `json:"stop_timeout_seconds"`
-	CreatedAt            time.Time         `json:"created_at"`
-	UpdatedAt            time.Time         `json:"updated_at"`
+	ID                       string            `json:"id"`
+	CreationMode             string            `json:"creation_mode"`
+	Name                     string            `json:"name"`
+	Description              string            `json:"description"`
+	WorkingDirectory         string            `json:"working_directory"`
+	Executable               string            `json:"executable"`
+	Arguments                []string          `json:"arguments"`
+	EnvironmentVariables     map[string]string `json:"environment_variables"`
+	RuntimeType              string            `json:"runtime_type"`
+	AutoStart                bool              `json:"auto_start"`
+	RestartPolicy            string            `json:"restart_policy"`
+	StopMethod               string            `json:"stop_method"`
+	StopCommand              string            `json:"stop_command"`
+	StopTimeoutSeconds       int               `json:"stop_timeout_seconds"`
+	AutoRestartEnabled       bool              `json:"auto_restart_enabled"`
+	AutoRestartMaxAttempts   int               `json:"auto_restart_max_attempts"`
+	AutoRestartWindowSeconds int               `json:"auto_restart_window_seconds"`
+	AutoRestartDelaySeconds  int               `json:"auto_restart_delay_seconds"`
+	CreatedAt                time.Time         `json:"created_at"`
+	UpdatedAt                time.Time         `json:"updated_at"`
 }
 
 type RuntimeState struct {
@@ -57,8 +63,11 @@ type RuntimeState struct {
 	ProcessStartAt  *time.Time `json:"process_started_at,omitempty"`
 	LastStartAt     *time.Time `json:"last_start_at,omitempty"`
 	LastStopAt      *time.Time `json:"last_stop_at,omitempty"`
+	LastExitAt      *time.Time `json:"last_exit_at,omitempty"`
 	ExitCode        *int       `json:"exit_code,omitempty"`
 	LastCrashAt     *time.Time `json:"last_crash_at,omitempty"`
+	CrashCount      int        `json:"crash_count"`
+	RestartCount    int        `json:"restart_count"`
 	LastError       string     `json:"last_error,omitempty"`
 	CurrentState    string     `json:"current_state"`
 	processStartKey string
@@ -131,6 +140,24 @@ func (s *Server) Validate() error {
 	if s.StopTimeoutSeconds < 1 || s.StopTimeoutSeconds > 300 {
 		return errors.New("stop timeout must be between 1 and 300 seconds")
 	}
+	if s.AutoRestartMaxAttempts == 0 {
+		s.AutoRestartMaxAttempts = 3
+	}
+	if s.AutoRestartWindowSeconds == 0 {
+		s.AutoRestartWindowSeconds = 300
+	}
+	if s.AutoRestartDelaySeconds == 0 {
+		s.AutoRestartDelaySeconds = 5
+	}
+	if s.AutoRestartMaxAttempts < 1 || s.AutoRestartMaxAttempts > 20 {
+		return errors.New("auto restart max attempts must be between 1 and 20")
+	}
+	if s.AutoRestartWindowSeconds < 1 || s.AutoRestartWindowSeconds > 86400 {
+		return errors.New("auto restart window must be between 1 and 86400 seconds")
+	}
+	if s.AutoRestartDelaySeconds < 0 || s.AutoRestartDelaySeconds > 3600 {
+		return errors.New("auto restart delay must be between 0 and 3600 seconds")
+	}
 	if len(s.Arguments) > 128 {
 		return errors.New("too many arguments")
 	}
@@ -174,7 +201,7 @@ func (store *Store) Create(ctx context.Context, server Server) (Record, error) {
 	server.UpdatedAt = now
 	args, _ := json.Marshal(server.Arguments)
 	env, _ := json.Marshal(server.EnvironmentVariables)
-	_, err = store.db.ExecContext(ctx, `INSERT INTO servers(id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, stamp(now), stamp(now))
+	_, err = store.db.ExecContext(ctx, `INSERT INTO servers(id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
 	if err != nil {
 		return Record{}, fmt.Errorf("create server: %w", err)
 	}
@@ -217,7 +244,7 @@ func (store *Store) Update(ctx context.Context, id string, server Server) (Recor
 	server.UpdatedAt = time.Now().UTC()
 	args, _ := json.Marshal(server.Arguments)
 	env, _ := json.Marshal(server.EnvironmentVariables)
-	_, err = store.db.ExecContext(ctx, `UPDATE servers SET creation_mode=?,name=?,description=?,working_directory=?,executable=?,arguments_json=?,environment_json=?,runtime_type=?,auto_start=?,restart_policy=?,stop_method=?,stop_command=?,stop_timeout_seconds=?,updated_at=? WHERE id=?`, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, stamp(server.UpdatedAt), id)
+	_, err = store.db.ExecContext(ctx, `UPDATE servers SET creation_mode=?,name=?,description=?,working_directory=?,executable=?,arguments_json=?,environment_json=?,runtime_type=?,auto_start=?,restart_policy=?,stop_method=?,stop_command=?,stop_timeout_seconds=?,auto_restart_enabled=?,auto_restart_max_attempts=?,auto_restart_window_seconds=?,auto_restart_delay_seconds=?,updated_at=? WHERE id=?`, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(server.UpdatedAt), id)
 	if err != nil {
 		return Record{}, err
 	}
@@ -239,28 +266,29 @@ func (store *Store) Delete(ctx context.Context, id string) error {
 }
 func (store *Store) SaveRuntime(ctx context.Context, id string, state RuntimeState) error {
 	now := time.Now().UTC()
-	_, err := store.db.ExecContext(ctx, `UPDATE server_runtime_state SET pid=?,process_start_key=?,process_started_at=?,last_start_at=?,last_stop_at=?,exit_code=?,last_crash_at=?,last_error=?,current_state=?,updated_at=? WHERE server_id=?`, nullableInt(state.PID), nullableString(state.processStartKey), nullableTime(state.ProcessStartAt), nullableTime(state.LastStartAt), nullableTime(state.LastStopAt), nullableIntPtr(state.ExitCode), nullableTime(state.LastCrashAt), state.LastError, state.CurrentState, stamp(now), id)
+	_, err := store.db.ExecContext(ctx, `UPDATE server_runtime_state SET pid=?,process_start_key=?,process_started_at=?,last_start_at=?,last_stop_at=?,last_exit_at=?,exit_code=?,last_crash_at=?,crash_count=?,restart_count=?,last_error=?,current_state=?,updated_at=? WHERE server_id=?`, nullableInt(state.PID), nullableString(state.processStartKey), nullableTime(state.ProcessStartAt), nullableTime(state.LastStartAt), nullableTime(state.LastStopAt), nullableTime(state.LastExitAt), nullableIntPtr(state.ExitCode), nullableTime(state.LastCrashAt), state.CrashCount, state.RestartCount, state.LastError, state.CurrentState, stamp(now), id)
 	return err
 }
 
-const selectSQL = `SELECT s.id,s.creation_mode,s.name,s.description,s.working_directory,s.executable,s.arguments_json,s.environment_json,s.runtime_type,s.auto_start,s.restart_policy,s.stop_method,s.stop_command,s.stop_timeout_seconds,s.created_at,s.updated_at,r.pid,r.process_start_key,r.process_started_at,r.last_start_at,r.last_stop_at,r.exit_code,r.last_crash_at,r.last_error,r.current_state FROM servers s JOIN server_runtime_state r ON r.server_id=s.id`
+const selectSQL = `SELECT s.id,s.creation_mode,s.name,s.description,s.working_directory,s.executable,s.arguments_json,s.environment_json,s.runtime_type,s.auto_start,s.restart_policy,s.stop_method,s.stop_command,s.stop_timeout_seconds,s.auto_restart_enabled,s.auto_restart_max_attempts,s.auto_restart_window_seconds,s.auto_restart_delay_seconds,s.created_at,s.updated_at,r.pid,r.process_start_key,r.process_started_at,r.last_start_at,r.last_stop_at,r.last_exit_at,r.exit_code,r.last_crash_at,r.crash_count,r.restart_count,r.last_error,r.current_state FROM servers s JOIN server_runtime_state r ON r.server_id=s.id`
 
 type scanner interface{ Scan(...any) error }
 
 func scan(row scanner) (Record, error) {
 	var r Record
 	var args, env string
-	var auto int
+	var auto, autoRestart int
 	var pid sql.NullInt64
 	var key sql.NullString
-	var processStart, lastStart, lastStop, lastCrash sql.NullString
+	var processStart, lastStart, lastStop, lastExit, lastCrash sql.NullString
 	var exit sql.NullInt64
 	var created, updated string
-	err := row.Scan(&r.Server.ID, &r.Server.CreationMode, &r.Server.Name, &r.Server.Description, &r.Server.WorkingDirectory, &r.Server.Executable, &args, &env, &r.Server.RuntimeType, &auto, &r.Server.RestartPolicy, &r.Server.StopMethod, &r.Server.StopCommand, &r.Server.StopTimeoutSeconds, &created, &updated, &pid, &key, &processStart, &lastStart, &lastStop, &exit, &lastCrash, &r.Runtime.LastError, &r.Runtime.CurrentState)
+	err := row.Scan(&r.Server.ID, &r.Server.CreationMode, &r.Server.Name, &r.Server.Description, &r.Server.WorkingDirectory, &r.Server.Executable, &args, &env, &r.Server.RuntimeType, &auto, &r.Server.RestartPolicy, &r.Server.StopMethod, &r.Server.StopCommand, &r.Server.StopTimeoutSeconds, &autoRestart, &r.Server.AutoRestartMaxAttempts, &r.Server.AutoRestartWindowSeconds, &r.Server.AutoRestartDelaySeconds, &created, &updated, &pid, &key, &processStart, &lastStart, &lastStop, &lastExit, &exit, &lastCrash, &r.Runtime.CrashCount, &r.Runtime.RestartCount, &r.Runtime.LastError, &r.Runtime.CurrentState)
 	if err != nil {
 		return Record{}, err
 	}
 	r.Server.AutoStart = auto != 0
+	r.Server.AutoRestartEnabled = autoRestart != 0
 	_ = json.Unmarshal([]byte(args), &r.Server.Arguments)
 	_ = json.Unmarshal([]byte(env), &r.Server.EnvironmentVariables)
 	r.Server.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
@@ -272,6 +300,7 @@ func scan(row scanner) (Record, error) {
 	r.Runtime.ProcessStartAt = parseTime(processStart)
 	r.Runtime.LastStartAt = parseTime(lastStart)
 	r.Runtime.LastStopAt = parseTime(lastStop)
+	r.Runtime.LastExitAt = parseTime(lastExit)
 	r.Runtime.LastCrashAt = parseTime(lastCrash)
 	if exit.Valid {
 		code := int(exit.Int64)
@@ -323,12 +352,17 @@ func newID() (string, error) {
 }
 
 type Service struct {
-	store     *Store
-	runtime   runtime.Runtime
-	console   *console.Manager
-	locks     sync.Map
-	instances sync.Map
-	restarts  sync.Map
+	store        *Store
+	runtime      runtime.Runtime
+	console      *console.Manager
+	monitoring   *monitoring.Service
+	ports        *ports.Service
+	locks        sync.Map
+	instances    sync.Map
+	restarts     sync.Map
+	autoRestarts sync.Map
+	autoAttempts sync.Map
+	autoMu       sync.Mutex
 }
 
 // processInstance binds one native process identity to the console session
@@ -341,6 +375,10 @@ type processInstance struct {
 	finalize   sync.Once
 	done       chan struct{}
 }
+type pendingAutoRestart struct {
+	generation string
+	cancel     context.CancelFunc
+}
 
 // NewService accepts an optional ConsoleManager to preserve existing callers
 // while allowing the application to own and inject the shared manager.
@@ -349,9 +387,36 @@ func NewService(store *Store, r runtime.Runtime, managers ...*console.Manager) *
 	if len(managers) > 0 && managers[0] != nil {
 		manager = managers[0]
 	}
-	return &Service{store: store, runtime: r, console: manager}
+	return NewServiceWithMonitoring(store, r, manager, monitoring.Options{})
+}
+func NewServiceWithMonitoring(store *Store, r runtime.Runtime, manager *console.Manager, options monitoring.Options) *Service {
+	if manager == nil {
+		manager = console.NewManager()
+	}
+	return &Service{store: store, runtime: r, console: manager, monitoring: monitoring.New(r, options), ports: ports.New(store.db)}
 }
 func (s *Service) Console() *console.Manager { return s.console }
+func (s *Service) MonitoringSnapshot(ctx context.Context, id string) (monitoring.Snapshot, error) {
+	record, err := s.refresh(ctx, id)
+	if err != nil {
+		return monitoring.Snapshot{}, err
+	}
+	identity := runtime.Identity{PID: record.Runtime.PID, StartKey: record.Runtime.processStartKey}
+	detached := false
+	if _, active := s.instances.Load(id); !active && record.Runtime.CurrentState == StateRunning {
+		detached = true
+		s.monitoring.ObserveRunning(id, identity, true)
+	}
+	pending, attempts, limited := s.autoRestartStatus(id, record.Server)
+	return s.monitoring.Current(monitoring.Input{ServerID: id, State: record.Runtime.CurrentState, PID: record.Runtime.PID, Identity: identity, StartedAt: record.Runtime.ProcessStartAt, LastExitAt: record.Runtime.LastExitAt, LastExitCode: record.Runtime.ExitCode, CrashCount: record.Runtime.CrashCount, RestartCount: record.Runtime.RestartCount, LastError: record.Runtime.LastError, Detached: detached, AutoRestartEnabled: record.Server.AutoRestartEnabled, PendingAutoRestart: pending, AutoRestartAttempts: attempts, RestartLimitReached: limited}), nil
+}
+func (s *Service) MonitoringHistory(ctx context.Context, id string) ([]monitoring.Sample, error) {
+	_, err := s.refresh(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return s.monitoring.History(id), nil
+}
 func (s *Service) Create(ctx context.Context, server Server) (Record, error) {
 	return s.store.Create(ctx, server)
 }
@@ -378,6 +443,7 @@ func (s *Service) Update(ctx context.Context, id string, server Server) (Record,
 	return s.store.Update(ctx, id, server)
 }
 func (s *Service) Delete(ctx context.Context, id string) error {
+	s.cancelAutoRestart(id)
 	lock := s.lock(id)
 	lock.Lock()
 	defer lock.Unlock()
@@ -391,6 +457,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.store.Delete(ctx, id)
 }
 func (s *Service) Start(ctx context.Context, id string) (Record, error) {
+	s.cancelAutoRestart(id)
 	return s.start(ctx, id, false)
 }
 
@@ -409,6 +476,16 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 	}
 	if record.Runtime.CurrentState == StateRunning || record.Runtime.CurrentState == StateStarting || record.Runtime.CurrentState == StateStopping {
 		return Record{}, errors.New("server is already running")
+	}
+	// Preflight before state mutation, console-session creation, or Runtime.Start.
+	if err = s.ports.Check(ctx, id); err != nil {
+		preflight := fmt.Errorf("port preflight: %w", err)
+		// Keep the finalized state (stopped for a manual restart, crashed for an
+		// auto-restart) and make the failed normal start observable. This is not
+		// a process crash and must not schedule another auto-restart.
+		record.Runtime.LastError = preflight.Error()
+		_ = s.store.SaveRuntime(context.Background(), id, record.Runtime)
+		return Record{}, preflight
 	}
 	now := time.Now().UTC()
 	record.Runtime.CurrentState = StateStarting
@@ -450,8 +527,12 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 	record.Runtime.processStartKey = identity.StartKey
 	record.Runtime.ProcessStartAt = &now
 	record.Runtime.LastStartAt = &now
+	if restart {
+		record.Runtime.RestartCount++
+	}
 	record.Runtime.ExitCode = nil
 	record.Runtime.CurrentState = StateRunning
+	s.monitoring.ObserveRunning(id, identity, false)
 	if err = s.store.SaveRuntime(ctx, id, record.Runtime); err != nil {
 		return Record{}, err
 	}
@@ -467,6 +548,7 @@ func (s *Service) Kill(ctx context.Context, id string) (Record, error) {
 	return s.signal(ctx, id, true)
 }
 func (s *Service) Restart(ctx context.Context, id string) (Record, error) {
+	s.cancelAutoRestart(id)
 	if _, loaded := s.restarts.LoadOrStore(id, struct{}{}); loaded {
 		return Record{}, errors.New("server restart is already in progress")
 	}
@@ -477,6 +559,7 @@ func (s *Service) Restart(ctx context.Context, id string) (Record, error) {
 	return s.start(ctx, id, true)
 }
 func (s *Service) signal(ctx context.Context, id string, kill bool) (Record, error) {
+	s.cancelAutoRestart(id)
 	return s.signalWithRestart(ctx, id, kill, false)
 }
 
@@ -551,20 +634,99 @@ func (s *Service) finalizeInstance(instance *processInstance, exit runtime.ExitR
 			record.Runtime.processStartKey = ""
 			record.Runtime.ProcessStartAt = nil
 			record.Runtime.ExitCode = &exit.ExitCode
+			record.Runtime.LastExitAt = &now
 			record.Runtime.LastStopAt = &now
 			if stopping || exit.ExitCode == 0 {
 				record.Runtime.CurrentState = StateStopped
 			} else {
 				record.Runtime.CurrentState = StateCrashed
 				record.Runtime.LastCrashAt = &now
+				record.Runtime.CrashCount++
 			}
 			if exit.Err != nil && !stopping {
 				record.Runtime.LastError = "process exited"
 			}
 			_ = s.store.SaveRuntime(context.Background(), instance.serverID, record.Runtime)
+			s.monitoring.ObserveExit(instance.serverID, instance.identity)
+			if record.Runtime.CurrentState == StateCrashed {
+				s.scheduleAutoRestart(instance.serverID, instance.instanceID, record.Server)
+			}
 		}
 		s.instances.CompareAndDelete(instance.serverID, instance)
 	})
+}
+func (s *Service) cancelAutoRestart(id string) {
+	if value, ok := s.autoRestarts.LoadAndDelete(id); ok {
+		value.(*pendingAutoRestart).cancel()
+	}
+}
+func (s *Service) scheduleAutoRestart(id, generation string, server Server) {
+	if !server.AutoRestartEnabled {
+		return
+	}
+	s.autoMu.Lock()
+	defer s.autoMu.Unlock()
+	now := time.Now().UTC()
+	var attempts []time.Time
+	if value, ok := s.autoAttempts.Load(id); ok {
+		attempts = value.([]time.Time)
+	}
+	cutoff := now.Add(-time.Duration(server.AutoRestartWindowSeconds) * time.Second)
+	kept := attempts[:0]
+	for _, attempt := range attempts {
+		if attempt.After(cutoff) {
+			kept = append(kept, attempt)
+		}
+	}
+	if len(kept) >= server.AutoRestartMaxAttempts {
+		record, err := s.store.Get(context.Background(), id)
+		if err == nil {
+			record.Runtime.LastError = "auto restart limit reached"
+			_ = s.store.SaveRuntime(context.Background(), id, record.Runtime)
+		}
+		s.autoAttempts.Store(id, kept)
+		return
+	}
+	kept = append(kept, now)
+	s.autoAttempts.Store(id, kept)
+	ctx, cancel := context.WithCancel(context.Background())
+	pending := &pendingAutoRestart{generation: generation, cancel: cancel}
+	if old, loaded := s.autoRestarts.Swap(id, pending); loaded {
+		old.(*pendingAutoRestart).cancel()
+	}
+	go func() {
+		timer := time.NewTimer(time.Duration(server.AutoRestartDelaySeconds) * time.Second)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		current, ok := s.autoRestarts.LoadAndDelete(id)
+		if !ok || current != pending {
+			return
+		}
+		// The finalizer has already persisted crashed state; this starts a fresh
+		// instance/session through the normal orchestration path.
+		_, _ = s.start(context.Background(), id, true)
+	}()
+}
+func (s *Service) autoRestartStatus(id string, server Server) (bool, int, bool) {
+	s.autoMu.Lock()
+	defer s.autoMu.Unlock()
+	_, pending := s.autoRestarts.Load(id)
+	var attempts []time.Time
+	if value, ok := s.autoAttempts.Load(id); ok {
+		attempts = value.([]time.Time)
+	}
+	cutoff := time.Now().Add(-time.Duration(server.AutoRestartWindowSeconds) * time.Second)
+	count := 0
+	for _, attempt := range attempts {
+		if attempt.After(cutoff) {
+			count++
+		}
+	}
+	return pending, count, server.AutoRestartEnabled && count >= server.AutoRestartMaxAttempts
 }
 func (s *Service) refreshAll(ctx context.Context) ([]Record, error) {
 	records, err := s.store.List(ctx)

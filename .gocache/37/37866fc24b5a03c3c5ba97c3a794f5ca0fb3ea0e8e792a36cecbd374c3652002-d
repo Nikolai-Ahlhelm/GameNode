@@ -1,0 +1,6 @@
+./atomic_replace_windows.go
+./commit_upload_windows.go
+./filesystem.go
+./reparse_windows.go
+./filesystem_test.go
+./symlink_windows_test.go

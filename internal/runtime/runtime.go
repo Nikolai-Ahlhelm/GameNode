@@ -41,9 +41,19 @@ type Status struct {
 	Known   bool
 }
 
+// Metrics contains identity-verified, cumulative process values. CPUTime is
+// converted into a percentage by the monitoring service between samples.
+type Metrics struct {
+	CPUTime     time.Duration
+	MemoryBytes uint64
+	ThreadCount uint32
+	HandleCount uint32
+}
+
 type Runtime interface {
 	Start(context.Context, StartOptions) (Identity, <-chan ExitResult, error)
 	Stop(context.Context, Identity, time.Duration) error
 	Kill(context.Context, Identity) error
 	Status(context.Context, Identity) (Status, error)
+	Metrics(context.Context, Identity) (Metrics, error)
 }

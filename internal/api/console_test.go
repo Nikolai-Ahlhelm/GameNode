@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,7 +94,7 @@ func readConsole(t *testing.T, c *websocket.Conn) consoleMessage {
 }
 
 func TestConsoleWebSocketSecurityAndTransport(t *testing.T) {
-	h, _, m, cookie, record, _ := consoleFixture(t)
+	h, _, m, cookie, record, db := consoleFixture(t)
 	if _, _, err := dialConsole(t, h.URL, record.Server.ID, nil, h.URL); err == nil {
 		t.Fatal("unauthenticated websocket accepted")
 	}
@@ -136,15 +138,27 @@ func TestConsoleWebSocketSecurityAndTransport(t *testing.T) {
 	if got := readConsole(t, second); got.Data != "live-out" {
 		t.Fatal("second client missed output")
 	}
-	if err := first.WriteJSON(consoleClientMessage{Type: "input", Data: "status\n"}); err != nil {
+	const inputSecret = "AUDIT_CONSOLE_SECRET_SHOULD_NEVER_APPEAR"
+	input := inputSecret + "\n"
+	if err := first.WriteJSON(consoleClientMessage{Type: "input", Data: input}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
 	for in.data == "" && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if in.data != "status\n" {
+	if in.data != input {
 		t.Fatalf("input = %q", in.data)
+	}
+	var actorID, serverID, metadata, resourceName, summary string
+	if err := db.QueryRow(`SELECT actor_user_id,server_id,COALESCE(metadata_json,''),COALESCE(resource_name,''),COALESCE(error_summary,'') FROM audit_log WHERE action='console.input' AND result='success'`).Scan(&actorID, &serverID, &metadata, &resourceName, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if actorID == "" || serverID != record.Server.ID || !strings.Contains(metadata, `"bytes":`+strconv.Itoa(len([]byte(input)))) {
+		t.Fatalf("unexpected console audit event: actor=%q server=%q metadata=%q", actorID, serverID, metadata)
+	}
+	if strings.Contains(actorID+serverID+metadata+resourceName+summary, inputSecret) {
+		t.Fatal("console input leaked into audit event")
 	}
 }
 

@@ -265,6 +265,63 @@ func TestFilesAPIMutations(t *testing.T) {
 	}
 }
 
+func TestFileAuditStoresOnlyRelativeMetadata(t *testing.T) {
+	fixture := newFilesFixture(t)
+	base := "/api/v1/servers/" + fixture.server + "/files"
+	const contentSecret = "AUDIT_FILE_CONTENT_SECRET_SHOULD_NEVER_APPEAR"
+	const uploadSecret = "AUDIT_UPLOAD_SECRET_SHOULD_NEVER_APPEAR"
+	if response := fixture.mutation(http.MethodPost, base+"/file", map[string]string{"path": "audit.txt", "content": contentSecret}, true); response.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", response.Code, response.Body.String())
+	}
+	if response := fixture.mutation(http.MethodPut, base+"/content", map[string]string{"path": "audit.txt", "content": contentSecret}, true); response.Code != http.StatusNoContent {
+		t.Fatalf("edit: %d %s", response.Code, response.Body.String())
+	}
+	if response := fixture.mutation(http.MethodPost, base+"/move", map[string]string{"source": "audit.txt", "destination": "renamed.txt"}, true); response.Code != http.StatusNoContent {
+		t.Fatalf("rename: %d %s", response.Code, response.Body.String())
+	}
+	if response := fixture.upload("config", "audit.bin", []byte(uploadSecret), true); response.Code != http.StatusCreated {
+		t.Fatalf("upload: %d %s", response.Code, response.Body.String())
+	}
+	deleteRequest := httptest.NewRequest(http.MethodDelete, base+"?path=renamed.txt", nil)
+	deleteRequest.Header.Set("X-CSRF-Token", fixture.csrf)
+	deleteRequest.AddCookie(fixture.cookie)
+	deleteResponse := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(deleteResponse, deleteRequest)
+	if deleteResponse.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", deleteResponse.Code, deleteResponse.Body.String())
+	}
+
+	for _, action := range []string{"file.create", "file.edit", "file.rename", "file.upload", "file.delete"} {
+		var count int
+		if err := fixture.db.QueryRow(`SELECT count(*) FROM audit_log WHERE action=? AND result='success'`, action).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("%s success events = %d, want 1", action, count)
+		}
+	}
+	rows, err := fixture.db.Query(`SELECT COALESCE(resource_name,''),COALESCE(metadata_json,''),COALESCE(error_summary,'') FROM audit_log WHERE resource_type='file'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, metadata, summary string
+		if err := rows.Scan(&name, &metadata, &summary); err != nil {
+			t.Fatal(err)
+		}
+		serialized := name + metadata + summary
+		for _, forbidden := range []string{contentSecret, uploadSecret, fixture.root} {
+			if strings.Contains(serialized, forbidden) {
+				t.Fatalf("file audit event leaks %q", forbidden)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFilesAPIUploadDownloadRoundTrip(t *testing.T) {
 	fixture := newFilesFixture(t)
 	payload := bytes.Repeat([]byte{0, 1, 2, 3, 4, 5}, 256<<10)

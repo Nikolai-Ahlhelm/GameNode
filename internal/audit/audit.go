@@ -1,0 +1,197 @@
+package audit
+
+import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"strings"
+	"time"
+)
+
+const (
+	MaxMetadataBytes = 4096
+	DefaultLimit     = 100
+	MaxLimit         = 500
+)
+const (
+	Success = "success"
+	Failure = "failure"
+)
+const (
+	Auth     = "auth"
+	Server   = "server"
+	Console  = "console"
+	File     = "file"
+	User     = "user"
+	Group    = "group"
+	Role     = "role"
+	Port     = "port"
+	Settings = "settings"
+	System   = "system"
+)
+const (
+	Login                 = "auth.login"
+	Logout                = "auth.logout"
+	ServerCreate          = "server.create"
+	ServerUpdate          = "server.update"
+	ServerDelete          = "server.delete"
+	ServerStart           = "server.start"
+	ServerStop            = "server.stop"
+	ServerRestart         = "server.restart"
+	ServerKill            = "server.kill"
+	PortCreate            = "port.create"
+	PortUpdate            = "port.update"
+	PortDelete            = "port.delete"
+	FileCreate            = "file.create"
+	FileEdit              = "file.edit"
+	FileRename            = "file.rename"
+	FileMove              = "file.move"
+	FileDelete            = "file.delete"
+	FileUpload            = "file.upload"
+	ConsoleInput          = "console.input"
+	UserCreate            = "user.create"
+	UserUpdate            = "user.update"
+	UserEnable            = "user.enable"
+	UserDisable           = "user.disable"
+	UserDelete            = "user.delete"
+	UserPasswordReset     = "user.password_reset"
+	GroupCreate           = "group.create"
+	GroupUpdate           = "group.update"
+	GroupDelete           = "group.delete"
+	GroupMemberAdd        = "group.member_add"
+	GroupMemberRemove     = "group.member_remove"
+	RoleCreate            = "role.create"
+	RoleUpdate            = "role.update"
+	RoleDelete            = "role.delete"
+	RolePermissionsUpdate = "role.permissions_update"
+	RoleAssignmentAdd     = "role.assignment_add"
+	RoleAssignmentRemove  = "role.assignment_remove"
+	SettingsUpdate        = "settings.update"
+	SupportBundleGenerate = "support.bundle_generate"
+)
+
+type Event struct {
+	ID            string
+	Timestamp     time.Time
+	ActorUserID   *string
+	ActorUsername string
+	Action        string
+	ResourceType  string
+	ResourceID    *string
+	ResourceName  string
+	ServerID      *string
+	Result        string
+	RemoteIP      string
+	Metadata      json.RawMessage
+	ErrorCode     string
+	ErrorSummary  string
+}
+type Filter struct {
+	ActorUserID          *string
+	Action, ResourceType string
+	ResourceID, ServerID *string
+	Result               string
+	Limit                int
+	Offset               int
+}
+type Service struct{ db *sql.DB }
+
+func New(db *sql.DB) *Service { return &Service{db} }
+func (s *Service) Record(c context.Context, e Event) error {
+	if e.Action == "" || e.ResourceType == "" || (e.Result != Success && e.Result != Failure) {
+		return errors.New("invalid audit event")
+	}
+	if len(e.Metadata) > MaxMetadataBytes {
+		return errors.New("audit metadata too large")
+	}
+	if len(e.Metadata) > 0 && !json.Valid(e.Metadata) {
+		return errors.New("audit metadata must be JSON")
+	}
+	if e.ID == "" {
+		e.ID = id()
+	}
+	if e.Timestamp.IsZero() {
+		e.Timestamp = time.Now().UTC()
+	}
+	_, x := s.db.ExecContext(c, "INSERT INTO audit_log(id,timestamp,actor_user_id,actor_username,action,resource_type,resource_id,resource_name,server_id,result,remote_ip,metadata_json,error_code,error_summary) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", e.ID, e.Timestamp.Format(time.RFC3339Nano), e.ActorUserID, e.ActorUsername, e.Action, e.ResourceType, e.ResourceID, e.ResourceName, e.ServerID, e.Result, e.RemoteIP, nullable(e.Metadata), e.ErrorCode, e.ErrorSummary)
+	return x
+}
+func (s *Service) List(c context.Context, f Filter) ([]Event, error) {
+	if f.Limit <= 0 {
+		f.Limit = DefaultLimit
+	}
+	if f.Limit > MaxLimit {
+		f.Limit = MaxLimit
+	}
+	q := "SELECT id,timestamp,actor_user_id,actor_username,action,resource_type,resource_id,resource_name,server_id,result,remote_ip,metadata_json,error_code,error_summary FROM audit_log WHERE 1=1"
+	a := []any{}
+	if f.ActorUserID != nil {
+		q += " AND actor_user_id=?"
+		a = append(a, *f.ActorUserID)
+	}
+	if f.Action != "" {
+		q += " AND action=?"
+		a = append(a, f.Action)
+	}
+	if f.ResourceType != "" {
+		q += " AND resource_type=?"
+		a = append(a, f.ResourceType)
+	}
+	if f.ResourceID != nil {
+		q += " AND resource_id=?"
+		a = append(a, *f.ResourceID)
+	}
+	if f.ServerID != nil {
+		q += " AND server_id=?"
+		a = append(a, *f.ServerID)
+	}
+	if f.Result != "" {
+		q += " AND result=?"
+		a = append(a, f.Result)
+	}
+	q += " ORDER BY timestamp DESC,id DESC LIMIT ? OFFSET ?"
+	a = append(a, f.Limit, f.Offset)
+	rows, e := s.db.QueryContext(c, q, a...)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	out := []Event{}
+	for rows.Next() {
+		var x Event
+		var ts string
+		var actor, res, server, meta sql.NullString
+		if e = rows.Scan(&x.ID, &ts, &actor, &x.ActorUsername, &x.Action, &x.ResourceType, &res, &x.ResourceName, &server, &x.Result, &x.RemoteIP, &meta, &x.ErrorCode, &x.ErrorSummary); e != nil {
+			return nil, e
+		}
+		x.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
+		if actor.Valid {
+			x.ActorUserID = &actor.String
+		}
+		if res.Valid {
+			x.ResourceID = &res.String
+		}
+		if server.Valid {
+			x.ServerID = &server.String
+		}
+		if meta.Valid {
+			x.Metadata = json.RawMessage(meta.String)
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+func nullable(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return string(b)
+}
+func id() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return strings.ToLower(hex.EncodeToString(b))
+}

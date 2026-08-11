@@ -1,11 +1,14 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
 	"github.com/gorilla/websocket"
 
+	"gamenode/internal/audit"
+	"gamenode/internal/auth"
 	"gamenode/internal/console"
 	"gamenode/internal/rbac"
 )
@@ -24,6 +27,12 @@ type consoleMessage struct {
 	Data      string    `json:"data,omitempty"`
 	State     string    `json:"state,omitempty"`
 	Timestamp time.Time `json:"timestamp,omitempty"`
+}
+
+func (s *Server) recordConsoleInputAudit(r *http.Request, actor auth.User, serverID, result string, bytes int, errorCode, errorSummary string) {
+	server := serverID
+	metadata, _ := json.Marshal(map[string]int{"bytes": bytes})
+	s.recordAudit(r, auditInput{action: audit.ConsoleInput, resourceType: audit.Console, serverID: &server, result: result, metadata: metadata, errorCode: errorCode, errorSummary: errorSummary, actor: &actor})
 }
 
 func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request, id string) {
@@ -86,6 +95,7 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request, id string) {
 			}
 			canSend, err := s.allowed(r.Context(), u, "Console.Send", rbac.Scope{Type: "server", ID: &id})
 			if err != nil || !canSend {
+				s.recordConsoleInputAudit(r, u, id, audit.Failure, len([]byte(in.Data)), "permission_denied", "console input permission denied")
 				select {
 				case errors <- consoleMessage{Type: "error", State: "permission_denied"}:
 				default:
@@ -93,11 +103,14 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request, id string) {
 				continue
 			}
 			if err := session.Input(in.Data); err != nil {
+				s.recordConsoleInputAudit(r, u, id, audit.Failure, len([]byte(in.Data)), "input_unavailable", "console input is unavailable")
 				select {
 				case errors <- consoleMessage{Type: "error", State: "input_unavailable"}:
 				default:
 				}
+				continue
 			}
+			s.recordConsoleInputAudit(r, u, id, audit.Success, len([]byte(in.Data)), "", "")
 		}
 	}()
 	for {

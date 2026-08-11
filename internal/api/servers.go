@@ -12,12 +12,28 @@ import (
 	"strconv"
 	"strings"
 
+	"gamenode/internal/audit"
+	"gamenode/internal/auth"
 	"gamenode/internal/filesystem"
 	"gamenode/internal/rbac"
 	"gamenode/internal/servers"
 )
 
 const maxFileMutationRequestBytes = filesystem.MaxReadBytes*6 + 64<<10
+
+func (s *Server) recordServerAudit(r *http.Request, actor auth.User, action, result, id, name string, err error) {
+	var resourceID *string
+	var serverID *string
+	if id != "" {
+		resourceID = &id
+		serverID = &id
+	}
+	in := auditInput{action: action, resourceType: audit.Server, resourceID: resourceID, resourceName: name, serverID: serverID, result: result, actor: &actor}
+	if err != nil {
+		in.errorCode, in.errorSummary = auditFailure(err)
+	}
+	s.recordAudit(r, in)
+}
 
 type fileContentInput struct {
 	Path    string `json:"path"`
@@ -31,6 +47,26 @@ type filePathInput struct {
 type fileMoveInput struct {
 	Source      string `json:"source"`
 	Destination string `json:"destination"`
+}
+
+func auditRelativePath(value string) string {
+	clean := path.Clean(strings.ReplaceAll(value, "\\", "/"))
+	if clean == "." || strings.HasPrefix(clean, "/") || clean == ".." || strings.HasPrefix(clean, "../") {
+		return ""
+	}
+	return clean
+}
+
+func (s *Server) recordFileAudit(r *http.Request, actor auth.User, action, result, serverID, resourceName string, metadata map[string]any, err error) {
+	server := serverID
+	in := auditInput{action: action, resourceType: audit.File, resourceName: resourceName, serverID: &server, result: result, actor: &actor}
+	if result == audit.Success && metadata != nil {
+		in.metadata, _ = json.Marshal(metadata)
+	}
+	if err != nil {
+		in.errorCode, in.errorSummary = auditFailure(err)
+	}
+	s.recordAudit(r, in)
 }
 
 func (s *Server) serversHandler(w http.ResponseWriter, r *http.Request) {
@@ -47,7 +83,8 @@ func (s *Server) serversHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonOut(w, http.StatusOK, map[string]any{"servers": records})
 	case http.MethodPost:
-		if _, _, ok := s.requirePermission(w, r, "Server.Create", rbac.Scope{Type: "global"}, true); !ok {
+		u, _, ok := s.requirePermission(w, r, "Server.Create", rbac.Scope{Type: "global"}, true)
+		if !ok {
 			return
 		}
 		var server servers.Server
@@ -56,9 +93,11 @@ func (s *Server) serversHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		record, err := s.servers.Create(r.Context(), server)
 		if err != nil {
+			s.recordServerAudit(r, u, audit.ServerCreate, audit.Failure, "", "", err)
 			serverError(w, err, false)
 			return
 		}
+		s.recordServerAudit(r, u, audit.ServerCreate, audit.Success, record.Server.ID, record.Server.Name, nil)
 		s.log.Info("server created", "server_id", record.Server.ID, "mode", record.Server.CreationMode)
 		jsonOut(w, http.StatusCreated, record)
 	default:
@@ -76,6 +115,18 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 	id := parts[0]
 	if len(parts) == 2 && parts[1] == "files" {
 		s.filesHandler(w, r, id)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "monitoring" {
+		s.monitoringHandler(w, r, id)
+		return
+	}
+	if len(parts) >= 2 && parts[1] == "ports" {
+		s.portsHandler(w, r, id)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "monitoring" && parts[2] == "history" {
+		s.monitoringHistoryHandler(w, r, id)
 		return
 	}
 	if len(parts) == 3 && parts[1] == "files" && parts[2] == "content" {
@@ -143,16 +194,24 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			record, err := s.servers.Update(r.Context(), id, server)
 			if err != nil {
+				s.recordServerAudit(r, u, audit.ServerUpdate, audit.Failure, id, "", err)
 				serverError(w, err, false)
 				return
 			}
+			s.recordServerAudit(r, u, audit.ServerUpdate, audit.Success, record.Server.ID, record.Server.Name, nil)
 			s.log.Info("server updated", "server_id", id)
 			jsonOut(w, http.StatusOK, record)
 		case http.MethodDelete:
+			name := ""
+			if existing, err := s.servers.Get(r.Context(), id); err == nil {
+				name = existing.Server.Name
+			}
 			if err := s.servers.Delete(r.Context(), id); err != nil {
+				s.recordServerAudit(r, u, audit.ServerDelete, audit.Failure, id, name, err)
 				serverError(w, err, true)
 				return
 			}
+			s.recordServerAudit(r, u, audit.ServerDelete, audit.Success, id, name, nil)
 			s.log.Info("server deleted", "server_id", id)
 			w.WriteHeader(http.StatusNoContent)
 		default:
@@ -180,7 +239,8 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 		notFound(w)
 		return
 	}
-	if _, _, ok := s.requireServerPermission(w, r, permission, id, true); !ok {
+	u, _, ok := s.requireServerPermission(w, r, permission, id, true)
+	if !ok {
 		return
 	}
 	switch parts[1] {
@@ -194,9 +254,13 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 		record, err = s.servers.Kill(r.Context(), id)
 	}
 	if err != nil {
+		action := map[string]string{"start": audit.ServerStart, "stop": audit.ServerStop, "restart": audit.ServerRestart, "kill": audit.ServerKill}[parts[1]]
+		s.recordServerAudit(r, u, action, audit.Failure, id, "", err)
 		serverError(w, err, true)
 		return
 	}
+	action := map[string]string{"start": audit.ServerStart, "stop": audit.ServerStop, "restart": audit.ServerRestart, "kill": audit.ServerKill}[parts[1]]
+	s.recordServerAudit(r, u, action, audit.Success, record.Server.ID, record.Server.Name, nil)
 	s.log.Info("server lifecycle action", "server_id", id, "action", parts[1])
 	jsonOut(w, http.StatusOK, record)
 }
@@ -210,7 +274,8 @@ func (s *Server) filesHandler(w http.ResponseWriter, r *http.Request, id string)
 		method(w)
 		return
 	}
-	if _, _, ok := s.requireServerPermission(w, r, permission, id, csrfRequired); !ok {
+	u, _, ok := s.requireServerPermission(w, r, permission, id, csrfRequired)
+	if !ok {
 		return
 	}
 	record, err := s.servers.Get(r.Context(), id)
@@ -233,9 +298,12 @@ func (s *Server) filesHandler(w http.ResponseWriter, r *http.Request, id string)
 			return
 		}
 		if err := s.files.Delete(record.Server.WorkingDirectory, r.URL.Query().Get("path"), recursive); err != nil {
+			s.recordFileAudit(r, u, audit.FileDelete, audit.Failure, id, "", nil, err)
 			filesystemError(w, err)
 			return
 		}
+		name := auditRelativePath(r.URL.Query().Get("path"))
+		s.recordFileAudit(r, u, audit.FileDelete, audit.Success, id, name, map[string]any{"path": name, "recursive": recursive}, nil)
 		s.logFileMutation("file.delete", id)
 		w.WriteHeader(http.StatusNoContent)
 	default:
@@ -252,7 +320,8 @@ func (s *Server) filesContentHandler(w http.ResponseWriter, r *http.Request, id 
 		method(w)
 		return
 	}
-	if _, _, ok := s.requireServerPermission(w, r, permission, id, csrfRequired); !ok {
+	u, _, ok := s.requireServerPermission(w, r, permission, id, csrfRequired)
+	if !ok {
 		return
 	}
 	record, err := s.servers.Get(r.Context(), id)
@@ -274,9 +343,12 @@ func (s *Server) filesContentHandler(w http.ResponseWriter, r *http.Request, id 
 			return
 		}
 		if err := s.files.WriteFile(record.Server.WorkingDirectory, input.Path, input.Content); err != nil {
+			s.recordFileAudit(r, u, audit.FileEdit, audit.Failure, id, "", nil, err)
 			filesystemError(w, err)
 			return
 		}
+		name := auditRelativePath(input.Path)
+		s.recordFileAudit(r, u, audit.FileEdit, audit.Success, id, name, map[string]any{"path": name, "bytes": len([]byte(input.Content))}, nil)
 		s.logFileMutation("file.edit", id)
 		w.WriteHeader(http.StatusNoContent)
 	default:
@@ -289,7 +361,8 @@ func (s *Server) filesCreateFileHandler(w http.ResponseWriter, r *http.Request, 
 		method(w)
 		return
 	}
-	if _, _, ok := s.requireServerPermission(w, r, "Files.Edit", id, true); !ok {
+	u, _, ok := s.requireServerPermission(w, r, "Files.Edit", id, true)
+	if !ok {
 		return
 	}
 	record, err := s.servers.Get(r.Context(), id)
@@ -302,9 +375,12 @@ func (s *Server) filesCreateFileHandler(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if err := s.files.CreateFile(record.Server.WorkingDirectory, input.Path, input.Content); err != nil {
+		s.recordFileAudit(r, u, audit.FileCreate, audit.Failure, id, "", nil, err)
 		filesystemError(w, err)
 		return
 	}
+	name := auditRelativePath(input.Path)
+	s.recordFileAudit(r, u, audit.FileCreate, audit.Success, id, name, map[string]any{"path": name}, nil)
 	s.logFileMutation("file.create", id)
 	w.WriteHeader(http.StatusCreated)
 }
@@ -314,7 +390,8 @@ func (s *Server) filesCreateDirectoryHandler(w http.ResponseWriter, r *http.Requ
 		method(w)
 		return
 	}
-	if _, _, ok := s.requireServerPermission(w, r, "Files.Edit", id, true); !ok {
+	u, _, ok := s.requireServerPermission(w, r, "Files.Edit", id, true)
+	if !ok {
 		return
 	}
 	record, err := s.servers.Get(r.Context(), id)
@@ -327,9 +404,12 @@ func (s *Server) filesCreateDirectoryHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err := s.files.CreateDirectory(record.Server.WorkingDirectory, input.Path); err != nil {
+		s.recordFileAudit(r, u, audit.FileCreate, audit.Failure, id, "", nil, err)
 		filesystemError(w, err)
 		return
 	}
+	name := auditRelativePath(input.Path)
+	s.recordFileAudit(r, u, audit.FileCreate, audit.Success, id, name, map[string]any{"path": name, "kind": "directory"}, nil)
 	s.logFileMutation("directory.create", id)
 	w.WriteHeader(http.StatusCreated)
 }
@@ -339,7 +419,8 @@ func (s *Server) filesMoveHandler(w http.ResponseWriter, r *http.Request, id str
 		method(w)
 		return
 	}
-	if _, _, ok := s.requireServerPermission(w, r, "Files.Rename", id, true); !ok {
+	u, _, ok := s.requireServerPermission(w, r, "Files.Rename", id, true)
+	if !ok {
 		return
 	}
 	record, err := s.servers.Get(r.Context(), id)
@@ -352,10 +433,17 @@ func (s *Server) filesMoveHandler(w http.ResponseWriter, r *http.Request, id str
 		return
 	}
 	if err := s.files.Move(record.Server.WorkingDirectory, input.Source, input.Destination); err != nil {
+		s.recordFileAudit(r, u, audit.FileMove, audit.Failure, id, "", nil, err)
 		filesystemError(w, err)
 		return
 	}
-	s.logFileMutation("file.move", id)
+	from, to := auditRelativePath(input.Source), auditRelativePath(input.Destination)
+	action := audit.FileMove
+	if path.Dir(from) == path.Dir(to) {
+		action = audit.FileRename
+	}
+	s.recordFileAudit(r, u, action, audit.Success, id, to, map[string]any{"from": from, "to": to}, nil)
+	s.logFileMutation(action, id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -397,7 +485,8 @@ func (s *Server) filesUploadHandler(w http.ResponseWriter, r *http.Request, id s
 		method(w)
 		return
 	}
-	if _, _, ok := s.requireServerPermission(w, r, "Files.Upload", id, true); !ok {
+	u, _, ok := s.requireServerPermission(w, r, "Files.Upload", id, true)
+	if !ok {
 		return
 	}
 	record, err := s.servers.Get(r.Context(), id)
@@ -424,9 +513,11 @@ func (s *Server) filesUploadHandler(w http.ResponseWriter, r *http.Request, id s
 	defer part.Close()
 	info, err := s.files.Upload(record.Server.WorkingDirectory, r.URL.Query().Get("path"), part.FileName(), part, overwrite)
 	if err != nil {
+		s.recordFileAudit(r, u, audit.FileUpload, audit.Failure, id, "", nil, err)
 		filesystemError(w, err)
 		return
 	}
+	s.recordFileAudit(r, u, audit.FileUpload, audit.Success, id, info.RelativePath, map[string]any{"path": info.RelativePath, "filename": path.Base(info.RelativePath), "size": info.Size}, nil)
 	s.logFileMutation("file.upload", id)
 	jsonOut(w, http.StatusCreated, info)
 }

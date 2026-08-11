@@ -10,20 +10,20 @@ All endpoints are namespaced below `/api/v1` and return errors as `{ "error": { 
 | POST | `/api/v1/auth/logout` | Revokes the current session |
 | GET | `/api/v1/auth/me` | Current user and CSRF token |
 | GET, POST | `/api/v1/users` | List with `Users.View`; create with `Users.Manage` |
-| GET, PATCH, DELETE | `/api/v1/users/{id}` | Read, update, or delete a local user (administrator only) |
-| POST | `/api/v1/users/{id}/password` | Reset a local user's password (administrator only) |
-| GET, POST | `/api/v1/groups` | List or create local groups (administrator only) |
-| GET, PATCH, DELETE | `/api/v1/groups/{id}` | Read, update, or delete a local group (administrator only) |
-| GET, POST | `/api/v1/groups/{id}/members` | List or add group members (administrator only) |
-| DELETE | `/api/v1/groups/{id}/members/{userId}` | Remove a group member (administrator only) |
-| GET | `/api/v1/permissions` | Lists the compiled RBAC permission catalog (administrator only) |
-| GET, POST | `/api/v1/roles` | List or create roles (administrator only) |
-| GET, PATCH, DELETE | `/api/v1/roles/{id}` | Read, update, or delete a role (administrator only) |
-| GET, PUT | `/api/v1/roles/{id}/permissions` | Read or replace a role's permissions (administrator only) |
-| GET, POST | `/api/v1/users/{id}/roles` | List or assign a role to a user (administrator only) |
-| DELETE | `/api/v1/users/{id}/roles/{assignmentId}` | Remove a user role assignment (administrator only) |
-| GET, POST | `/api/v1/groups/{id}/roles` | List or assign a role to a group (administrator only) |
-| DELETE | `/api/v1/groups/{id}/roles/{assignmentId}` | Remove a group role assignment (administrator only) |
+| GET, PATCH, DELETE | `/api/v1/users/{id}` | Read with `Users.View`; update/delete with `Users.Manage` |
+| POST | `/api/v1/users/{id}/password` | Reset a local user's password with `Users.Manage` |
+| GET, POST | `/api/v1/groups` | List with `Groups.View`; create with `Groups.Manage` |
+| GET, PATCH, DELETE | `/api/v1/groups/{id}` | Read with `Groups.View`; update/delete with `Groups.Manage` |
+| GET, POST | `/api/v1/groups/{id}/members` | List with `Groups.View`; add with `Groups.Manage` |
+| DELETE | `/api/v1/groups/{id}/members/{userId}` | Remove a group member with `Groups.Manage` |
+| GET | `/api/v1/permissions` | Lists the compiled RBAC permission catalog with `Roles.View` |
+| GET, POST | `/api/v1/roles` | List with `Roles.View`; create with `Roles.Manage` |
+| GET, PATCH, DELETE | `/api/v1/roles/{id}` | Read with `Roles.View`; update/delete with `Roles.Manage` |
+| GET, PUT | `/api/v1/roles/{id}/permissions` | Read with `Roles.View`; replace with `Roles.Manage` |
+| GET, POST | `/api/v1/users/{id}/roles` | List with `Roles.View`; assign with `Roles.Manage` |
+| DELETE | `/api/v1/users/{id}/roles/{assignmentId}` | Remove a user assignment with `Roles.Manage` |
+| GET, POST | `/api/v1/groups/{id}/roles` | List with `Roles.View`; assign with `Roles.Manage` |
+| DELETE | `/api/v1/groups/{id}/roles/{assignmentId}` | Remove a group assignment with `Roles.Manage` |
 | GET | `/api/v1/dashboard` | Basic authenticated dashboard information |
 | GET | `/api/v1/servers` | Lists registered servers and their known runtime state |
 | POST | `/api/v1/servers` | Creates or adopts a native server definition |
@@ -34,6 +34,10 @@ All endpoints are namespaced below `/api/v1` and return errors as `{ "error": { 
 | POST | `/api/v1/servers/{id}/stop` | Stops it with timeout escalation |
 | POST | `/api/v1/servers/{id}/restart` | Stops then starts it |
 | POST | `/api/v1/servers/{id}/kill` | Immediately terminates it |
+| GET, POST | `/api/v1/servers/{id}/ports` | List with `Ports.View`; add with `Ports.Manage` |
+| PATCH, DELETE | `/api/v1/servers/{id}/ports/{portId}` | Update or remove with `Ports.Manage` |
+| GET | `/api/v1/servers/{id}/monitoring` | Current health and process metrics; requires `Monitoring.View` for this server |
+| GET | `/api/v1/servers/{id}/monitoring/history` | Bounded chronological process samples; requires `Monitoring.View` for this server |
 | GET | `/api/v1/servers/{id}/files?path=...` | Lists one server-root-relative directory |
 | DELETE | `/api/v1/servers/{id}/files?path=...&recursive=true` | Deletes a file or explicitly recursive directory |
 | GET | `/api/v1/servers/{id}/files/content?path=...` | Reads one bounded UTF-8 text file |
@@ -82,14 +86,43 @@ Usernames are 3–32 ASCII characters; group names are 2–64 ASCII characters. 
 
 ## RBAC management
 
-Roles contain permissions selected from the static `/permissions` catalog. A role can be assigned to a user or group at global scope (`{"scope_type":"global"}`) or at one existing server (`{"scope_type":"server","scope_id":"..."}`). All RBAC-management endpoints are administrator-only and mutating calls require the normal same-origin and CSRF protections.
+Roles contain permissions selected from the static `/permissions` catalog. A role can be assigned to a user or group at global scope (`{"scope_type":"global"}`) or at one existing server (`{"scope_type":"server","scope_id":"..."}`). `Roles.View` and `Roles.Manage` control the corresponding read and mutation routes; mutating calls require the normal same-origin and CSRF protections. Role names have no special meaning, and `Roles.Manage` cannot add keys outside the compiled catalog.
 
 ## Product authorization
 
 Authenticated enabled administrators retain a full bypass. Other users are evaluated through their direct and group role assignments; global assignments apply everywhere and a server-scoped assignment applies only to that server. Permissions are allow-only and have no implicit inheritance.
 
-`Server.View` controls list/detail visibility; `Server.Create` is global-only; `Server.Edit`, `Server.Delete`, `Server.Start`, `Server.Stop`, `Server.Restart`, and `Server.Kill` control their matching actions. The server list filters entries without `Server.View`.
+`Server.View` controls list/detail visibility; `Server.Create` is global-only; `Server.Edit`, `Server.Delete`, `Server.Start`, `Server.Stop`, `Server.Restart`, and `Server.Kill` control their matching actions. The server list filters entries without `Server.View`. `Monitoring.View` is server-scoped: global assignments apply to every server and server assignments apply only to that server.
+
+## Monitoring
+
+The monitoring endpoint returns current runtime/health state, verified PID, uptime, CPU percentage, resident memory, optional thread/handle counts, exit data, and persisted crash/restart counters. History is in-memory, chronological, and bounded to 300 samples per server by default; the default sampling interval is five seconds.
+
+Server create/update payloads accept `auto_restart_enabled`, `auto_restart_max_attempts`, `auto_restart_window_seconds`, and `auto_restart_delay_seconds`. This `Server.Edit` configuration schedules only unexpected non-zero exits; monitoring reports enabled/pending policy state and attempts in the rolling window.
+
+## Application settings
+
+`GET /api/v1/settings` returns the whitelisted application settings and requires the global-only `Settings.View` permission. `PATCH /api/v1/settings` requires global-only `Settings.Manage`, same-origin validation, and `X-CSRF-Token`; the permissions are independent. Server-scoped assignments do not grant either permission.
+
+The current typed surface is `monitoring.sample_interval_seconds` (1–300) and `monitoring.history_limit` (1–10,000), exposed as `{"monitoring":{"sample_interval_seconds":5,"history_limit":300},"restart_required":true,"restart_required_fields":[...]}`. PATCH accepts only the corresponding typed `monitoring` fields and rejects unknown fields. IPv4/IPv6, database, TLS, session, filesystem, executable, environment, and arbitrary YAML values are not settings API fields. A successful mutation records one `settings.update` audit event containing only changed field names.
+
+## Diagnostics
+
+`GET /api/v1/diagnostics` is read-only and requires global-only `Settings.View`. It reports safe application/runtime, platform, SQLite schema-health, and monitoring configuration summaries. It never returns paths, environment values, credentials, network adapters, server roots, or database contents, and it executes no shell commands.
+
+## Support bundle
+
+`POST /api/v1/support/bundle` requires authentication, global-only `Settings.Manage` (server-scoped assignments do not apply), same-origin validation, and `X-CSRF-Token`. It returns `200 application/zip` with `Content-Disposition: attachment` and a server-generated safe `gamenode-support-<UTC>.zip` filename. The fixed archive contains only `manifest.json`, `diagnostics.json`, `settings.json`, `audit-recent.json`, and `servers.json`; core output is capped at 10 MiB. Generation completes in a bounded in-memory buffer before ZIP headers are committed, so a generation failure returns a controlled JSON API error rather than a partial download. There are no other support endpoints.
+
+## Server ports
+
+Port records contain `id`, `name`, `protocol`, `bind_address`, `port`, and dynamic `status`. Protocol is `tcp` or `udp`; ports are 1–65535. Bind addresses may be empty/wildcard, `0.0.0.0`, `::`, or concrete IPv4/IPv6 literals. Hostnames are unsupported. `Ports.View` and `Ports.Manage` are independent server-scoped permissions: global grants apply everywhere and server grants only at that server. Mutations require the normal CSRF token. Validation can reject invalid ports, protocols or addresses, an internal registry collision, or an externally occupied OS port; unknown servers/ports and missing permissions use the normal API errors.
 
 Console WebSocket connections require `Console.View`. `Console.Send` is checked separately for every inbound `input` message: view-only clients can receive state, history, and output but receive `{"type":"error","state":"permission_denied"}` for input. Live output also rechecks `Console.View`, so removing access or disabling a user stops an active subscriber at the next event.
 
-An enabled administrator bypasses these checks. `Users.Manage` does not permit setting or clearing `is_admin`; only an active administrator can change that flag, and last-active-admin protection remains independent. `Roles.Manage` may delegate catalogized RBAC permissions, but cannot create unknown permission keys or an administrator bypass. `Settings.View`, `Settings.Manage`, `Monitoring.View`, and `Audit.View` remain reserved until matching product endpoints exist.
+An enabled administrator bypasses these checks. `Users.Manage` does not permit setting or clearing `is_admin`; only an active administrator can change that flag, and last-active-admin protection remains independent. `Roles.Manage` may delegate catalogized RBAC permissions, but cannot create unknown permission keys or an administrator bypass.
+# Audit log
+
+`GET /api/v1/dashboard` is read-only and returns capability-filtered server, monitoring, port, and (only with global `Audit.View`) recent audit summaries. It never reports hidden servers or performs port scans or mutations.
+
+`GET /api/v1/audit` is a read-only, global audit endpoint. It requires the global-only `Audit.View` permission (a server-scoped assignment does not grant access); administrators retain the normal bypass. It accepts bounded `limit` (default 100, maximum 500) and `offset`, plus `actor_user_id`, `action`, `resource_type`, `resource_id`, `server_id`, and `result` filters. Results are newest first (`timestamp DESC`, `id DESC`) and return `items`, `limit`, and `offset`. Each item contains its persisted actor/resource snapshots, result, direct remote IP, metadata, and sanitized error fields. Deleted resources remain visible through those snapshots. GameNode exposes no audit mutation, clear, or delete endpoint.

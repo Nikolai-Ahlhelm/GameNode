@@ -254,6 +254,9 @@ func (s *Service) Allowed(c context.Context, user, permission string, requested 
 	if e := scope(requested); e != nil {
 		return false, e
 	}
+	if GlobalOnly(permission) && requested.Type != "global" {
+		return false, nil
+	}
 	var admin, disabled int
 	e := s.db.QueryRowContext(c, "SELECT is_admin,disabled FROM users WHERE id=?", user).Scan(&admin, &disabled)
 	if e != nil {
