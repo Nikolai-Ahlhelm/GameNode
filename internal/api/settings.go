@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"gamenode/internal/audit"
+	"gamenode/internal/logging"
 	"gamenode/internal/settings"
 )
 
@@ -42,4 +43,43 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		method(w)
 	}
+}
+
+func (s *Server) clearLogsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		method(w)
+		return
+	}
+	actor, _, ok := s.requireGlobalPermission(w, r, "Log.FlushDirectory", true)
+	if !ok {
+		return
+	}
+	if s.logs == nil {
+		internal(w)
+		return
+	}
+	if err := s.logs.Clear(r.Context()); err != nil {
+		s.log.With("module", "Settings.Logs").Error("log files could not be cleared", "error", err.Error())
+		s.recordAudit(r, auditInput{action: audit.SettingsLogsClear, resourceType: audit.Settings, result: audit.Failure, actor: &actor, errorCode: "operation_failed", errorSummary: "log files could not be cleared"})
+		internal(w)
+		return
+	}
+	s.recordAudit(r, auditInput{action: audit.SettingsLogsClear, resourceType: audit.Settings, result: audit.Success, actor: &actor})
+	s.log.With("module", "Settings.Logs").Info("log files cleared", "actor_user_id", actor.ID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) applicationLogsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w)
+		return
+	}
+	if _, _, ok := s.requireGlobalPermission(w, r, "Log.Read", false); !ok {
+		return
+	}
+	if s.logs == nil {
+		internal(w)
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"entries": s.logs.Entries(), "limit": logging.MaxHistoryEntries})
 }

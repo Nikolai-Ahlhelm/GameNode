@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -144,6 +145,7 @@ type Service struct {
 	roots      map[string]string
 	observer   Observer
 	now        func() time.Time
+	log        *slog.Logger
 }
 type run struct {
 	cancel context.CancelFunc
@@ -153,7 +155,10 @@ type run struct {
 	// finalizing closes cancellation before the transactional server insert.
 	finalizing bool
 }
-type Options struct{ HostOS string }
+type Options struct {
+	HostOS string
+	Log    *slog.Logger
+}
 
 func New(db *sql.DB, source TemplateSource, installer Installer, creator ServerCreator, dataDirectory string) *Service {
 	return NewWithOptions(db, source, installer, creator, dataDirectory, Options{})
@@ -164,7 +169,11 @@ func NewWithOptions(db *sql.DB, source TemplateSource, installer Installer, crea
 	if host == "" {
 		host = runtime.GOOS
 	}
-	return &Service{store: NewStore(db), templates: source, installer: installer, servers: creator, serverBase: filepath.Join(filepath.Clean(dataDirectory), "servers"), hostOS: host, ctx: ctx, cancel: cancel, active: map[string]*run{}, roots: map[string]string{}, now: func() time.Time { return time.Now().UTC() }}
+	log := options.Log
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return &Service{store: NewStore(db), templates: source, installer: installer, servers: creator, serverBase: filepath.Join(filepath.Clean(dataDirectory), "servers"), hostOS: host, ctx: ctx, cancel: cancel, active: map[string]*run{}, roots: map[string]string{}, now: func() time.Time { return time.Now().UTC() }, log: log}
 }
 func (s *Service) SetObserver(observer Observer) {
 	s.mu.Lock()
@@ -291,6 +300,7 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 	s.phase(current, Preparing, "Preparing managed server storage")
 	created, err := prepareRoot(current.root, current.job.ID)
 	if err != nil {
+		s.log.With("module", "Provisioning.Prepare").Error("managed server storage could not be prepared", "job_id", current.job.ID, "template_id", template.ID)
 		s.finish(current, Failed, "Provisioning failed", "Server target could not be prepared", false, "")
 		return
 	}
@@ -298,7 +308,9 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 		s.finish(current, Cancelled, "Provisioning was cancelled", "", created, "")
 		return
 	}
+	s.log.With("module", "SteamCMD.Install").Info("SteamCMD installation started", "job_id", current.job.ID, "template_id", template.ID, "app_id", plan.AppID)
 	err = s.installer.Install(ctx, current.root, plan, discardWriter{}, func(event steamcmd.Event) {
+		s.log.With("module", "SteamCMD.Install").Info(event.Summary, "job_id", current.job.ID, "template_id", template.ID, "app_id", plan.AppID, "phase", event.Phase)
 		switch event.Phase {
 		case "downloading_steamcmd":
 			s.phase(current, DownloadingSteamCMD, event.Summary)
@@ -313,6 +325,7 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 		return
 	}
 	if err != nil {
+		s.log.With("module", "SteamCMD.Install").Error("SteamCMD installation failed", "job_id", current.job.ID, "template_id", template.ID, "app_id", plan.AppID, "failure", steamCMDFailure(err))
 		s.finish(current, Failed, "Game installation failed", "SteamCMD could not install the game; target files may remain", true, "")
 		return
 	}
@@ -327,12 +340,14 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 		}
 		if !adapter.PostStartOnly {
 			if err = gameconfig.Apply(current.root, adapter, adapterValues); err != nil {
+				s.log.With("module", "Provisioning.GameConfig").Error("game configuration could not be written", "job_id", current.job.ID, "template_id", template.ID, "adapter_id", adapter.ID)
 				s.finish(current, Failed, "Game configuration failed", "Installed files remain but the validated game configuration could not be written", true, "")
 				return
 			}
 		}
 		definitionJSON, marshalErr := json.Marshal(adapter)
 		if marshalErr != nil {
+			s.log.With("module", "Provisioning.GameConfig").Error("game configuration snapshot could not be created", "job_id", current.job.ID, "template_id", template.ID, "adapter_id", adapter.ID)
 			s.finish(current, Failed, "Game configuration failed", "Configuration snapshot could not be created", true, "")
 			return
 		}
@@ -340,6 +355,7 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 	}
 	server, metadata, err := buildServer(template, launch, current.job.ServerName, current.root, values, sensitive)
 	if err != nil {
+		s.log.With("module", "Provisioning.ServerConfig").Error("server configuration could not be built", "job_id", current.job.ID, "template_id", template.ID)
 		s.finish(current, Failed, "Server configuration failed", "Installed files remain but no GameNode server was created", true, "")
 		return
 	}
@@ -353,11 +369,26 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 	s.mu.Unlock()
 	record, err := s.servers.CreateProvisioned(ctx, server, template.ID, metadata, provisionedPorts, configSnapshots)
 	if err != nil {
+		s.log.With("module", "Server.Create").Error("provisioned server could not be created", "job_id", current.job.ID, "template_id", template.ID, "failure", "server_creation_failed")
 		s.finish(current, Failed, "Server creation failed", "Installed files remain but no GameNode server was created", true, "")
 		return
 	}
 	_ = os.Remove(filepath.Join(current.root, ".gamenode-provisioning.json"))
 	s.finish(current, Completed, "Server installed successfully", "", false, record.Server.ID)
+	s.log.With("module", "Provisioning.Complete").Info("server provisioned", "job_id", current.job.ID, "server_id", record.Server.ID, "template_id", template.ID, "app_id", plan.AppID)
+}
+
+func steamCMDFailure(err error) string {
+	switch {
+	case errors.Is(err, steamcmd.ErrInstallFailed):
+		return "install_failed"
+	case errors.Is(err, steamcmd.ErrManagedInstallCorrupt):
+		return "managed_install_corrupt"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	default:
+		return "bootstrap_or_install_unavailable"
+	}
 }
 
 func (s *Service) phase(current *run, status, summary string) {

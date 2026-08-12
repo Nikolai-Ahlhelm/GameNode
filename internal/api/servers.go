@@ -94,11 +94,13 @@ func (s *Server) serversHandler(w http.ResponseWriter, r *http.Request) {
 		record, err := s.servers.Create(r.Context(), server)
 		if err != nil {
 			s.recordServerAudit(r, u, audit.ServerCreate, audit.Failure, "", "", err)
+			code, _ := auditFailure(err)
+			s.log.With("module", "Server.Create").Error("server creation failed", "failure", code, "actor_user_id", u.ID)
 			serverError(w, err, false)
 			return
 		}
 		s.recordServerAudit(r, u, audit.ServerCreate, audit.Success, record.Server.ID, record.Server.Name, nil)
-		s.log.Info("server created", "server_id", record.Server.ID, "mode", record.Server.CreationMode)
+		s.log.With("module", "Server.Create").Info("server created", "server_id", record.Server.ID, "mode", record.Server.CreationMode)
 		record, err = s.publicServerRecord(r.Context(), record)
 		if err != nil {
 			internal(w)
@@ -213,7 +215,7 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.recordServerAudit(r, u, audit.ServerUpdate, audit.Success, record.Server.ID, record.Server.Name, nil)
-			s.log.Info("server updated", "server_id", id)
+			s.log.With("module", "Server.Update").Info("server updated", "server_id", id)
 			record, err = s.publicServerRecord(r.Context(), record)
 			if err != nil {
 				internal(w)
@@ -231,7 +233,7 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			s.recordServerAudit(r, u, audit.ServerDelete, audit.Success, id, name, nil)
-			s.log.Info("server deleted", "server_id", id)
+			s.log.With("module", "Server.Delete").Info("server deleted", "server_id", id)
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			method(w)
@@ -280,7 +282,8 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	action := map[string]string{"start": audit.ServerStart, "stop": audit.ServerStop, "restart": audit.ServerRestart, "kill": audit.ServerKill}[parts[1]]
 	s.recordServerAudit(r, u, action, audit.Success, record.Server.ID, record.Server.Name, nil)
-	s.log.Info("server lifecycle action", "server_id", id, "action", parts[1])
+	module := map[string]string{"start": "Server.Start", "stop": "Server.Stop", "restart": "Server.Restart", "kill": "Server.Kill"}[parts[1]]
+	s.log.With("module", module).Info("server lifecycle action", "server_id", id)
 	record, err = s.publicServerRecord(r.Context(), record)
 	if err != nil {
 		internal(w)
@@ -589,7 +592,7 @@ func recursiveDelete(r *http.Request) (bool, error) {
 // Future Files.Edit/Delete/Rename authorization can attach to these action
 // names without coupling permissions to the filesystem implementation.
 func (s *Server) logFileMutation(action, serverID string) {
-	s.log.Info("file mutation", "action", action, "server_id", serverID)
+	s.log.With("module", "Files.Mutation").Info("file mutation", "action", action, "server_id", serverID)
 }
 
 func filesystemError(w http.ResponseWriter, err error) {

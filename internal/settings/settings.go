@@ -15,15 +15,18 @@ import (
 const (
 	monitoringSampleIntervalKey = "monitoring.sample_interval_seconds"
 	monitoringHistoryLimitKey   = "monitoring.history_limit"
+	loggingLevelKey             = "logging.level"
 )
 
 type Defaults struct {
 	MonitoringSampleIntervalSeconds int
 	MonitoringHistoryLimit          int
+	LoggingLevel                    string
 }
 
 type Values struct {
 	Monitoring            Monitoring `json:"monitoring"`
+	Logging               Logging    `json:"logging"`
 	RestartRequired       bool       `json:"restart_required"`
 	RestartRequiredFields []string   `json:"restart_required_fields"`
 }
@@ -33,8 +36,17 @@ type Monitoring struct {
 	HistoryLimit          int `json:"history_limit"`
 }
 
+type Logging struct {
+	Level string `json:"level"`
+}
+
 type Patch struct {
 	Monitoring *MonitoringPatch `json:"monitoring,omitempty"`
+	Logging    *LoggingPatch    `json:"logging,omitempty"`
+}
+
+type LoggingPatch struct {
+	Level *string `json:"level,omitempty"`
 }
 
 type MonitoringPatch struct {
@@ -46,6 +58,7 @@ type Service struct {
 	db       *sql.DB
 	defaults Defaults
 	mu       sync.Mutex
+	onUpdate func(Values, []string)
 }
 
 func New(db *sql.DB, defaults Defaults) *Service {
@@ -55,8 +68,18 @@ func New(db *sql.DB, defaults Defaults) *Service {
 	if defaults.MonitoringHistoryLimit == 0 {
 		defaults.MonitoringHistoryLimit = 300
 	}
+	if defaults.LoggingLevel == "" {
+		defaults.LoggingLevel = "info"
+	}
+	if err := validateLogLevel(defaults.LoggingLevel); err != nil {
+		defaults.LoggingLevel = "info"
+	}
 	return &Service{db: db, defaults: defaults}
 }
+
+// SetOnUpdate installs the process-local settings hook (for example, the
+// live logging level). It is deliberately not persisted as arbitrary code.
+func (s *Service) SetOnUpdate(callback func(Values, []string)) { s.onUpdate = callback }
 
 func (s *Service) Get(ctx context.Context) (Values, error) {
 	return s.get(ctx, s.db)
@@ -64,7 +87,7 @@ func (s *Service) Get(ctx context.Context) (Values, error) {
 
 // Update changes only supplied typed fields and returns their stable API paths.
 func (s *Service) Update(ctx context.Context, patch Patch) (Values, []string, error) {
-	if patch.Monitoring == nil || (patch.Monitoring.SampleIntervalSeconds == nil && patch.Monitoring.HistoryLimit == nil) {
+	if (patch.Monitoring == nil || (patch.Monitoring.SampleIntervalSeconds == nil && patch.Monitoring.HistoryLimit == nil)) && (patch.Logging == nil || patch.Logging.Level == nil) {
 		values, err := s.Get(ctx)
 		return values, nil, err
 	}
@@ -79,34 +102,48 @@ func (s *Service) Update(ctx context.Context, patch Patch) (Values, []string, er
 	if err != nil {
 		return Values{}, nil, err
 	}
-	changed := make([]string, 0, 2)
-	if value := patch.Monitoring.SampleIntervalSeconds; value != nil && *value != current.Monitoring.SampleIntervalSeconds {
-		if err := validateInterval(*value); err != nil {
-			return Values{}, nil, err
+	changed := make([]string, 0, 3)
+	if patch.Monitoring != nil {
+		if value := patch.Monitoring.SampleIntervalSeconds; value != nil && *value != current.Monitoring.SampleIntervalSeconds {
+			if err := validateInterval(*value); err != nil {
+				return Values{}, nil, err
+			}
+			current.Monitoring.SampleIntervalSeconds = *value
+			changed = append(changed, monitoringSampleIntervalKey)
 		}
-		current.Monitoring.SampleIntervalSeconds = *value
-		changed = append(changed, monitoringSampleIntervalKey)
+		if value := patch.Monitoring.HistoryLimit; value != nil && *value != current.Monitoring.HistoryLimit {
+			if err := validateHistoryLimit(*value); err != nil {
+				return Values{}, nil, err
+			}
+			current.Monitoring.HistoryLimit = *value
+			changed = append(changed, monitoringHistoryLimitKey)
+		}
 	}
-	if value := patch.Monitoring.HistoryLimit; value != nil && *value != current.Monitoring.HistoryLimit {
-		if err := validateHistoryLimit(*value); err != nil {
+	if value := patch.Logging; value != nil && value.Level != nil && *value.Level != current.Logging.Level {
+		if err := validateLogLevel(*value.Level); err != nil {
 			return Values{}, nil, err
 		}
-		current.Monitoring.HistoryLimit = *value
-		changed = append(changed, monitoringHistoryLimitKey)
+		current.Logging.Level = *value.Level
+		changed = append(changed, loggingLevelKey)
 	}
 	for _, key := range changed {
-		var value int
+		var stored string
 		if key == monitoringSampleIntervalKey {
-			value = current.Monitoring.SampleIntervalSeconds
+			stored = strconv.Itoa(current.Monitoring.SampleIntervalSeconds)
+		} else if key == monitoringHistoryLimitKey {
+			stored = strconv.Itoa(current.Monitoring.HistoryLimit)
 		} else {
-			value = current.Monitoring.HistoryLimit
+			stored = current.Logging.Level
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, key, strconv.Itoa(value), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, key, stored, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return Values{}, nil, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return Values{}, nil, err
+	}
+	if len(changed) > 0 && s.onUpdate != nil {
+		s.onUpdate(current, changed)
 	}
 	return current, changed, nil
 }
@@ -116,14 +153,14 @@ type queryer interface {
 }
 
 func (s *Service) get(ctx context.Context, q queryer) (Values, error) {
-	values := Values{Monitoring: Monitoring{SampleIntervalSeconds: s.defaults.MonitoringSampleIntervalSeconds, HistoryLimit: s.defaults.MonitoringHistoryLimit}, RestartRequired: true, RestartRequiredFields: []string{monitoringSampleIntervalKey, monitoringHistoryLimitKey}}
+	values := Values{Monitoring: Monitoring{SampleIntervalSeconds: s.defaults.MonitoringSampleIntervalSeconds, HistoryLimit: s.defaults.MonitoringHistoryLimit}, Logging: Logging{Level: s.defaults.LoggingLevel}, RestartRequired: true, RestartRequiredFields: []string{monitoringSampleIntervalKey, monitoringHistoryLimitKey}}
 	if err := validateInterval(values.Monitoring.SampleIntervalSeconds); err != nil {
 		return Values{}, fmt.Errorf("invalid monitoring default: %w", err)
 	}
 	if err := validateHistoryLimit(values.Monitoring.HistoryLimit); err != nil {
 		return Values{}, fmt.Errorf("invalid monitoring default: %w", err)
 	}
-	rows, err := q.QueryContext(ctx, `SELECT key,value FROM app_settings WHERE key IN (?,?)`, monitoringSampleIntervalKey, monitoringHistoryLimitKey)
+	rows, err := q.QueryContext(ctx, `SELECT key,value FROM app_settings WHERE key IN (?,?,?)`, monitoringSampleIntervalKey, monitoringHistoryLimitKey, loggingLevelKey)
 	if err != nil {
 		return Values{}, err
 	}
@@ -148,6 +185,11 @@ func (s *Service) get(ctx context.Context, q queryer) (Values, error) {
 				return Values{}, fmt.Errorf("invalid persisted setting %q: %w", key, err)
 			}
 			values.Monitoring.HistoryLimit = value
+		case loggingLevelKey:
+			if err := validateLogLevel(raw); err != nil {
+				return Values{}, fmt.Errorf("invalid persisted setting %q: %w", key, err)
+			}
+			values.Logging.Level = raw
 		}
 	}
 	return values, rows.Err()
@@ -164,4 +206,13 @@ func validateHistoryLimit(v int) error {
 		return errors.New("monitoring history limit must be between 1 and 10000")
 	}
 	return nil
+}
+
+func validateLogLevel(value string) error {
+	switch value {
+	case "debug", "info", "warn", "error":
+		return nil
+	default:
+		return errors.New("log level must be debug, info, warn, or error")
+	}
 }

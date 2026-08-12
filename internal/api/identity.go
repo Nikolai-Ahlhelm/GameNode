@@ -62,7 +62,7 @@ func (s *Server) usersHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.recordIdentityAudit(r, actor, audit.UserCreate, audit.User, user.ID, user.Username, audit.Success, map[string]any{"enabled": user.Enabled}, nil)
-		s.log.Info("user created", "user_id", user.ID)
+		s.log.With("module", "Identity.UserCreate").Info("user created", "user_id", user.ID)
 		jsonOut(w, http.StatusCreated, map[string]any{"user": user})
 	default:
 		method(w)

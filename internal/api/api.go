@@ -19,6 +19,7 @@ import (
 	"gamenode/internal/filesystem"
 	"gamenode/internal/gameconfig"
 	"gamenode/internal/identity"
+	"gamenode/internal/logging"
 	"gamenode/internal/monitoring"
 	"gamenode/internal/ports"
 	"gamenode/internal/provisioning"
@@ -47,6 +48,7 @@ type Server struct {
 	templates    *templates.Service
 	provisioning *provisioning.Service
 	gameConfig   *gameconfig.Service
+	logs         *logging.Manager
 }
 
 type supportGenerator interface {
@@ -61,6 +63,7 @@ type Options struct {
 	Templates    *templates.Service
 	Provisioning *provisioning.Service
 	GameConfig   *gameconfig.Service
+	Logs         *logging.Manager
 }
 
 // auditInput deliberately contains only values selected by the application. It
@@ -101,7 +104,7 @@ func (s *Server) recordAudit(r *http.Request, in auditInput) {
 		event.RemoteIP = r.RemoteAddr
 	}
 	if err := s.audit.Record(r.Context(), event); err != nil {
-		s.log.Error("audit write failed", "error", err.Error(), "action", in.action)
+		s.log.With("module", "Audit.Record").Error("audit write failed", "error", err.Error(), "action", in.action)
 	}
 }
 
@@ -164,7 +167,11 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	if len(options) > 0 {
 		gameConfigService = options[0].GameConfig
 	}
-	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identity.New(a.Database()), rbac: rbac.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, gameConfig: gameConfigService, log: log, secureCookie: secureCookie}
+	var logManager *logging.Manager
+	if len(options) > 0 {
+		logManager = options[0].Logs
+	}
+	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identity.New(a.Database()), rbac: rbac.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie}
 	if provisioner != nil {
 		provisioner.SetObserver(result.recordProvisioningCompletion)
 	}
@@ -180,6 +187,8 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/dashboard", s.dashboard)
 	mux.HandleFunc("/api/v1/audit", s.auditHandler)
 	mux.HandleFunc("/api/v1/settings", s.settingsHandler)
+	mux.HandleFunc("/api/v1/settings/logs", s.applicationLogsHandler)
+	mux.HandleFunc("/api/v1/settings/logs/clear", s.clearLogsHandler)
 	mux.HandleFunc("/api/v1/diagnostics", s.diagnosticsHandler)
 	mux.HandleFunc("/api/v1/support/bundle", s.supportBundleHandler)
 	mux.HandleFunc("/api/v1/users", s.usersHandler)
@@ -233,11 +242,11 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	}
 	u, e := s.auth.CreateInitialAdmin(r.Context(), in.Username, in.Email, in.Password)
 	if e != nil {
-		s.log.Warn("initial administrator creation failed", "reason", e.Error())
+		s.log.With("module", "Auth.Setup").Warn("initial administrator creation failed", "reason", e.Error())
 		bad(w, "initial setup could not be completed")
 		return
 	}
-	s.log.Info("initial administrator created", "user_id", u.ID)
+	s.log.With("module", "Auth.Setup").Info("initial administrator created", "user_id", u.ID)
 	s.issueLogin(w, r, u, in.Password)
 }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -262,7 +271,7 @@ func (s *Server) issueLogin(w http.ResponseWriter, r *http.Request, u auth.User,
 		u, raw, csrf, e = s.auth.Login(r.Context(), username[0], password)
 		if e != nil {
 			s.recordAudit(r, auditInput{action: audit.Login, resourceType: audit.Auth, resourceName: strings.TrimSpace(username[0]), result: audit.Failure, errorCode: "invalid_credentials", errorSummary: "invalid credentials"})
-			s.log.Warn("failed login", "source_ip", r.RemoteAddr)
+			s.log.With("module", "Auth.Login").Warn("failed login", "source_ip", r.RemoteAddr)
 			unauthorized(w)
 			return
 		}
@@ -279,7 +288,7 @@ func (s *Server) issueLogin(w http.ResponseWriter, r *http.Request, u auth.User,
 }
 func (s *Server) setSessionAndRespond(ctx context.Context, w http.ResponseWriter, u auth.User, raw, csrf string) {
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: raw, Path: "/", HttpOnly: true, Secure: s.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: int((24 * time.Hour).Seconds())})
-	s.log.Info("user logged in", "user_id", u.ID)
+	s.log.With("module", "Auth.Login").Info("user logged in", "user_id", u.ID)
 	capabilities, err := s.globalCapabilities(ctx, u)
 	if err != nil {
 		internal(w)
@@ -319,7 +328,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recordAudit(r, auditInput{action: audit.Logout, resourceType: audit.Auth, result: audit.Success, actor: &u})
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, Secure: s.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: -1})
-	s.log.Info("user logged out", "user_id", u.ID)
+	s.log.With("module", "Auth.Logout").Info("user logged out", "user_id", u.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -385,7 +394,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, http.StatusOK, response)
 }
 
-var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View"}
+var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View"}
 
 func (s *Server) allowed(ctx context.Context, u auth.User, permission string, scope rbac.Scope) (bool, error) {
 	return s.rbac.Allowed(ctx, u.ID, permission, scope)

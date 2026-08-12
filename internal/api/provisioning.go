@@ -69,12 +69,27 @@ func (s *Server) startProvisioning(w http.ResponseWriter, r *http.Request, templ
 	}
 	job, err := s.provisioning.Start(r.Context(), provisioning.Request{TemplateID: templateID, ServerName: input.ServerName, DirectoryName: input.DirectoryName, Values: input.Variables, ActorUserID: actor.ID, ActorUsername: actor.Username})
 	if err != nil {
+		s.log.With("module", "Provisioning.Start").Warn("provisioning request rejected", "template_id", templateID, "actor_user_id", actor.ID, "failure", provisioningFailure(err))
 		provisioningError(w, err)
 		return
 	}
+	s.log.With("module", "Provisioning.Start").Info("provisioning job created", "job_id", job.ID, "template_id", job.TemplateID, "app_id", job.AppID, "actor_user_id", actor.ID)
 	metadata, _ := json.Marshal(map[string]any{"template_id": job.TemplateID, "job_id": job.ID, "installer_type": job.InstallerType, "app_id": job.AppID})
 	s.recordAudit(r, auditInput{action: audit.ServerProvisionStart, resourceType: audit.Server, resourceName: job.ServerName, result: audit.Success, metadata: metadata, actor: &actor})
 	jsonOut(w, http.StatusAccepted, job)
+}
+
+func provisioningFailure(err error) string {
+	switch {
+	case errors.Is(err, provisioning.ErrNotProvisionable):
+		return "not_provisionable"
+	case errors.Is(err, provisioning.ErrTargetConflict):
+		return "target_conflict"
+	case errors.Is(err, sql.ErrNoRows):
+		return "template_not_found"
+	default:
+		return "invalid_request"
+	}
 }
 
 func (s *Server) templateProvisionability(w http.ResponseWriter, r *http.Request, templateID string) {
@@ -169,7 +184,7 @@ func (s *Server) recordProvisioningCompletion(event provisioning.Event) {
 		auditEvent.ErrorSummary = "server provisioning failed"
 	}
 	if err := s.audit.Record(context.Background(), auditEvent); err != nil {
-		s.log.Error("audit write failed", "error", err.Error(), "action", event.Action)
+		s.log.With("module", "Audit.Provisioning").Error("audit write failed", "error", err.Error(), "action", event.Action)
 	}
 }
 

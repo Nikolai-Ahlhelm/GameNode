@@ -66,3 +66,14 @@ func TestValidationAndPartialUpdate(t *testing.T) {
 		t.Fatal("expected interval validation failure")
 	}
 }
+
+func TestLoggingLevelPersistence(t *testing.T) {
+	s, closeDB := newService(t)
+	defer closeDB()
+	level := "debug"
+	updated, changed, err := s.Update(context.Background(), settings.Patch{Logging: &settings.LoggingPatch{Level: &level}})
+	if err != nil { t.Fatal(err) }
+	if updated.Logging.Level != "debug" || len(changed) != 1 || changed[0] != "logging.level" { t.Fatalf("unexpected logging update: %+v %#v", updated, changed) }
+	invalid := "trace"
+	if _, _, err := s.Update(context.Background(), settings.Patch{Logging: &settings.LoggingPatch{Level: &invalid}}); err == nil { t.Fatal("expected validation failure") }
+}
