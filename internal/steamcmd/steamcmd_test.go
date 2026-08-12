@@ -51,6 +51,16 @@ type captureRunner struct {
 	wait    bool
 }
 
+type retryRunner struct{ calls int }
+
+func (r *retryRunner) Run(_ context.Context, _ Command) (Result, error) {
+	r.calls++
+	if r.calls == 1 {
+		return Result{ExitCode: 1}, errors.New("transient failure")
+	}
+	return Result{ExitCode: 0}, nil
+}
+
 func (r *captureRunner) Run(ctx context.Context, command Command) (Result, error) {
 	r.command = command
 	if r.wait {
@@ -173,6 +183,29 @@ func TestInstallUsesStructuredCommandAndCancellation(t *testing.T) {
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel error=%v", err)
+	}
+}
+
+func TestInstallRetriesOneTransientSteamCMDProcessFailure(t *testing.T) {
+	root := t.TempDir()
+	tool := filepath.Join(root, "tool")
+	if err := os.MkdirAll(tool, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tool, "steamcmd.exe"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "server")
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	runner := &retryRunner{}
+	manager := New(tool, Platform{"windows", WindowsURL, "zip", "steamcmd.exe"}, nil, runner)
+	if err := manager.Install(context.Background(), target, InstallPlan{AppID: 380870, Validate: true, LoginMode: "anonymous"}, io.Discard, nil); err != nil {
+		t.Fatal(err)
+	}
+	if runner.calls != 2 {
+		t.Fatalf("SteamCMD attempts=%d", runner.calls)
 	}
 }
 

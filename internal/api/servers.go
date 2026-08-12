@@ -126,6 +126,10 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 		s.monitoringHandler(w, r, id)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "configuration" {
+		s.gameConfigurationHandler(w, r, id)
+		return
+	}
 	if len(parts) >= 2 && parts[1] == "ports" {
 		s.portsHandler(w, r, id)
 		return

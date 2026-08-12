@@ -177,14 +177,20 @@ func (m *Manager) Install(ctx context.Context, root string, plan InstallPlan, ou
 		}
 		environment["LD_LIBRARY_PATH"] = library
 	}
-	result, err := m.runner.Run(ctx, Command{Executable: m.Executable(), Arguments: args, WorkingDirectory: m.root, Output: output, Environment: environment})
-	if ctx.Err() != nil {
-		return context.Canceled
+	command := Command{Executable: m.Executable(), Arguments: args, WorkingDirectory: m.root, Output: output, Environment: environment}
+	for attempt := 0; attempt < 2; attempt++ {
+		result, runErr := m.runner.Run(ctx, command)
+		if ctx.Err() != nil {
+			return context.Canceled
+		}
+		if runErr == nil && result.ExitCode == 0 {
+			return nil
+		}
+		if attempt == 0 && sink != nil {
+			sink(Event{"installing", "SteamCMD installation failed transiently; retrying once"})
+		}
 	}
-	if err != nil || result.ExitCode != 0 {
-		return ErrInstallFailed
-	}
-	return nil
+	return ErrInstallFailed
 }
 
 func ValidatePlan(plan InstallPlan) error {

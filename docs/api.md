@@ -137,12 +137,20 @@ Templates are global node resources. `Templates.View` and `Templates.Manage` are
 | `POST` | `/api/v1/templates/analyze/egg` | `Templates.Manage` + CSRF; normalize and return a preview without persistence |
 | `POST` | `/api/v1/templates/import/egg` | `Templates.Manage` + CSRF; normalize, persist, and audit exactly one import mutation |
 | `GET` | `/api/v1/templates` | `Templates.View`; list normalized templates |
+| `GET` | `/api/v1/template-catalog` | `Templates.View`; return validated Official templates plus remote/cache/offline status; never triggers network I/O |
+| `POST` | `/api/v1/template-catalog/refresh` | `Templates.View` + CSRF; refresh the fixed Official source, returning cached data on remote failure when available |
 | `GET` | `/api/v1/templates/{id}` | `Templates.View`; read one normalized template |
-| `DELETE` | `/api/v1/templates/{id}` | `Templates.Manage` + CSRF; delete and audit the template |
+| `DELETE` | `/api/v1/templates/{id}` | `Templates.Manage` + CSRF; delete and audit an imported template; Official/built-in templates return `409` |
 | `GET` | `/api/v1/templates/{id}/provisionability` | `Templates.View` + `Server.Create`; check current-host provisioning support |
 | `POST` | `/api/v1/templates/{id}/provision` | `Templates.View` + `Server.Create` + CSRF; start an asynchronous native provision |
+| `POST` | `/api/v1/templates/{id}/resolve` | `Templates.View` + `Server.Create`; inspect an existing directory and preview a built-in resolver result |
+| `POST` | `/api/v1/templates/{id}/adopt` | `Templates.View` + `Server.Create` + CSRF; create a normal server from a resolved existing installation |
 
 Analyze/import accept `{"egg": <Egg JSON object>}`. Upload and pasted JSON clients use the same bounded representation. URL input is not supported. Bodies over the bounded envelope or Eggs over 256 KiB return `413 egg_too_large`; invalid Eggs return a controlled `422 invalid_egg` without raw parser errors. Responses use the GameNode template model and never return the original Egg or installation script. Sensitive defaults are discarded before a response or database write.
+
+The NeoForge resolve/adopt body is `{"server_name":"...","server_root":"absolute existing path","minimum_memory_mb":1024,"maximum_memory_mb":4096,"nogui":true}`. Resolve returns detected NeoForge/Minecraft versions, platform argfile launch, Java discovery state, working directory, and stop semantics. Adopt fails with `java_not_found` unless Java is available through `JAVA_HOME` or `PATH`; it does not alter the selected installation.
+
+`GET /template-catalog` reports `source` (`remote`, `cache`, or `none`), `fetched_at`, `cached`, `offline`, a bounded generic `last_error`, and the count of isolated invalid templates. Refresh returns `503 official_catalog_unavailable` only when no valid Official data exists; a last-good cache is returned with `200` and offline status. Catalog reads and manual refreshes are not audited.
 
 # Provisioning API
 
@@ -154,6 +162,15 @@ Provisioning is intentionally template-specific rather than a generic job execut
 | `POST` | `/api/v1/provisioning/jobs/{id}/cancel` | Initiating user or admin + CSRF; cancel an active installer |
 
 The start body is bounded to 128 KiB and has the form `{"server_name":"...","directory_name":"...","variables":{"KEY":"value"}}`. `directory_name` is a relative storage name, not a path; the target is always resolved below `<data>/servers`. Unknown/non-editable variables, invalid normalized values, unsupported platform plans, populated targets, and unsafe SteamCMD options are rejected with controlled errors.
+
+For Official SteamCMD templates, `GET /templates/{id}/provisionability` additionally reports the fixed installer, App ID, validation flag, selected host platform, and selected launch executable for review. `POST /templates/{id}/provision` never accepts an App ID, login, command, installer URL, or argument array. It requires both `Templates.View` and `Server.Create` plus CSRF, just like imported template provisioning.
+
+| Method | Path | Authorization and behavior |
+|---|---|---|
+| `GET` | `/api/v1/servers/{id}/configuration` | `Server.View` in server scope; reads typed fields through the server's persisted adapter snapshot |
+| `PUT` | `/api/v1/servers/{id}/configuration` | `Server.Edit` in server scope + CSRF; validates and atomically updates one adapter |
+
+The update body is `{"adapter_id":"...","values":{"FIELD":"value"}}`. Unknown adapters/fields, invalid typed values, unsafe XML/INI, missing or duplicate properties, and unsafe targets are rejected. Each adapter reports `ready` and an optional `status_message`; a post-start adapter returns its typed field shape with `ready:false` until the game creates the target, and PUT returns the normal unavailable/not-found response. Secret values are accepted only in the mutation body, are never returned, and are omitted from audit metadata. An empty secret omitted from `values` leaves the current value unchanged. Responses report `restart_required`; they never restart the server automatically.
 
 Start returns `202` with a job. Statuses are `pending`, `preparing`, `downloading_steamcmd`, `steamcmd_ready`, `installing`, `creating_server`, `completed`, `failed`, or `cancelled`. Responses contain phase summaries and `files_may_remain`, but never target absolute paths, raw SteamCMD output, variable values, credentials, or command lines. A completed job contains the normal `server_id`.
 

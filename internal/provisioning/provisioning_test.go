@@ -15,6 +15,7 @@ import (
 
 	"gamenode"
 	"gamenode/internal/database"
+	"gamenode/internal/ports"
 	gameRuntime "gamenode/internal/runtime"
 	"gamenode/internal/servers"
 	"gamenode/internal/steamcmd"
@@ -40,6 +41,8 @@ type fakeInstaller struct {
 	calls            atomic.Int32
 	plan             steamcmd.InstallPlan
 	createExecutable bool
+	executable       string
+	configXML        string
 }
 
 func (i *fakeInstaller) Install(ctx context.Context, root string, plan steamcmd.InstallPlan, _ io.Writer, sink steamcmd.EventSink) error {
@@ -67,14 +70,24 @@ func (i *fakeInstaller) Install(ctx context.Context, root string, plan steamcmd.
 		return i.err
 	}
 	if i.createExecutable {
-		return os.WriteFile(filepath.Join(root, "server.x86_64"), []byte("test"), 0700)
+		executable := i.executable
+		if executable == "" {
+			executable = "server.x86_64"
+		}
+		if err := os.WriteFile(filepath.Join(root, executable), []byte("test"), 0700); err != nil {
+			return err
+		}
+		if i.configXML != "" {
+			return os.WriteFile(filepath.Join(root, "serverconfig.xml"), []byte(i.configXML), 0600)
+		}
+		return nil
 	}
 	return nil
 }
 
 type failingCreator struct{ calls atomic.Int32 }
 
-func (c *failingCreator) CreateProvisioned(context.Context, servers.Server, string, []servers.ProvisionedVariable) (servers.Record, error) {
+func (c *failingCreator) CreateProvisioned(context.Context, servers.Server, string, []servers.ProvisionedVariable, []ports.Port, []servers.ProvisionedConfigAdapter) (servers.Record, error) {
 	c.calls.Add(1)
 	return servers.Record{}, errors.New("database unavailable SECRET")
 }
@@ -92,6 +105,7 @@ func provisionFixture(t *testing.T) (*sql.DB, string, templates.Template) {
 	root := t.TempDir()
 	min, max := float64(1), float64(65535)
 	template := templates.Template{ID: "template", Name: "7 Days To Die", Description: "fixture", SourceType: templates.SourcePelicanPterodactyl, Installer: templates.InstallerDefinition{Type: templates.InstallerSteamCMD, SteamCMD: &templates.SteamCMDPlan{AppID: 294420, Validate: true, LoginMode: "anonymous", Platform: "native", BetaBranchVariable: "BETA", BetaPasswordVariable: "BETA_PASSWORD", InstallTarget: "server_root"}}, Launch: &templates.LaunchDefinition{Executable: "./server.x86_64", Arguments: []string{"-port=${SERVER_PORT}", "-name=${SERVER_NAME}"}, WorkingRoot: "server_root"}, Variables: []templates.TemplateVariable{{Name: "Port", Key: "SERVER_PORT", DefaultValue: "26900", UserEditable: true, Type: "integer", Required: true, Validation: templates.Validation{Min: &min, Max: &max}}, {Name: "Server name", Key: "SERVER_NAME", DefaultValue: "seven", UserEditable: true, Type: "string", Required: true}, {Name: "Beta", Key: "BETA", DefaultValue: "", UserEditable: true, Type: "string", Nullable: true}, {Name: "Beta password", Key: "BETA_PASSWORD", DefaultValue: "", UserEditable: true, Type: "secret", Sensitive: true, Nullable: true}}, Compatibility: templates.Compatibility{Status: templates.PartiallyCompatible}}
+	template.Version = "3.0.0"
 	return db, root, template
 }
 
@@ -120,6 +134,10 @@ func TestProvisioningSuccessCreatesNormalServerAfterInstall(t *testing.T) {
 	}
 	if record.Server.CreationMode != servers.CreationTemplate || record.Server.Arguments[0] != "-port=26901" || record.Server.Arguments[1] != "-name=My Server" {
 		t.Fatalf("server=%#v", record.Server)
+	}
+	var sourceType, templateVersion string
+	if err = db.QueryRow(`SELECT template_source,template_version FROM server_template_variables WHERE server_id=? LIMIT 1`, job.ServerID).Scan(&sourceType, &templateVersion); err != nil || sourceType != templates.SourcePelicanPterodactyl || templateVersion != "3.0.0" {
+		t.Fatalf("template provenance source=%q version=%q err=%v", sourceType, templateVersion, err)
 	}
 	if installer.plan.AppID != 294420 || installer.plan.BetaBranch != "latest_experimental" {
 		t.Fatalf("plan=%#v", installer.plan)
@@ -322,6 +340,19 @@ func TestPlatformProvisionability(t *testing.T) {
 	}
 }
 
+func TestSafeWindowsExecutableIsProvisionable(t *testing.T) {
+	_, _, template := provisionFixture(t)
+	template.Installer.SteamCMD.Platform = "windows"
+	template.Launch.Executable = "DedicatedServer.exe"
+	values, _, _ := templates.ResolveValues(template, nil)
+	if _, err := CheckProvisionable(template, values, "windows"); err != nil {
+		t.Fatalf("safe Windows launch rejected: %v", err)
+	}
+	if _, err := CheckProvisionable(template, values, "linux"); !errors.Is(err, ErrNotProvisionable) {
+		t.Fatalf("Windows-only launch accepted on Linux: %v", err)
+	}
+}
+
 func TestProvisionabilityPreviewAllowsRequiredUserConfiguration(t *testing.T) {
 	db, data, template := provisionFixture(t)
 	defer db.Close()
@@ -338,8 +369,145 @@ func TestSensitiveValueCannotBecomeExecutablePath(t *testing.T) {
 	db, root, template := provisionFixture(t)
 	defer db.Close()
 	template.Launch.Executable = "./${BETA_PASSWORD}"
-	if _, _, err := buildServer(template, "Seven", root, map[string]string{"BETA_PASSWORD": "secret"}, map[string]bool{"BETA_PASSWORD": true}); err == nil || strings.Contains(err.Error(), "secret") {
+	if _, _, err := buildServer(template, *template.Launch, "Seven", root, map[string]string{"BETA_PASSWORD": "secret"}, map[string]bool{"BETA_PASSWORD": true}); err == nil || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("unsafe or leaking error: %v", err)
+	}
+}
+
+func officialSteamProvisionFixture(t *testing.T, hostOS string) (*sql.DB, string, templates.Template) {
+	t.Helper()
+	db, data, template := provisionFixture(t)
+	minimum, maximum := float64(1024), float64(65535)
+	template.SourceType = templates.SourceOfficial
+	template.Version = "1.0.0"
+	template.Platforms = []string{"windows", "linux"}
+	template.Launch = nil
+	template.PlatformLaunches = map[string]templates.LaunchDefinition{
+		"windows": {Executable: "Server.exe", Arguments: []string{"-port={{SERVER_PORT}}", "-name={{SERVER_NAME}}"}, WorkingRoot: "server_root", StopMethod: "terminate", StopTimeout: 30},
+		"linux":   {Executable: "./Server.x86_64", Arguments: []string{"-port={{SERVER_PORT}}", "-name={{SERVER_NAME}}"}, WorkingRoot: "server_root", StopMethod: "stdin_command", StopCommand: "shutdown", StopTimeout: 20},
+	}
+	template.Variables = []templates.TemplateVariable{{Name: "Port", Key: "SERVER_PORT", DefaultValue: "26900", UserEditable: true, Type: "integer", Required: true, Validation: templates.Validation{Min: &minimum, Max: &maximum}}, {Name: "Name", Key: "SERVER_NAME", DefaultValue: "Seven", UserEditable: true, Type: "string", Required: true}}
+	template.Ports = []templates.TemplatePort{{Name: "Game TCP", Protocol: "tcp", Variable: "SERVER_PORT"}, {Name: "Game UDP", Protocol: "udp", Variable: "SERVER_PORT"}}
+	template.Installer.SteamCMD.BetaBranchVariable = ""
+	template.Installer.SteamCMD.BetaPasswordVariable = ""
+	template.Installer.SteamCMD.Platform = "native"
+	_ = hostOS
+	return db, data, template
+}
+
+func TestOfficialSteamProvisioningSelectsPlatformCreatesPortsAndProvenance(t *testing.T) {
+	for _, test := range []struct{ host, executable string }{{"windows", "Server.exe"}, {"linux", "Server.x86_64"}} {
+		t.Run(test.host, func(t *testing.T) {
+			db, data, template := officialSteamProvisionFixture(t, test.host)
+			defer db.Close()
+			template.ResolvedAdapters = []templates.ConfigAdapterDefinition{{SchemaVersion: 1, ID: "serverconfig", Version: "1.0.0", Format: "xml-properties", Target: "serverconfig.xml", RestartRequired: true, Fields: []templates.ConfigAdapterField{{Key: "SERVER_PORT", Label: "Port", Type: "integer", Property: "ServerPort", Required: true, Validation: template.Variables[0].Validation}}}}
+			installer := &fakeInstaller{createExecutable: true, executable: test.executable, configXML: `<ServerSettings><property name="ServerPort" value="26900"/></ServerSettings>`}
+			serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+			service := NewWithOptions(db, &templateSource{template: template}, installer, serverService, data, Options{HostOS: test.host})
+			defer service.Close()
+			preview, err := service.Check(context.Background(), template.ID)
+			if err != nil || !preview.Provisionable || preview.AppID != 294420 || preview.LaunchExecutable == "" {
+				t.Fatalf("preview=%#v err=%v", preview, err)
+			}
+			job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Official", DirectoryName: "official-" + test.host, Values: map[string]string{"SERVER_PORT": "26910", "SERVER_NAME": "Official Test"}, ActorUserID: "actor"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			job = waitTerminal(t, service, job.ID)
+			if job.Status != Completed || job.ServerID == "" {
+				t.Fatalf("job=%#v", job)
+			}
+			record, err := serverService.Get(context.Background(), job.ServerID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if filepath.Base(record.Server.Executable) != test.executable || record.Server.Arguments[0] != "-port=26910" || record.Server.Arguments[1] != "-name=Official Test" {
+				t.Fatalf("server=%#v", record.Server)
+			}
+			if test.host == "linux" && (record.Server.StopMethod != "stdin_command" || record.Server.StopCommand != "shutdown" || record.Server.StopTimeoutSeconds != 20) {
+				t.Fatalf("stop=%#v", record.Server)
+			}
+			var portCount int
+			if err = db.QueryRow(`SELECT COUNT(*) FROM server_ports WHERE server_id=? AND port=26910`, job.ServerID).Scan(&portCount); err != nil || portCount != 2 {
+				t.Fatalf("ports=%d err=%v", portCount, err)
+			}
+			var source, version string
+			if err = db.QueryRow(`SELECT template_source,template_version FROM server_template_variables WHERE server_id=? LIMIT 1`, job.ServerID).Scan(&source, &version); err != nil || source != templates.SourceOfficial || version != "1.0.0" {
+				t.Fatalf("provenance=%s/%s err=%v", source, version, err)
+			}
+			var adapterCount int
+			if err = db.QueryRow(`SELECT COUNT(*) FROM server_config_adapters WHERE server_id=? AND adapter_id='serverconfig' AND adapter_version='1.0.0'`, job.ServerID).Scan(&adapterCount); err != nil || adapterCount != 1 {
+				t.Fatalf("config snapshots=%d err=%v", adapterCount, err)
+			}
+			configData, readErr := os.ReadFile(filepath.Join(data, "servers", "official-"+test.host, "serverconfig.xml"))
+			if readErr != nil || !strings.Contains(string(configData), `value="26910"`) {
+				t.Fatalf("config=%s err=%v", configData, readErr)
+			}
+		})
+	}
+}
+
+func TestOfficialSteamProvisioningPersistsPostStartAdapterWithoutInventingConfig(t *testing.T) {
+	db, data, template := officialSteamProvisionFixture(t, "windows")
+	defer db.Close()
+	maxLength := 64
+	template.ResolvedAdapters = []templates.ConfigAdapterDefinition{{SchemaVersion: 1, ID: "project-zomboid-server-ini", Version: "1.0.0", Format: "ini-key-values", Target: "Server/gamenode.ini", RestartRequired: true, PostStartOnly: true, Fields: []templates.ConfigAdapterField{{Key: "PZ_PUBLIC_NAME", Label: "Public name", Type: "string", Property: "PublicName", Required: true, Validation: templates.Validation{MaxLength: &maxLength}}}}}
+	installer := &fakeInstaller{createExecutable: true, executable: "Server.exe"}
+	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	service := NewWithOptions(db, &templateSource{template: template}, installer, serverService, data, Options{HostOS: "windows"})
+	defer service.Close()
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Post Start", DirectoryName: "post-start", Values: map[string]string{"SERVER_PORT": "26910", "SERVER_NAME": "Post Start"}, ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitTerminal(t, service, job.ID)
+	if job.Status != Completed || job.ServerID == "" {
+		t.Fatalf("job=%#v", job)
+	}
+	if _, err = os.Stat(filepath.Join(data, "servers", "post-start", "Server", "gamenode.ini")); !os.IsNotExist(err) {
+		t.Fatalf("post-start configuration was invented during provisioning: %v", err)
+	}
+	var count int
+	if err = db.QueryRow(`SELECT COUNT(*) FROM server_config_adapters WHERE server_id=? AND adapter_id='project-zomboid-server-ini'`, job.ServerID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("adapter snapshot count=%d err=%v", count, err)
+	}
+}
+
+func TestOfficialSteamProvisioningRejectsUnsupportedPlatformAndMissingExecutable(t *testing.T) {
+	db, data, template := officialSteamProvisionFixture(t, "linux")
+	defer db.Close()
+	delete(template.PlatformLaunches, "linux")
+	service := NewWithOptions(db, &templateSource{template: template}, &fakeInstaller{}, servers.NewService(servers.NewStore(db), gameRuntime.NewNative()), data, Options{HostOS: "linux"})
+	defer service.Close()
+	if _, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "No Linux", DirectoryName: "no-linux", ActorUserID: "actor"}); !errors.Is(err, ErrNotProvisionable) {
+		t.Fatalf("unsupported platform=%v", err)
+	}
+	template.PlatformLaunches["linux"] = templates.LaunchDefinition{Executable: "missing.x86_64", WorkingRoot: "server_root", StopMethod: "terminate"}
+	service.templates = &templateSource{template: template}
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Missing", DirectoryName: "missing-exe", ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitTerminal(t, service, job.ID)
+	if job.Status != Failed {
+		t.Fatalf("job=%#v", job)
+	}
+	var count int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM servers`).Scan(&count)
+	if count != 0 {
+		t.Fatal("missing executable created server record")
+	}
+}
+
+func TestOfficialSteamProvisioningRejectsUnavailableRequiredAdapter(t *testing.T) {
+	_, _, template := officialSteamProvisionFixture(t, "linux")
+	template.Configuration = &templates.ConfigurationDefinition{Adapters: []templates.ConfigAdapterReference{{ID: "missing", SchemaVersion: 1, File: "missing.adapter.json"}}}
+	values, _, err := templates.ResolveValues(template, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = CheckProvisionable(template, values, "linux"); !errors.Is(err, ErrNotProvisionable) {
+		t.Fatalf("missing adapter accepted: %v", err)
 	}
 }
 

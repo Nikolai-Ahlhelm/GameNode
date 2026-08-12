@@ -45,7 +45,7 @@ func TestMigrateFreshAndFromPreIdentityState(t *testing.T) {
 			if count != len(entries) {
 				t.Fatalf("applied migrations = %d, want %d", count, len(entries))
 			}
-			for _, table := range []string{"groups", "group_memberships", "roles", "role_permissions", "user_role_assignments", "group_role_assignments", "game_templates", "game_template_variables", "game_template_findings", "provisioning_jobs", "server_template_variables"} {
+			for _, table := range []string{"groups", "group_memberships", "roles", "role_permissions", "user_role_assignments", "group_role_assignments", "game_templates", "game_template_variables", "game_template_findings", "provisioning_jobs", "server_template_variables", "server_config_adapters"} {
 				var name string
 				if err := db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name); err != nil {
 					t.Fatalf("missing table %s: %v", table, err)

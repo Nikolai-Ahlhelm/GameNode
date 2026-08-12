@@ -130,11 +130,15 @@ func (s *Server) Validate() error {
 	if s.StopMethod == "" {
 		s.StopMethod = "terminate"
 	}
-	if s.StopMethod != "terminate" {
-		return errors.New("only terminate stop method is supported")
+	if s.StopMethod != "terminate" && s.StopMethod != "stdin_command" {
+		return errors.New("stop method must be terminate or stdin_command")
 	}
-	if s.StopCommand != "" {
-		return errors.New("stop command is not available without console support")
+	if s.StopMethod == "stdin_command" {
+		if strings.TrimSpace(s.StopCommand) == "" || len(s.StopCommand) > 256 || strings.ContainsAny(s.StopCommand, "\r\n\x00") {
+			return errors.New("stdin stop command must be one non-empty line")
+		}
+	} else if s.StopCommand != "" {
+		return errors.New("stop command requires stdin_command stop method")
 	}
 	if s.StopTimeoutSeconds == 0 {
 		s.StopTimeoutSeconds = 15
@@ -217,12 +221,23 @@ func (store *Store) Create(ctx context.Context, server Server) (Record, error) {
 type ProvisionedVariable struct {
 	Key       string
 	Sensitive bool
+	Source    string
+	Version   string
+}
+
+type ProvisionedConfigAdapter struct {
+	ID              string
+	SchemaVersion   int
+	Version         string
+	TemplateID      string
+	TemplateVersion string
+	DefinitionJSON  []byte
 }
 
 // CreateProvisioned atomically publishes a fully installed native server and
 // its template-variable sensitivity metadata. Filesystem installation has
 // already completed and is deliberately outside this database transaction.
-func (store *Store) CreateProvisioned(ctx context.Context, server Server, templateID string, variables []ProvisionedVariable) (Record, error) {
+func (store *Store) CreateProvisioned(ctx context.Context, server Server, templateID string, variables []ProvisionedVariable, provisionedPorts []ports.Port, configAdapters []ProvisionedConfigAdapter) (Record, error) {
 	if err := server.Validate(); err != nil {
 		return Record{}, err
 	}
@@ -252,7 +267,57 @@ func (store *Store) CreateProvisioned(ctx context.Context, server Server, templa
 		if !environmentKey.MatchString(variable.Key) {
 			return Record{}, errors.New("invalid provisioned variable key")
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO server_template_variables(server_id,template_id,variable_key,sensitive) VALUES(?,?,?,?)`, server.ID, templateID, variable.Key, variable.Sensitive); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO server_template_variables(server_id,template_id,variable_key,sensitive,template_source,template_version) VALUES(?,?,?,?,?,?)`, server.ID, templateID, variable.Key, variable.Sensitive, variable.Source, variable.Version); err != nil {
+			return Record{}, err
+		}
+	}
+	existingRows, err := tx.QueryContext(ctx, `SELECT name,protocol,bind_address,port FROM server_ports`)
+	if err != nil {
+		return Record{}, err
+	}
+	var existingPorts []ports.Port
+	for existingRows.Next() {
+		var existing ports.Port
+		if err = existingRows.Scan(&existing.Name, &existing.Protocol, &existing.BindAddress, &existing.Port); err != nil {
+			existingRows.Close()
+			return Record{}, err
+		}
+		existingPorts = append(existingPorts, existing)
+	}
+	if err = existingRows.Close(); err != nil {
+		return Record{}, err
+	}
+	for index := range provisionedPorts {
+		candidate := provisionedPorts[index]
+		if err = ports.Validate(&candidate); err != nil {
+			return Record{}, errors.New("invalid provisioned port")
+		}
+		for _, existing := range existingPorts {
+			if ports.Conflict(candidate, existing) {
+				return Record{}, errors.New("provisioned port conflicts with another server")
+			}
+		}
+		for prior := 0; prior < index; prior++ {
+			if ports.Conflict(candidate, provisionedPorts[prior]) {
+				return Record{}, errors.New("provisioned ports conflict")
+			}
+		}
+		provisionedPorts[index] = candidate
+	}
+	for _, provisionedPort := range provisionedPorts {
+		portID, idErr := newID()
+		if idErr != nil {
+			return Record{}, idErr
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO server_ports(id,server_id,name,protocol,bind_address,port,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, portID, server.ID, provisionedPort.Name, provisionedPort.Protocol, provisionedPort.BindAddress, provisionedPort.Port, stamp(now), stamp(now)); err != nil {
+			return Record{}, err
+		}
+	}
+	for _, adapter := range configAdapters {
+		if !environmentKey.MatchString(strings.ReplaceAll(adapter.ID, "-", "_")) || adapter.SchemaVersion != 1 || adapter.Version == "" || adapter.TemplateID != templateID || len(adapter.DefinitionJSON) == 0 || len(adapter.DefinitionJSON) > 128<<10 || !json.Valid(adapter.DefinitionJSON) {
+			return Record{}, errors.New("invalid provisioned configuration adapter")
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO server_config_adapters(server_id,adapter_id,adapter_schema_version,adapter_version,template_id,template_version,definition_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, server.ID, adapter.ID, adapter.SchemaVersion, adapter.Version, adapter.TemplateID, adapter.TemplateVersion, string(adapter.DefinitionJSON), stamp(now), stamp(now)); err != nil {
 			return Record{}, err
 		}
 	}
@@ -506,8 +571,8 @@ func (s *Service) MonitoringHistory(ctx context.Context, id string) ([]monitorin
 func (s *Service) Create(ctx context.Context, server Server) (Record, error) {
 	return s.store.Create(ctx, server)
 }
-func (s *Service) CreateProvisioned(ctx context.Context, server Server, templateID string, variables []ProvisionedVariable) (Record, error) {
-	return s.store.CreateProvisioned(ctx, server, templateID, variables)
+func (s *Service) CreateProvisioned(ctx context.Context, server Server, templateID string, variables []ProvisionedVariable, provisionedPorts []ports.Port, configAdapters []ProvisionedConfigAdapter) (Record, error) {
+	return s.store.CreateProvisioned(ctx, server, templateID, variables, provisionedPorts, configAdapters)
 }
 func (s *Service) SensitiveEnvironmentKeys(ctx context.Context, id string) ([]string, error) {
 	return s.store.SensitiveEnvironmentKeys(ctx, id)
@@ -676,8 +741,16 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 	record.Runtime.CurrentState = StateStopping
 	_ = s.store.SaveRuntime(ctx, id, record.Runtime)
 	identity := runtime.Identity{PID: record.Runtime.PID, StartKey: record.Runtime.processStartKey}
+	instance, _ := s.instances.Load(id)
 	if kill {
 		err = s.runtime.Kill(ctx, identity)
+	} else if record.Server.StopMethod == "stdin_command" {
+		process, ok := instance.(*processInstance)
+		if !ok || process.identity != identity {
+			err = errors.New("console input is unavailable for the detached process")
+		} else {
+			err = process.session.Input(record.Server.StopCommand + "\n")
+		}
 	} else {
 		err = s.runtime.Stop(ctx, identity, time.Duration(record.Server.StopTimeoutSeconds)*time.Second)
 	}
@@ -688,10 +761,25 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 		lock.Unlock()
 		return Record{}, err
 	}
-	instance, _ := s.instances.Load(id)
 	lock.Unlock()
 	if process, ok := instance.(*processInstance); ok && process.identity == identity {
-		<-process.done
+		if !kill && record.Server.StopMethod == "stdin_command" {
+			timer := time.NewTimer(time.Duration(record.Server.StopTimeoutSeconds) * time.Second)
+			select {
+			case <-process.done:
+				timer.Stop()
+			case <-timer.C:
+				if killErr := s.runtime.Kill(context.Background(), identity); killErr != nil {
+					return Record{}, killErr
+				}
+				<-process.done
+			case <-ctx.Done():
+				timer.Stop()
+				return Record{}, ctx.Err()
+			}
+		} else {
+			<-process.done
+		}
 	}
 	return s.store.Get(ctx, id)
 }

@@ -1,0 +1,127 @@
+[12Aug.2026 11:52:46.578] [main/INFO] [net.neoforged.fml.startup.Entrypoint/]: JVM Uptime at startup: 70ms
+[12Aug.2026 11:52:46.585] [main/INFO] [net.neoforged.fml.loading.FMLLoader/]: Starting FancyModLoader version 11.0.16 (DEDICATED_SERVER in PROD)
+[12Aug.2026 11:52:46.585] [main/INFO] [net.neoforged.fml.loading.FMLLoader/]: Game directory: I:\GameNode\server-test
+[12Aug.2026 11:52:46.586] [main/DEBUG] [net.neoforged.fml.loading.FMLPaths/CORE]: Path GAMEDIR is I:\GameNode\server-test
+[12Aug.2026 11:52:46.587] [main/DEBUG] [net.neoforged.fml.loading.FMLPaths/CORE]: Path JIJ_CACHEDIR is I:\GameNode\server-test\.cache\jij
+[12Aug.2026 11:52:46.588] [main/DEBUG] [net.neoforged.fml.loading.FMLPaths/CORE]: Path MODSDIR is I:\GameNode\server-test\mods
+[12Aug.2026 11:52:46.588] [main/DEBUG] [net.neoforged.fml.loading.FMLPaths/CORE]: Path CONFIGDIR is I:\GameNode\server-test\config
+[12Aug.2026 11:52:46.588] [main/DEBUG] [net.neoforged.fml.loading.FMLPaths/CORE]: Path FMLCONFIG is I:\GameNode\server-test\config\fml.toml
+[12Aug.2026 11:52:46.618] [ForkJoinPool.commonPool-worker-4/DEBUG] [net.neoforged.fml.loading.EarlyServiceDiscovery/]: libraries\net\neoforged\fancymodloader\loader\11.0.16\loader-11.0.16.jar contains early service net.neoforged.neoforgespi.locating.IModFileReader
+[12Aug.2026 11:52:46.620] [ForkJoinPool.commonPool-worker-26/DEBUG] [net.neoforged.fml.loading.EarlyServiceDiscovery/]: libraries\net\neoforged\fancymodloader\earlydisplay\11.0.16\earlydisplay-11.0.16.jar contains early service net.neoforged.neoforgespi.earlywindow.ImmediateWindowProvider
+[12Aug.2026 11:52:46.624] [ForkJoinPool.commonPool-worker-4/DEBUG] [net.neoforged.fml.loading.moddiscovery.ModFile/LOADING]: Loading mod file libraries\net\neoforged\fancymodloader\loader\11.0.16\loader-11.0.16.jar with languages []
+[12Aug.2026 11:52:46.624] [ForkJoinPool.commonPool-worker-26/DEBUG] [net.neoforged.fml.loading.moddiscovery.ModFile/LOADING]: Loading mod file libraries\net\neoforged\fancymodloader\earlydisplay\11.0.16\earlydisplay-11.0.16.jar with languages []
+[12Aug.2026 11:52:46.625] [main/INFO] [net.neoforged.fml.loading.EarlyServiceDiscovery/]: Found 2 early service jars (out of 66) in 21ms
+[12Aug.2026 11:52:46.626] [main/INFO] [net.neoforged.fml.loading.FMLLoader/]: Loading FML Early Services:
+[12Aug.2026 11:52:46.626] [main/INFO] [net.neoforged.fml.loading.FMLLoader/]:  - libraries/net/neoforged/fancymodloader/loader/11.0.16/loader-11.0.16.jar
+[12Aug.2026 11:52:46.627] [main/INFO] [net.neoforged.fml.loading.FMLLoader/]:  - libraries/net/neoforged/fancymodloader/earlydisplay/11.0.16/earlydisplay-11.0.16.jar
+[12Aug.2026 11:52:46.631] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: Found 0 implementations of GraphicsBootstrapper:
+[12Aug.2026 11:52:46.631] [main/INFO] [net.neoforged.fml.loading.ImmediateWindowHandler/]: Not loading early display in headless mode.
+[12Aug.2026 11:52:46.634] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: Found 4 implementations of IModFileCandidateLocator:
+[12Aug.2026 11:52:46.635] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: 	    1000 - [built-in] net.neoforged.fml.loading.moddiscovery.locators.GameLocator from libraries/net/neoforged/fancymodloader/loader/11.0.16/loader-11.0.16.jar
+[12Aug.2026 11:52:46.636] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: 	    1000 - [built-in] net.neoforged.fml.loading.moddiscovery.locators.InDevFolderLocator from libraries/net/neoforged/fancymodloader/loader/11.0.16/loader-11.0.16.jar
+[12Aug.2026 11:52:46.636] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: 	    1000 - [built-in] net.neoforged.fml.loading.moddiscovery.locators.InDevJarLocator from libraries/net/neoforged/fancymodloader/loader/11.0.16/loader-11.0.16.jar
+[12Aug.2026 11:52:46.636] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: 	       0 - [built-in] net.neoforged.fml.loading.moddiscovery.locators.ModsFolderLocator from libraries/net/neoforged/fancymodloader/loader/11.0.16/loader-11.0.16.jar
+[12Aug.2026 11:52:46.637] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: Found 2 implementations of IModFileReader:
+[12Aug.2026 11:52:46.637] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: 	       0 - net.neoforged.fml.loading.moddiscovery.readers.JarModsDotTomlModFileReader from libraries/net/neoforged/fancymodloader/loader/11.0.16/loader-11.0.16.jar
+[12Aug.2026 11:52:46.637] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: 	   -1000 - net.neoforged.fml.loading.moddiscovery.readers.NestedLibraryModReader from libraries/net/neoforged/fancymodloader/loader/11.0.16/loader-11.0.16.jar
+[12Aug.2026 11:52:46.639] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: Found 1 implementations of IDependencyLocator:
+[12Aug.2026 11:52:46.639] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: 	       0 - net.neoforged.fml.loading.moddiscovery.locators.JarInJarDependencyLocator from libraries/net/neoforged/fancymodloader/loader/11.0.16/loader-11.0.16.jar
+[12Aug.2026 11:52:46.643] [main/INFO] [net.neoforged.fml.loading.moddiscovery.locators.GameLocator/]: Failed to find common Minecraft classes and resources on the classpath. Assuming we're launching production.
+[12Aug.2026 11:52:46.687] [main/DEBUG] [net.neoforged.fml.loading.moddiscovery.ModFileParser/LOADING]: Considering mod file candidate libraries\net\neoforged\minecraft-server-patched\26.2.0.59\minecraft-server-patched-26.2.0.59.jar
+[12Aug.2026 11:52:46.705] [main/DEBUG] [net.neoforged.fml.loading.moddiscovery.ModFileInfo/LOADING]: Found valid mod file minecraft-server-patched-26.2.0.59.jar with {minecraft} mods - versions {26.2}
+[12Aug.2026 11:52:46.706] [main/DEBUG] [net.neoforged.fml.loading.moddiscovery.ModFile/LOADING]: Loading mod file libraries\net\neoforged\minecraft-server-patched\26.2.0.59\minecraft-server-patched-26.2.0.59.jar with languages [LanguageSpec[languageName=minecraft, acceptedVersions=null]]
+[12Aug.2026 11:52:46.707] [main/DEBUG] [net.neoforged.fml.loading.moddiscovery.ModFileParser/LOADING]: Considering mod file candidate libraries\net\neoforged\neoforge\26.2.0.59\neoforge-26.2.0.59-universal.jar
+[12Aug.2026 11:52:46.711] [main/DEBUG] [net.neoforged.fml.loading.moddiscovery.ModFileInfo/LOADING]: Found valid mod file neoforge-26.2.0.59-universal.jar with {neoforge} mods - versions {26.2.0.59}
+[12Aug.2026 11:52:46.711] [main/DEBUG] [net.neoforged.fml.loading.moddiscovery.ModFile/LOADING]: Loading mod file libraries\net\neoforged\neoforge\26.2.0.59\neoforge-26.2.0.59-universal.jar with languages [LanguageSpec[languageName=javafml, acceptedVersions=[3,]]]
+[12Aug.2026 11:52:46.712] [main/DEBUG] [net.neoforged.fml.loading.moddiscovery.ModFile/LOADING]: Found mixin config MixinConfig[config=neoforge.mixins.json, requiredMods=[], behaviorVersion=null]
+[12Aug.2026 11:52:46.806] [main/DEBUG] [net.neoforged.fml.loading.moddiscovery.ModFile/LOADING]: Loading mod file I:\GameNode\server-test\.cache\jij\6a464b1c603b716033f3561a0632a7cc7be17c9d75af1cab7f1db5fe98c3888a\mixinextras-neoforge-0.5.4.jar with languages []
+[12Aug.2026 11:52:46.851] [main/DEBUG] [net.neoforged.fml.loading.moddiscovery.ModFile/LOADING]: Loading mod file I:\GameNode\server-test\.cache\jij\4bd11d695a422e55e665ef3bba8b23bb62b7bcb77d98175ba2fff7db44ad1965\net.neoforged.neoforge-coremods-26.2.0.59.jar with languages []
+[12Aug.2026 11:52:46.870] [main/INFO] [net.neoforged.fml.loading.moddiscovery.locators.JarInJarDependencyLocator/]: Found 2 dependencies adding them to mods collection
+[12Aug.2026 11:52:46.871] [main/INFO] [net.neoforged.fml.loading.moddiscovery.ModDiscoverer/]: 
+     Mod List:
+		Name Version (Mod Id)
+
+		Minecraft 26.2 (minecraft)
+		NeoForge 26.2.0.59 (neoforge)
+[12Aug.2026 11:52:46.874] [main/DEBUG] [net.neoforged.fml.loading.ModSorter/]: Configured system mods: [minecraft, neoforge]
+[12Aug.2026 11:52:46.874] [main/DEBUG] [net.neoforged.fml.loading.ModSorter/]: Found system mod: minecraft
+[12Aug.2026 11:52:46.874] [main/DEBUG] [net.neoforged.fml.loading.ModSorter/]: Found system mod: neoforge
+[12Aug.2026 11:52:46.877] [main/DEBUG] [net.neoforged.fml.loading.ModSorter/LOADING]: Found 0 mod requirements (0 mandatory, 0 optional)
+[12Aug.2026 11:52:46.878] [main/DEBUG] [net.neoforged.fml.loading.ModSorter/LOADING]: Found 0 mod requirements missing (0 mandatory, 0 optional)
+[12Aug.2026 11:52:46.947] [main/INFO] [mixin/]: SpongePowered MIXIN Subsystem Version=0.8.7 Source=file:/I:/GameNode/server-test/libraries/net/fabricmc/sponge-mixin/0.17.3+mixin.0.8.7/sponge-mixin-0.17.3+mixin.0.8.7.jar Service=FML Env=SERVER
+[12Aug.2026 11:52:46.957] [main/DEBUG] [mixin/]: Initialising Mixin Platform Manager
+[12Aug.2026 11:52:46.958] [main/DEBUG] [mixin/]: Adding mixin platform agents for container ContainerHandleVirtual(fml:18c85)
+[12Aug.2026 11:52:46.958] [main/DEBUG] [mixin/]: Instancing new MixinPlatformAgentDefault for ContainerHandleVirtual(fml:18c85)
+[12Aug.2026 11:52:46.958] [main/DEBUG] [mixin/]: MixinPlatformAgentDefault accepted container ContainerHandleVirtual(fml:18c85)
+[12Aug.2026 11:52:46.958] [main/DEBUG] [mixin/]: Instancing new MixinPlatformAgentDefault for ContainerHandleVirtual(fml:18c85)
+[12Aug.2026 11:52:46.958] [main/DEBUG] [mixin/]: MixinPlatformAgentDefault accepted container ContainerHandleVirtual(fml:18c85)
+[12Aug.2026 11:52:46.959] [main/DEBUG] [mixin/]: Processing prepare() for PlatformAgent[MixinPlatformAgentDefault:ContainerHandleVirtual(fml:18c85)]
+[12Aug.2026 11:52:46.959] [main/DEBUG] [mixin/]: Processing prepare() for PlatformAgent[MixinPlatformAgentDefault:ContainerHandleVirtual(fml:18c85)]
+[12Aug.2026 11:52:46.959] [main/INFO] [net.neoforged.fml.loading.FMLLoader/]: Loading FML Plugins:
+[12Aug.2026 11:52:46.960] [main/INFO] [net.neoforged.fml.loading.FMLLoader/]:  - ~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > net.neoforged.neoforge-coremods-26.2.0.59.jar
+[12Aug.2026 11:52:46.963] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: Found 2 implementations of IModLanguageLoader:
+[12Aug.2026 11:52:46.963] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: 	net.neoforged.fml.javafmlmod.FMLJavaModLanguageProvider from libraries/net/neoforged/fancymodloader/loader/11.0.16/loader-11.0.16.jar
+[12Aug.2026 11:52:46.963] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: 	net.neoforged.fml.mclanguageprovider.MinecraftModLanguageProvider from libraries/net/neoforged/fancymodloader/loader/11.0.16/loader-11.0.16.jar
+[12Aug.2026 11:52:46.963] [main/DEBUG] [net.neoforged.fml.loading.LanguageProviderLoader/CORE]: Found language provider javafml, version 11.0
+[12Aug.2026 11:52:46.963] [main/DEBUG] [net.neoforged.fml.loading.LanguageProviderLoader/CORE]: Found language provider minecraft, version 11.0
+[12Aug.2026 11:52:46.965] [main/DEBUG] [net.neoforged.fml.loading.FMLLoader/]: Adding Access Transformer META-INF/accesstransformer.cfg in jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar)
+[12Aug.2026 11:52:46.980] [main/DEBUG] [net.neoforged.fml.loading.FMLLoader/]: Adding Access Transformer META-INF/accesstransformergenerated.cfg in jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar)
+[12Aug.2026 11:52:46.987] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: Found 4 implementations of ClassProcessor:
+[12Aug.2026 11:52:46.987] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: 	[built-in] net.neoforged.fml.common.asm.AccessTransformerService from libraries/net/neoforged/fancymodloader/loader/11.0.16/loader-11.0.16.jar
+[12Aug.2026 11:52:46.987] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: 	[built-in] net.neoforged.fml.common.asm.enumextension.RuntimeEnumExtender from libraries/net/neoforged/fancymodloader/loader/11.0.16/loader-11.0.16.jar
+[12Aug.2026 11:52:46.987] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: 	[built-in] net.neoforged.fml.common.asm.SimpleProcessorsGroup from libraries/net/neoforged/fancymodloader/loader/11.0.16/loader-11.0.16.jar
+[12Aug.2026 11:52:46.987] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: 	[built-in] net.neoforged.fml.loading.mixin.FMLMixinClassProcessor from libraries/net/neoforged/fancymodloader/loader/11.0.16/loader-11.0.16.jar
+[12Aug.2026 11:52:46.988] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: Found 1 implementations of ClassProcessorProvider:
+[12Aug.2026 11:52:46.988] [main/DEBUG] [net.neoforged.fml.util.ServiceLoaderUtil/CORE]: 	net.neoforged.neoforge.coremods.NeoForgeCoreMod from ~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > net.neoforged.neoforge-coremods-26.2.0.59.jar
+[12Aug.2026 11:52:47.005] [main/INFO] [net.neoforged.fml.loading.FMLLoader/]: Building game content classloader:
+ - minecraft (jar(~libraries/net/neoforged/minecraft-server-patched/26.2.0.59/minecraft-server-patched-26.2.0.59.jar))
+ - mixinextras.neoforge (jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > mixinextras-neoforge-0.5.4.jar))
+ - neoforge (jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar))
+ - net.neoforged.fml.generated (empty(VirtualJar/net.neoforged.fml.generated))
+[12Aug.2026 11:52:47.013] [main/INFO] [net.neoforged.fml.loading.FMLLoader/]: Built game content classloader in 13ms
+[12Aug.2026 11:52:47.035] [main/DEBUG] [mixin/]: Processing launch tasks for PlatformAgent[MixinPlatformAgentDefault:ContainerHandleVirtual(fml:18c85)]
+[12Aug.2026 11:52:47.035] [main/DEBUG] [mixin/]: Processing launch tasks for PlatformAgent[MixinPlatformAgentDefault:ContainerHandleVirtual(fml:18c85)]
+[12Aug.2026 11:52:47.036] [main/DEBUG] [mixin/]: Adding agents for Mixin Container jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > net.neoforged.neoforge-coremods-26.2.0.59.jar)
+[12Aug.2026 11:52:47.036] [main/DEBUG] [mixin/]: Adding mixin platform agents for container jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > net.neoforged.neoforge-coremods-26.2.0.59.jar)
+[12Aug.2026 11:52:47.036] [main/DEBUG] [mixin/]: Instancing new MixinPlatformAgentDefault for jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > net.neoforged.neoforge-coremods-26.2.0.59.jar)
+[12Aug.2026 11:52:47.036] [main/DEBUG] [mixin/]: MixinPlatformAgentDefault accepted container jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > net.neoforged.neoforge-coremods-26.2.0.59.jar)
+[12Aug.2026 11:52:47.036] [main/DEBUG] [mixin/]: Instancing new MixinPlatformAgentDefault for jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > net.neoforged.neoforge-coremods-26.2.0.59.jar)
+[12Aug.2026 11:52:47.036] [main/DEBUG] [mixin/]: MixinPlatformAgentDefault accepted container jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > net.neoforged.neoforge-coremods-26.2.0.59.jar)
+[12Aug.2026 11:52:47.036] [main/DEBUG] [mixin/]: Processing prepare() for PlatformAgent[MixinPlatformAgentDefault:jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > net.neoforged.neoforge-coremods-26.2.0.59.jar)]
+[12Aug.2026 11:52:47.037] [main/DEBUG] [mixin/]: Processing prepare() for PlatformAgent[MixinPlatformAgentDefault:jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > net.neoforged.neoforge-coremods-26.2.0.59.jar)]
+[12Aug.2026 11:52:47.037] [main/DEBUG] [mixin/]: Adding agents for Mixin Container jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > mixinextras-neoforge-0.5.4.jar)
+[12Aug.2026 11:52:47.037] [main/DEBUG] [mixin/]: Adding mixin platform agents for container jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > mixinextras-neoforge-0.5.4.jar)
+[12Aug.2026 11:52:47.037] [main/DEBUG] [mixin/]: Instancing new MixinPlatformAgentDefault for jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > mixinextras-neoforge-0.5.4.jar)
+[12Aug.2026 11:52:47.037] [main/DEBUG] [mixin/]: MixinPlatformAgentDefault accepted container jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > mixinextras-neoforge-0.5.4.jar)
+[12Aug.2026 11:52:47.037] [main/DEBUG] [mixin/]: Instancing new MixinPlatformAgentDefault for jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > mixinextras-neoforge-0.5.4.jar)
+[12Aug.2026 11:52:47.037] [main/DEBUG] [mixin/]: MixinPlatformAgentDefault accepted container jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > mixinextras-neoforge-0.5.4.jar)
+[12Aug.2026 11:52:47.037] [main/DEBUG] [mixin/]: Processing prepare() for PlatformAgent[MixinPlatformAgentDefault:jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > mixinextras-neoforge-0.5.4.jar)]
+[12Aug.2026 11:52:47.037] [main/DEBUG] [mixin/]: Registering mixin config: mixinextras.init.mixins.json source=jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > mixinextras-neoforge-0.5.4.jar)
+[12Aug.2026 11:52:47.038] [main/DEBUG] [mixin/]: Processing prepare() for PlatformAgent[MixinPlatformAgentDefault:jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > mixinextras-neoforge-0.5.4.jar)]
+[12Aug.2026 11:52:47.038] [main/DEBUG] [mixin/]: Registering mixin config: mixinextras.init.mixins.json source=jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > mixinextras-neoforge-0.5.4.jar)
+[12Aug.2026 11:52:47.038] [main/DEBUG] [mixin/]: inject() running with 3 agents
+[12Aug.2026 11:52:47.038] [main/DEBUG] [mixin/]: Processing inject() for PlatformAgent[MixinPlatformAgentDefault:ContainerHandleVirtual(fml:18c85)]
+[12Aug.2026 11:52:47.038] [main/DEBUG] [mixin/]: Processing inject() for PlatformAgent[MixinPlatformAgentDefault:ContainerHandleVirtual(fml:18c85)]
+[12Aug.2026 11:52:47.039] [main/DEBUG] [mixin/]: Processing inject() for PlatformAgent[MixinPlatformAgentDefault:jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > net.neoforged.neoforge-coremods-26.2.0.59.jar)]
+[12Aug.2026 11:52:47.039] [main/DEBUG] [mixin/]: Processing inject() for PlatformAgent[MixinPlatformAgentDefault:jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > net.neoforged.neoforge-coremods-26.2.0.59.jar)]
+[12Aug.2026 11:52:47.039] [main/DEBUG] [mixin/]: Processing inject() for PlatformAgent[MixinPlatformAgentDefault:jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > mixinextras-neoforge-0.5.4.jar)]
+[12Aug.2026 11:52:47.039] [main/DEBUG] [mixin/]: Processing inject() for PlatformAgent[MixinPlatformAgentDefault:jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar) > jar(~libraries/net/neoforged/neoforge/26.2.0.59/neoforge-26.2.0.59-universal.jar > mixinextras-neoforge-0.5.4.jar)]
+[12Aug.2026 11:52:47.040] [main/DEBUG] [mixin/]: Preparing mixins for MixinEnvironment[DEFAULT]
+[12Aug.2026 11:52:47.041] [main/DEBUG] [mixin/]: Selecting config neoforge.mixins.json
+[12Aug.2026 11:52:47.042] [main/DEBUG] [mixin/]: Selecting config mixinextras.init.mixins.json
+[12Aug.2026 11:52:47.067] [main/DEBUG] [MixinExtras|Service/]: com.llamalad7.mixinextras.service.MixinExtrasServiceImpl(version=0.5.4) is taking over from null
+[12Aug.2026 11:52:47.082] [main/DEBUG] [mixin/]: Registering new injector for @Inject with org.spongepowered.asm.mixin.injection.struct.CallbackInjectionInfo
+[12Aug.2026 11:52:47.082] [main/DEBUG] [mixin/]: Registering new injector for @ModifyArg with org.spongepowered.asm.mixin.injection.struct.ModifyArgInjectionInfo
+[12Aug.2026 11:52:47.083] [main/DEBUG] [mixin/]: Registering new injector for @ModifyArgs with org.spongepowered.asm.mixin.injection.struct.ModifyArgsInjectionInfo
+[12Aug.2026 11:52:47.083] [main/DEBUG] [mixin/]: Registering new injector for @Redirect with org.spongepowered.asm.mixin.injection.struct.RedirectInjectionInfo
+[12Aug.2026 11:52:47.084] [main/DEBUG] [mixin/]: Registering new injector for @ModifyVariable with org.spongepowered.asm.mixin.injection.struct.ModifyVariableInjectionInfo
+[12Aug.2026 11:52:47.084] [main/DEBUG] [mixin/]: Registering new injector for @ModifyConstant with org.spongepowered.asm.mixin.injection.struct.ModifyConstantInjectionInfo
+[12Aug.2026 11:52:47.090] [main/DEBUG] [mixin/]: Preparing neoforge.mixins.json (2)
+[12Aug.2026 11:52:47.119] [main/DEBUG] [mixin/]: Preparing mixinextras.init.mixins.json (0)
+[12Aug.2026 11:52:47.129] [main/DEBUG] [io.netty.util.internal.logging.InternalLoggerFactory/]: Using SLF4J as the default logging framework
+[12Aug.2026 11:52:47.130] [main/DEBUG] [io.netty.util.ResourceLeakDetector/]: -Dio.netty.leakDetection.level: simple
+[12Aug.2026 11:52:47.130] [main/DEBUG] [io.netty.util.ResourceLeakDetector/]: -Dio.netty.leakDetection.targetRecords: 4
+[12Aug.2026 11:52:47.219] [main/WARN] [net.minecraft.server.Eula/]: Failed to load eula.txt
+[12Aug.2026 11:52:47.224] [main/INFO] [net.minecraft.server.Main/]: You need to agree to the EULA in order to run the server. Go to eula.txt for more info.
+[12Aug.2026 11:52:47.225] [main/INFO] [net.neoforged.fml.loading.FMLLoader/]: Closing FML Loader 64138b0c
+[12Aug.2026 11:52:47.227] [main/INFO] [net.neoforged.fml.ModLoader/]: Clearing ModLoader

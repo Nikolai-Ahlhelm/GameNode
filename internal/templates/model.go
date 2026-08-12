@@ -11,7 +11,10 @@ import (
 )
 
 const (
+	SourceBuiltin            = "builtin"
+	SourceOfficial           = "official"
 	SourcePelicanPterodactyl = "pelican-pterodactyl"
+	InstallerExisting        = "existing"
 	InstallerSteamCMD        = "steamcmd"
 	InstallerUnsupported     = "unsupported"
 	Compatible               = "compatible"
@@ -28,19 +31,68 @@ const (
 )
 
 type Template struct {
-	ID                  string              `json:"id,omitempty"`
-	Name                string              `json:"name"`
-	Description         string              `json:"description"`
-	SourceType          string              `json:"source_type"`
-	SourceIdentifier    string              `json:"source_identifier,omitempty"`
-	SourceFormatVersion string              `json:"source_format_version,omitempty"`
-	SourceMetadata      SourceMetadata      `json:"source_metadata"`
-	Installer           InstallerDefinition `json:"installer"`
-	Launch              *LaunchDefinition   `json:"launch,omitempty"`
-	Variables           []TemplateVariable  `json:"variables"`
-	Compatibility       Compatibility       `json:"compatibility"`
-	CreatedAt           time.Time           `json:"created_at,omitempty"`
-	UpdatedAt           time.Time           `json:"updated_at,omitempty"`
+	SchemaVersion       int                         `json:"schema_version,omitempty"`
+	ID                  string                      `json:"id,omitempty"`
+	Name                string                      `json:"name"`
+	Description         string                      `json:"description"`
+	Version             string                      `json:"version,omitempty"`
+	Category            string                      `json:"category,omitempty"`
+	MinimumGameNode     string                      `json:"minimum_gamenode_version,omitempty"`
+	KnownLimitations    []string                    `json:"known_limitations,omitempty"`
+	Icon                string                      `json:"icon,omitempty"`
+	SourceType          string                      `json:"source_type"`
+	SourceIdentifier    string                      `json:"source_identifier,omitempty"`
+	SourceFormatVersion string                      `json:"source_format_version,omitempty"`
+	SourceMetadata      SourceMetadata              `json:"source_metadata"`
+	Installer           InstallerDefinition         `json:"installer"`
+	Launch              *LaunchDefinition           `json:"launch,omitempty"`
+	PlatformLaunches    map[string]LaunchDefinition `json:"platform_launches,omitempty"`
+	Variables           []TemplateVariable          `json:"variables"`
+	Ports               []TemplatePort              `json:"ports,omitempty"`
+	Configuration       *ConfigurationDefinition    `json:"configuration,omitempty"`
+	ResolvedAdapters    []ConfigAdapterDefinition   `json:"-"`
+	Compatibility       Compatibility               `json:"compatibility"`
+	ReadOnly            bool                        `json:"read_only"`
+	Platforms           []string                    `json:"platforms,omitempty"`
+	Prerequisites       []string                    `json:"prerequisites,omitempty"`
+	CreatedAt           time.Time                   `json:"created_at,omitempty"`
+	UpdatedAt           time.Time                   `json:"updated_at,omitempty"`
+}
+
+type ConfigurationDefinition struct {
+	Adapters []ConfigAdapterReference `json:"adapters"`
+}
+
+type ConfigAdapterReference struct {
+	ID            string `json:"id"`
+	SchemaVersion int    `json:"schema_version"`
+	File          string `json:"file"`
+}
+
+// ConfigAdapterDefinition is declarative data. Its Format selects code shipped
+// with GameNode; definitions never provide parsers, expressions, or executable hooks.
+type ConfigAdapterDefinition struct {
+	SchemaVersion   int                  `json:"schema_version"`
+	ID              string               `json:"id"`
+	Version         string               `json:"version"`
+	Format          string               `json:"format"`
+	Target          string               `json:"target"`
+	RestartRequired bool                 `json:"restart_required"`
+	PostStartOnly   bool                 `json:"post_start_only,omitempty"`
+	Fields          []ConfigAdapterField `json:"fields"`
+}
+
+type ConfigAdapterField struct {
+	Key         string     `json:"key"`
+	Label       string     `json:"label"`
+	Description string     `json:"description,omitempty"`
+	Section     string     `json:"section,omitempty"`
+	Type        string     `json:"type"`
+	Property    string     `json:"property"`
+	Required    bool       `json:"required"`
+	Nullable    bool       `json:"nullable"`
+	Sensitive   bool       `json:"sensitive"`
+	Validation  Validation `json:"validation"`
 }
 
 // ExpandRelativePath is the only expansion helper intended for future file
@@ -88,10 +140,35 @@ type SteamCMDPlan struct {
 }
 
 type LaunchDefinition struct {
-	Executable  string   `json:"executable"`
-	Arguments   []string `json:"arguments"`
-	WorkingRoot string   `json:"working_root"`
-	StopCommand string   `json:"stop_command,omitempty"`
+	Executable       string   `json:"executable"`
+	Arguments        []string `json:"arguments"`
+	WorkingRoot      string   `json:"working_root"`
+	WorkingDirectory string   `json:"working_directory,omitempty"`
+	StopCommand      string   `json:"stop_command,omitempty"`
+	StopMethod       string   `json:"stop_method,omitempty"`
+	StopTimeout      int      `json:"stop_timeout_seconds,omitempty"`
+	Resolver         string   `json:"resolver,omitempty"`
+}
+
+type TemplatePort struct {
+	Name     string `json:"name"`
+	Protocol string `json:"protocol"`
+	Port     int    `json:"port,omitempty"`
+	Variable string `json:"variable,omitempty"`
+	Offset   int    `json:"offset,omitempty"`
+}
+
+// LaunchForPlatform selects an explicit host launch when one is present and
+// otherwise preserves the normalized single-launch model used by Egg imports.
+func LaunchForPlatform(template Template, platform string) (*LaunchDefinition, bool) {
+	if len(template.PlatformLaunches) > 0 {
+		launch, ok := template.PlatformLaunches[platform]
+		if !ok {
+			return nil, false
+		}
+		return &launch, true
+	}
+	return template.Launch, template.Launch != nil
 }
 
 type TemplateVariable struct {

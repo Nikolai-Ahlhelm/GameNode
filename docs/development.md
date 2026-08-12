@@ -15,9 +15,9 @@ Run `go test ./...`, `go test -race ./...`, and `go vet ./...`, then `npm ci`, `
 
 ## GitHub Actions CI and releases
 
-`.github/workflows/ci.yml` runs for pull requests to `master`, pushes to `master`, and manual dispatches. Linux CI checks formatting, vet, tests, builds, and `go test -race ./...`; a native Windows runner executes the Go suite and build, including Windows-specific filesystem and runtime tests. The frontend job uses Node.js 22 and runs `npm ci`, `npm run check`, `npm run test:helpers`, and `npm run build`. Packaging jobs rebuild the production frontend immediately before compiling each binary, so the Go `embed` package receives current assets.
+`.github/workflows/ci.yml` runs for pull requests to `main`, pushes to `main`, and manual dispatches. Linux CI checks formatting, vet, tests, builds, and `go test -race ./...`; a native Windows runner executes the Go suite and build, including Windows-specific filesystem and runtime tests. The frontend job uses Node.js 22 and runs `npm ci`, `npm run check`, `npm run test:helpers`, and `npm run build`. Packaging jobs rebuild the production frontend immediately before compiling each binary, so the Go `embed` package receives current assets.
 
-Successful pushes to `master` upload unsigned development artifacts named `gamenode-windows-amd64` and `gamenode-linux-amd64`; they are retained for 14 days and are not GitHub Releases.
+Successful pushes to `main` upload unsigned development artifacts named `gamenode-windows-amd64` and `gamenode-linux-amd64`; they are retained for 14 days and are not GitHub Releases.
 
 Push a semantic version tag (for example `git tag v0.1.0` followed by `git push origin v0.1.0`) to start `.github/workflows/release.yml`. It repeats Linux and Windows verification, produces `gamenode-windows-amd64.exe` and `gamenode-linux-amd64`, writes `SHA256SUMS.txt`, then creates a draft GitHub Release with automatic notes and publishes it only after all assets were uploaded. The release binaries receive the tag, commit SHA, and UTC build time through Go linker flags; Diagnostics exposes these values without requiring runtime configuration.
 
@@ -55,13 +55,51 @@ On an unrestricted Windows machine, log in as an administrator, open Settings, a
 v0.1 produces portable Windows and Linux binaries only. Install the binary under a dedicated, least-privileged service account and provide an absolute configuration path. A service installer/unit is deliberately not bundled.
 # Template import development
 
+## Official Game Library development
+
+Official template source files live under `templates/`, with `templates/catalog.json` as the only discovery manifest. Add a category JSON file, add its matching catalog entry, increment the template version for behavioral changes, and run the backend plus frontend helper suites before review. IDs remain stable. Both files must merge to `main` before the production fixed GitHub Raw source sees them; short Raw cache propagation delays are expected. There is deliberately no UI/config override for arbitrary sources.
+
+Catalog tests use local stubs and TLS test servers and perform no internet access. They cover schema/JSON/size/status/timeout/redirect/path rules, partial invalid templates, minimum GameNode compatibility, initial and replacement cache writes, offline fallback, corrupted cache, and preservation of last-good state. Existing servers are configuration snapshots and are never migrated when a template version changes.
+
 The representative 7 Days to Die fixture is `internal/templates/testdata/7-days-to-die.json`. It mirrors the upstream Pelican Egg structures relevant to GameNode while avoiding a full third-party snapshot. Parser, startup, expansion, SteamCMD detection, limits, secret handling, and persistence tests live in `internal/templates`; endpoint/RBAC/CSRF/audit tests live in `internal/api/templates_test.go`; pure UI helpers are covered by `web/tests/templates-helpers.test.ts`.
 
 The normal test suite performs no network access, launches no shell, starts no Docker runtime, and downloads no SteamCMD archive. When extending compatibility, add stable finding codes and tests before changing status behavior. Do not broaden the startup parser into shell emulation.
 
+# Minecraft NeoForge reference development
+
+`server-test` is an optional local real-world reference and is intentionally not shipped as product data. The current fixture contains generated Windows/Linux launchers, `user_jvm_args.txt`, NeoForge `26.2.0.59` argfiles, and Minecraft `26.2` libraries. `internal/templates/neoforge_test.go` exercises both platform shapes, the local reference when present, missing/malformed files, extra commands, shell operators, absolute/traversal paths, and typed memory assembly. The Windows console smoke test exercises stdout, stderr, stdin, restart/session replacement, and graceful stdin-command stop through the native runtime.
+
+For full acceptance, install a compatible Java runtime, expose it through `JAVA_HOME` or `PATH`, open Templates → Minecraft NeoForge → Create server, select the existing directory, inspect the preview, and adopt. Start the server, observe both console streams, send `help`, connect/reconnect two console clients, then Stop and Restart. Do not change `eula.txt`; if the server exits for an unaccepted EULA, acceptance pauses for the user to review and accept it outside GameNode.
+
 # SteamCMD provisioning development
 
 SteamCMD unit tests use mocked downloaders/runners and in-memory archives. Provisioning tests cover success, validation, cancellation, target conflicts, concurrency, interrupted jobs, installation/database failure, platform gating, and absence of ghost servers. API tests cover authentication, independent RBAC, CSRF, ownership, audit, sanitized errors, and secret redaction.
+
+## Adding an Official SteamCMD game
+
+1. Verify the dedicated-server App ID and anonymous-login support from a maintained source.
+2. Verify supported host platforms independently.
+3. Verify the exact relative executable for each declared platform; never infer one platform from another.
+4. Define a structured argument array, with placeholders only for declared typed variables.
+5. Use `terminate` unless a bounded, reliable console stop command is documented.
+6. Declare only known ports and connect editable ports to validated integer variables.
+7. Add the schema-v1 JSON under `templates/steamcmd/` and run the repository catalog validation tests.
+8. Add the matching `catalog.json` entry and start its template version at `1.0.0`; bump it for behavioral changes.
+9. Run Go, UI helper, build, and cross-build checks.
+10. Optionally run a real provision/start/console/stop smoke outside CI and record the host, upstream build, and result. Large games are never downloaded by unit tests.
+
+## Adding a configuration adapter
+
+1. Keep `template.json`, adapter JSON, README, and fixtures in one game directory.
+2. Add a same-directory adapter reference to the template; URLs and nested paths are forbidden.
+3. Select only a format implemented in `internal/gameconfig` (`xml-properties` or flat `ini-key-values` in schema v1).
+4. Use a safe relative target and simple property identifiers—never XPath, regex, scripts, hooks, or executable configuration syntax.
+5. Map initial fields to existing template variables with matching semantics. Configuration-only fields are allowed only on `post_start_only` INI adapters whose authoritative file is generated by the game.
+6. Increment adapter version for mapping behavior and template version for product behavior.
+7. Add a minimal sanitized fixture and parser/writer tests covering real upstream shape, escaping, duplicates, missing properties, size/depth limits, and traversal.
+8. Test initial provisioning, persisted snapshot, offline catalog cache, API RBAC/CSRF, secret redaction, backup, and atomic replacement.
+9. Verify existing servers continue using their stored snapshot after a remote adapter update.
+10. Document restart requirements and perform an opt-in real-game acceptance when practical.
 
 Run race-sensitive packages explicitly:
 
@@ -76,3 +114,15 @@ GAMENODE_STEAMCMD_INTEGRATION=1 go test ./internal/steamcmd -run TestManagedBoot
 ```
 
 Manual 7 Days to Die acceptance (large download): import `internal/templates/testdata/7-days-to-die.json`, open Templates, select Create server, choose a new directory name, configure variables, and start provisioning. Confirm App ID `294420`, completion to a normal server record, safe expanded executable/arguments, Files/Console/Monitoring behavior, and Stop. The representative imported launch is Linux-specific; perform start/runtime acceptance on Linux. On Windows, provisionability must reject it unless the template contains an independently safe Windows launch—do not substitute a guessed executable. Do not enable automatic update-on-start when testing `AUTO_UPDATE`.
+
+Project Zomboid has two explicit Windows opt-in tests. Both require an isolated path with sufficient free space and are skipped by normal CI:
+
+```powershell
+$env:GAMENODE_PZ_ACCEPTANCE_DATA='C:\temp\gamenode-pz-download'
+go test ./internal/steamcmd -run '^TestProjectZomboidInstallIntegration$' -count=1 -v
+
+$env:GAMENODE_PZ_FULL_ACCEPTANCE_DATA='C:\temp\gamenode-pz-full'
+go test ./internal/provisioning -run '^TestProjectZomboidFullDeploymentIntegration$' -count=1 -v
+```
+
+The full test loads the repository catalog, provisions App ID `380870` through the production SteamCMD/service path, verifies the installed bundled Java executable, current Official provenance and UDP ports, starts the normal GameNode server, handles the first-boot administrator-password prompt without logging the generated secret, waits for `SERVER STARTED`, sends `quit` through the attached console, and requires a stopped state. It can reuse only its own validated completed acceptance directory for runtime troubleshooting. Template `1.1.0` exposes selected values from generated `Server/gamenode.ini` after first start through the compiled INI adapter; `SandboxVars.lua` remains deliberately unmanaged.

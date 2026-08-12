@@ -2,6 +2,7 @@ package templates
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -190,6 +191,29 @@ func TestStoreRoundTripAndCascade(t *testing.T) {
 	var count int
 	if err = db.QueryRow(`SELECT COUNT(*) FROM game_template_variables`).Scan(&count); err != nil || count != 0 {
 		t.Fatal("child rows not cascaded")
+	}
+}
+
+func TestBuiltinTemplatesOverlayAndReadOnly(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if err = database.Migrate(db, gamenode.MigrationFiles); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(NewStore(db))
+	items, err := service.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != "builtin-minecraft-neoforge" || !items[0].ReadOnly || items[0].Launch.Resolver != "neoforge" {
+		t.Fatalf("built-in overlay = %#v", items)
+	}
+	if err = service.Delete(context.Background(), items[0].ID); !errors.Is(err, ErrBuiltinReadOnly) {
+		t.Fatalf("built-in delete error = %v", err)
 	}
 }
 

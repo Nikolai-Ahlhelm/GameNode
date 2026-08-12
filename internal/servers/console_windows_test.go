@@ -41,6 +41,8 @@ func TestWindowsConsoleIOSmoke(t *testing.T) {
 		Executable:           executable,
 		Arguments:            []string{"-test.run=TestWindowsConsoleIOHelper", "--"},
 		EnvironmentVariables: map[string]string{"GAMENODE_CONSOLE_SMOKE": "1"},
+		StopMethod:           "stdin_command",
+		StopCommand:          "quit",
 		StopTimeoutSeconds:   2,
 	})
 	if err != nil {
@@ -76,7 +78,7 @@ func TestWindowsConsoleIOSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitConsoleOutput(t, current, "stdout", "echo:again")
-	if err = current.Input("quit\n"); err != nil {
+	if _, err = service.Stop(context.Background(), record.Server.ID); err != nil {
 		t.Fatal(err)
 	}
 	waitForRuntime(t, service, record.Server.ID, func(state RuntimeState) bool { return state.CurrentState == StateStopped })
