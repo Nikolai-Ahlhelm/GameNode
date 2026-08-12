@@ -24,7 +24,7 @@ type Port struct {
 type Service struct{ db *sql.DB }
 
 func New(db *sql.DB) *Service { return &Service{db} }
-func valid(p *Port) error {
+func Validate(p *Port) error {
 	p.Name = strings.TrimSpace(p.Name)
 	p.Protocol = strings.ToLower(strings.TrimSpace(p.Protocol))
 	p.BindAddress = strings.Trim(strings.TrimSpace(p.BindAddress), "[]")
@@ -41,7 +41,7 @@ func valid(p *Port) error {
 	}
 	return nil
 }
-func conflict(a, b Port) bool {
+func Conflict(a, b Port) bool {
 	if a.Protocol != b.Protocol || a.Port != b.Port {
 		return false
 	}
@@ -68,7 +68,7 @@ func (s *Service) List(c context.Context, server string) ([]Port, error) {
 	return out, rows.Err()
 }
 func (s *Service) Add(c context.Context, server string, p Port) (Port, error) {
-	if e := valid(&p); e != nil {
+	if e := Validate(&p); e != nil {
 		return p, e
 	}
 	if e := s.check(c, server, p, ""); e != nil {
@@ -81,7 +81,7 @@ func (s *Service) Add(c context.Context, server string, p Port) (Port, error) {
 	return p, e
 }
 func (s *Service) Update(c context.Context, server, id string, p Port) (Port, error) {
-	if e := valid(&p); e != nil {
+	if e := Validate(&p); e != nil {
 		return p, e
 	}
 	if e := s.check(c, server, p, id); e != nil {
@@ -133,7 +133,7 @@ func (s *Service) check(c context.Context, server string, p Port, exclude string
 		if e = rows.Scan(&q.ID, &q.Name, &q.Protocol, &q.BindAddress, &q.Port); e != nil {
 			return e
 		}
-		if conflict(p, q) {
+		if Conflict(p, q) {
 			return errors.New("port conflicts with another GameNode server")
 		}
 	}

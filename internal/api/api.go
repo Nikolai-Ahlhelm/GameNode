@@ -17,6 +17,7 @@ import (
 	"gamenode/internal/dashboard"
 	"gamenode/internal/diagnostics"
 	"gamenode/internal/filesystem"
+	"gamenode/internal/gameconfig"
 	"gamenode/internal/identity"
 	"gamenode/internal/monitoring"
 	"gamenode/internal/ports"
@@ -45,6 +46,7 @@ type Server struct {
 	support      supportGenerator
 	templates    *templates.Service
 	provisioning *provisioning.Service
+	gameConfig   *gameconfig.Service
 }
 
 type supportGenerator interface {
@@ -58,6 +60,7 @@ type Options struct {
 	Support      supportGenerator
 	Templates    *templates.Service
 	Provisioning *provisioning.Service
+	GameConfig   *gameconfig.Service
 }
 
 // auditInput deliberately contains only values selected by the application. It
@@ -157,7 +160,11 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 		}
 		provisioner = options[0].Provisioning
 	}
-	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identity.New(a.Database()), rbac: rbac.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, log: log, secureCookie: secureCookie}
+	var gameConfigService *gameconfig.Service
+	if len(options) > 0 {
+		gameConfigService = options[0].GameConfig
+	}
+	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identity.New(a.Database()), rbac: rbac.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, gameConfig: gameConfigService, log: log, secureCookie: secureCookie}
 	if provisioner != nil {
 		provisioner.SetObserver(result.recordProvisioningCompletion)
 	}
@@ -186,6 +193,8 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/servers/", s.serverHandler)
 	mux.HandleFunc("/api/v1/templates", s.templatesHandler)
 	mux.HandleFunc("/api/v1/templates/", s.templateHandler)
+	mux.HandleFunc("/api/v1/template-catalog", s.templateCatalogHandler)
+	mux.HandleFunc("/api/v1/template-catalog/refresh", s.templateCatalogRefreshHandler)
 	mux.HandleFunc("/api/v1/provisioning/jobs/", s.provisioningJobHandler)
 	mux.Handle("/", static)
 	return s.logRequests(mux)

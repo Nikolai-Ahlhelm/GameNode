@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "7dtd-serverconfig",
+  "version": "1.0.0",
+  "format": "xml-properties",
+  "target": "serverconfig.xml",
+  "restart_required": true,
+  "fields": [
+    {"key":"SERVER_NAME","label":"Server name","description":"Name shown in the public server browser.","section":"General","type":"string","property":"ServerName","required":true,"nullable":false,"sensitive":false,"validation":{"min_length":1,"max_length":128}},
+    {"key":"SERVER_PORT","label":"Game port","description":"Primary game port; adjacent UDP ports are registered automatically.","section":"Network","type":"integer","property":"ServerPort","required":true,"nullable":false,"sensitive":false,"validation":{"min":1024,"max":65532}},
+    {"key":"MAX_PLAYERS","label":"Maximum players","description":"Maximum concurrent players supported by this template.","section":"General","type":"integer","property":"ServerMaxPlayerCount","required":true,"nullable":false,"sensitive":false,"validation":{"min":1,"max":8}},
+    {"key":"SERVER_PASSWORD","label":"Server password","description":"Optional password required to join the server.","section":"Security","type":"secret","property":"ServerPassword","required":false,"nullable":true,"sensitive":true,"validation":{"max_length":128}}
+  ]
+}

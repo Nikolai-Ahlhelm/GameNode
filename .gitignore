@@ -14,3 +14,4 @@ web/.vite/
 
 # Disposable data created by the Windows acceptance harnesses.
 tmp-e2e-data/
+Builds/

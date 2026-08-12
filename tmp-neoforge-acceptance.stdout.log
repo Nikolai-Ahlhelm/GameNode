@@ -1,0 +1,5 @@
+{"time":"2026-08-12T11:50:14.8544107+02:00","level":"INFO","msg":"GameNode starting","listen":"127.0.0.1:18443","tls":false}
+{"time":"2026-08-12T11:52:45.4136326+02:00","level":"INFO","msg":"initial administrator created","user_id":"450pUTJGITh5pYjzxeH4Xw"}
+{"time":"2026-08-12T11:52:45.4156354+02:00","level":"INFO","msg":"user logged in","user_id":"450pUTJGITh5pYjzxeH4Xw"}
+{"time":"2026-08-12T11:52:45.4361863+02:00","level":"INFO","msg":"server lifecycle action","server_id":"2993f8b0-cad7-4575-a6bb-507870cd20e9","action":"start"}
+{"time":"2026-08-12T11:53:17.0669912+02:00","level":"INFO","msg":"user logged in","user_id":"450pUTJGITh5pYjzxeH4Xw"}

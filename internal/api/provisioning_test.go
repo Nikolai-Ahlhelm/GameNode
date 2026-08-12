@@ -33,6 +33,13 @@ type apiInstaller struct {
 	fail    bool
 }
 
+type apiCatalogSource struct{ catalog, template []byte }
+
+func (s apiCatalogSource) FetchCatalog(context.Context) ([]byte, error) { return s.catalog, nil }
+func (s apiCatalogSource) FetchTemplate(context.Context, string) ([]byte, error) {
+	return s.template, nil
+}
+
 func (i *apiInstaller) Install(ctx context.Context, root string, _ steamcmd.InstallPlan, _ io.Writer, sink steamcmd.EventSink) error {
 	if sink != nil {
 		sink(steamcmd.Event{Phase: "installing", Summary: "Installing game files"})
@@ -266,6 +273,54 @@ func TestProvisioningAPIRejectsUnsafeInputsWithoutLeaks(t *testing.T) {
 		if response.Code == http.StatusAccepted || strings.Contains(response.Body.String(), "SECRET_VALUE") {
 			t.Fatalf("unsafe input=%d %s", response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestOfficialSteamTemplateProvisioningAPI(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	if err = database.Migrate(db, gamenode.MigrationFiles); err != nil {
+		t.Fatal(err)
+	}
+	minimum, maximum := float64(1024), float64(65535)
+	template := templates.Template{SchemaVersion: 1, ID: "official-steam", Name: "Official Steam", Description: "Official fixture", Version: "1.0.0", Category: "steamcmd", SourceType: templates.SourceOfficial, SourceMetadata: templates.SourceMetadata{Author: "GameNode"}, ReadOnly: true, Platforms: []string{"windows"}, Installer: templates.InstallerDefinition{Type: templates.InstallerSteamCMD, SteamCMD: &templates.SteamCMDPlan{AppID: 294420, Validate: true, LoginMode: "anonymous", Platform: "native", InstallTarget: "server_root"}}, PlatformLaunches: map[string]templates.LaunchDefinition{"windows": {Executable: "game.exe", Arguments: []string{"-port={{PORT}}"}, WorkingRoot: "server_root", StopMethod: "terminate", StopTimeout: 30}}, Variables: []templates.TemplateVariable{{Name: "Port", Key: "PORT", DefaultValue: "26900", UserEditable: true, Type: "integer", Required: true, Validation: templates.Validation{Min: &minimum, Max: &maximum}}}, Compatibility: templates.Compatibility{Status: templates.Compatible}}
+	entry := templates.CatalogEntry{ID: template.ID, Name: template.Name, Description: template.Description, Category: template.Category, Version: template.Version, TemplateSchemaVersion: 1, Platforms: template.Platforms, Installer: templates.InstallerSteamCMD, File: "steamcmd/official.json"}
+	catalogData, _ := json.Marshal(templates.CatalogManifest{SchemaVersion: 1, Templates: []templates.CatalogEntry{entry}})
+	templateData, _ := json.Marshal(template)
+	catalog := templates.NewCatalogManager(apiCatalogSource{catalog: catalogData, template: templateData}, t.TempDir(), "0.2.0")
+	if _, err = catalog.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	templateService := templates.NewServiceWithCatalog(templates.NewStore(db), catalog)
+	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	provisioningService := provisioning.NewWithOptions(db, templateService, &apiInstaller{}, serverService, t.TempDir(), provisioning.Options{HostOS: "windows"})
+	defer provisioningService.Close()
+	handler := api.New(auth.New(db), serverService, slog.New(slog.NewTextHandler(io.Discard, nil)), false, api.Options{Templates: templateService, Provisioning: provisioningService}).Handler(http.NotFoundHandler())
+	admin := createAdminSession(t, handler)
+	path := "/api/v1/templates/" + template.ID + "/provision"
+	body, _ := json.Marshal(map[string]any{"server_name": "Official", "directory_name": "official", "variables": map[string]string{"PORT": "26901"}})
+	response := templateRequest(handler, http.MethodPost, path, body, &admin, true)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("start=%d %s", response.Code, response.Body.String())
+	}
+	var created map[string]any
+	_ = json.NewDecoder(response.Body).Decode(&created)
+	fixture := provisionAPIFixture{handler: handler, db: db, service: provisioningService, template: template}
+	job := waitAPIJob(t, fixture, admin, created["id"].(string))
+	if job["status"] != "completed" || job["server_id"] == "" {
+		t.Fatalf("job=%#v", job)
+	}
+	var source, version string
+	if err = db.QueryRow(`SELECT template_source,template_version FROM server_template_variables WHERE server_id=? LIMIT 1`, job["server_id"]).Scan(&source, &version); err != nil || source != templates.SourceOfficial || version != "1.0.0" {
+		t.Fatalf("provenance=%s/%s err=%v", source, version, err)
+	}
+	unsafeBody := []byte(`{"server_name":"Injected","directory_name":"injected","variables":{"APP_ID":"10","PORT":"26902"}}`)
+	if rejected := templateRequest(handler, http.MethodPost, path, unsafeBody, &admin, true); rejected.Code == http.StatusAccepted {
+		t.Fatal("user-supplied App ID accepted")
 	}
 }
 

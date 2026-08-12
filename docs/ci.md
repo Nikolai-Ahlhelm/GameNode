@@ -2,9 +2,9 @@
 
 GameNode uses two deliberately separate GitHub Actions workflows.
 
-## CI for `master`
+## CI for `main`
 
-`.github/workflows/ci.yml` runs on pull requests targeting `master`, pushes to `master`, and manual dispatches. It uses Go 1.23 and Node.js 22 from GitHub-hosted runners; all frontend commands use the repository lockfile and local npm dependencies.
+`.github/workflows/ci.yml` runs on pull requests targeting `main`, pushes to `main`, and manual dispatches. It uses Go 1.23 and Node.js 22 from GitHub-hosted runners; all frontend commands use the repository lockfile and local npm dependencies.
 
 | Job | Runner | Checks |
 | --- | --- | --- |
@@ -16,7 +16,7 @@ GameNode uses two deliberately separate GitHub Actions workflows.
 
 The Go and npm download caches improve run time but are never required for correctness. Native Windows tests retain their normal privilege-dependent skips; the workflow does not disable symlink or reparse-point coverage to force a green result.
 
-On successful pushes to `master`, the package jobs upload unsigned development artifacts for 14 days:
+On successful pushes to `main`, the package jobs upload unsigned development artifacts for 14 days:
 
 | Artifact | File |
 | --- | --- |

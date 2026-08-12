@@ -4,6 +4,7 @@
 // normal Go test package. Run it with:
 //
 //	go run tmp-files-e2e-client.go
+
 package main
 
 import (

@@ -12,10 +12,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"gamenode/internal/gameconfig"
+	"gamenode/internal/ports"
 	"gamenode/internal/servers"
 	"gamenode/internal/steamcmd"
 	"gamenode/internal/templates"
@@ -71,9 +74,13 @@ type Event struct {
 	Duration time.Duration
 }
 type Provisionability struct {
-	Provisionable bool   `json:"provisionable"`
-	HostPlatform  string `json:"host_platform"`
-	Summary       string `json:"summary"`
+	Provisionable    bool   `json:"provisionable"`
+	HostPlatform     string `json:"host_platform"`
+	Summary          string `json:"summary"`
+	Installer        string `json:"installer,omitempty"`
+	AppID            int    `json:"app_id,omitempty"`
+	Validate         bool   `json:"validate"`
+	LaunchExecutable string `json:"launch_executable,omitempty"`
 }
 type Observer func(Event)
 
@@ -84,7 +91,7 @@ type Installer interface {
 	Install(context.Context, string, steamcmd.InstallPlan, io.Writer, steamcmd.EventSink) error
 }
 type ServerCreator interface {
-	CreateProvisioned(context.Context, servers.Server, string, []servers.ProvisionedVariable) (servers.Record, error)
+	CreateProvisioned(context.Context, servers.Server, string, []servers.ProvisionedVariable, []ports.Port, []servers.ProvisionedConfigAdapter) (servers.Record, error)
 }
 
 type Store struct{ db *sql.DB }
@@ -195,6 +202,14 @@ func (s *Service) Start(ctx context.Context, request Request) (Job, error) {
 	if err != nil {
 		return Job{}, err
 	}
+	launch, ok := templates.LaunchForPlatform(template, s.hostOS)
+	if !ok {
+		return Job{}, ErrNotProvisionable
+	}
+	provisionedPorts, err := resolveTemplatePorts(template.Ports, values)
+	if err != nil {
+		return Job{}, err
+	}
 	root := filepath.Join(s.serverBase, request.DirectoryName)
 	if !inside(s.serverBase, root) {
 		return Job{}, errors.New("server target escapes managed storage")
@@ -232,7 +247,7 @@ func (s *Service) Start(ctx context.Context, request Request) (Job, error) {
 	s.roots[root] = id
 	s.wg.Add(1)
 	s.mu.Unlock()
-	go s.execute(jobCtx, current, template, values, sensitive, plan)
+	go s.execute(jobCtx, current, template, *launch, values, sensitive, provisionedPorts, plan)
 	return job, nil
 }
 
@@ -246,10 +261,12 @@ func (s *Service) Check(ctx context.Context, templateID string) (Provisionabilit
 	for _, variable := range template.Variables {
 		values[variable.Key] = variable.DefaultValue
 	}
-	if _, err = CheckProvisionable(template, values, s.hostOS); err != nil {
-		return Provisionability{false, s.hostOS, "Template cannot be safely installed and launched on this host platform"}, nil
+	plan, err := CheckProvisionable(template, values, s.hostOS)
+	if err != nil {
+		return Provisionability{Provisionable: false, HostPlatform: s.hostOS, Summary: "Template cannot be safely installed and launched on this host platform"}, nil
 	}
-	return Provisionability{true, s.hostOS, "Native SteamCMD installation and structured launch are available"}, nil
+	launch, _ := templates.LaunchForPlatform(template, s.hostOS)
+	return Provisionability{Provisionable: true, HostPlatform: s.hostOS, Summary: "Native SteamCMD installation and structured launch are available", Installer: templates.InstallerSteamCMD, AppID: plan.AppID, Validate: plan.Validate, LaunchExecutable: launch.Executable}, nil
 }
 func (s *Service) Cancel(ctx context.Context, id, actorID string) (Job, error) {
 	s.mu.Lock()
@@ -264,7 +281,7 @@ func (s *Service) Cancel(ctx context.Context, id, actorID string) (Job, error) {
 	return s.store.Get(ctx, id)
 }
 
-func (s *Service) execute(ctx context.Context, current *run, template templates.Template, values map[string]string, sensitive map[string]bool, plan steamcmd.InstallPlan) {
+func (s *Service) execute(ctx context.Context, current *run, template templates.Template, launch templates.LaunchDefinition, values map[string]string, sensitive map[string]bool, provisionedPorts []ports.Port, plan steamcmd.InstallPlan) {
 	defer s.wg.Done()
 	defer s.release(current)
 	if ctx.Err() != nil {
@@ -300,7 +317,28 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 		return
 	}
 	s.phase(current, CreatingServer, "Finalizing configuration and creating the GameNode server")
-	server, metadata, err := buildServer(template, current.job.ServerName, current.root, values, sensitive)
+	configSnapshots := make([]servers.ProvisionedConfigAdapter, 0, len(template.ResolvedAdapters))
+	for _, adapter := range template.ResolvedAdapters {
+		adapterValues := map[string]string{}
+		for _, field := range adapter.Fields {
+			if value, ok := values[field.Key]; ok {
+				adapterValues[field.Key] = value
+			}
+		}
+		if !adapter.PostStartOnly {
+			if err = gameconfig.Apply(current.root, adapter, adapterValues); err != nil {
+				s.finish(current, Failed, "Game configuration failed", "Installed files remain but the validated game configuration could not be written", true, "")
+				return
+			}
+		}
+		definitionJSON, marshalErr := json.Marshal(adapter)
+		if marshalErr != nil {
+			s.finish(current, Failed, "Game configuration failed", "Configuration snapshot could not be created", true, "")
+			return
+		}
+		configSnapshots = append(configSnapshots, servers.ProvisionedConfigAdapter{ID: adapter.ID, SchemaVersion: adapter.SchemaVersion, Version: adapter.Version, TemplateID: template.ID, TemplateVersion: template.Version, DefinitionJSON: definitionJSON})
+	}
+	server, metadata, err := buildServer(template, launch, current.job.ServerName, current.root, values, sensitive)
 	if err != nil {
 		s.finish(current, Failed, "Server configuration failed", "Installed files remain but no GameNode server was created", true, "")
 		return
@@ -313,7 +351,7 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 	}
 	current.finalizing = true
 	s.mu.Unlock()
-	record, err := s.servers.CreateProvisioned(ctx, server, template.ID, metadata)
+	record, err := s.servers.CreateProvisioned(ctx, server, template.ID, metadata, provisionedPorts, configSnapshots)
 	if err != nil {
 		s.finish(current, Failed, "Server creation failed", "Installed files remain but no GameNode server was created", true, "")
 		return
@@ -368,7 +406,14 @@ func (s *Service) release(current *run) {
 }
 
 func CheckProvisionable(template templates.Template, values map[string]string, hostOS string) (steamcmd.InstallPlan, error) {
-	if template.Compatibility.Status == templates.Unsupported || template.Installer.Type != templates.InstallerSteamCMD || template.Installer.SteamCMD == nil || template.Launch == nil {
+	if template.Compatibility.Status == templates.Unsupported || template.Installer.Type != templates.InstallerSteamCMD || template.Installer.SteamCMD == nil {
+		return steamcmd.InstallPlan{}, ErrNotProvisionable
+	}
+	if template.Configuration != nil && len(template.ResolvedAdapters) != len(template.Configuration.Adapters) {
+		return steamcmd.InstallPlan{}, ErrNotProvisionable
+	}
+	launch, ok := templates.LaunchForPlatform(template, hostOS)
+	if !ok {
 		return steamcmd.InstallPlan{}, ErrNotProvisionable
 	}
 	source := template.Installer.SteamCMD
@@ -383,12 +428,26 @@ func CheckProvisionable(template templates.Template, values map[string]string, h
 	if (source.Platform == "windows" && hostOS != "windows") || (source.Platform == "linux" && hostOS != "linux") {
 		return steamcmd.InstallPlan{}, ErrNotProvisionable
 	}
-	executable := strings.ToLower(template.Launch.Executable)
-	if hostOS == "windows" && !strings.HasSuffix(executable, ".exe") {
+	if len(template.PlatformLaunches) == 0 {
+		executable := strings.ToLower(launch.Executable)
+		if hostOS == "windows" && !strings.HasSuffix(executable, ".exe") {
+			return steamcmd.InstallPlan{}, ErrNotProvisionable
+		}
+		if hostOS == "linux" && strings.HasSuffix(executable, ".exe") {
+			return steamcmd.InstallPlan{}, ErrNotProvisionable
+		}
+	}
+	known := make(map[string]bool, len(values))
+	for key := range values {
+		known[key] = true
+	}
+	if _, err := templates.ExpandRelativePath(launch.Executable, values, known); err != nil {
 		return steamcmd.InstallPlan{}, ErrNotProvisionable
 	}
-	if hostOS == "linux" && strings.HasSuffix(executable, ".exe") {
-		return steamcmd.InstallPlan{}, ErrNotProvisionable
+	if launch.WorkingDirectory != "" {
+		if _, err := templates.ExpandRelativePath(launch.WorkingDirectory, values, known); err != nil {
+			return steamcmd.InstallPlan{}, ErrNotProvisionable
+		}
 	}
 	branch := ""
 	if source.BetaBranchVariable != "" {
@@ -401,24 +460,44 @@ func CheckProvisionable(template templates.Template, values map[string]string, h
 	return plan, nil
 }
 
-func buildServer(template templates.Template, name, root string, values map[string]string, sensitive map[string]bool) (servers.Server, []servers.ProvisionedVariable, error) {
+func buildServer(template templates.Template, launch templates.LaunchDefinition, name, root string, values map[string]string, sensitive map[string]bool) (servers.Server, []servers.ProvisionedVariable, error) {
 	known := map[string]bool{}
 	for key := range values {
 		known[key] = true
-		if sensitive[key] && (strings.Contains(template.Launch.Executable, "{{"+key+"}}") || strings.Contains(template.Launch.Executable, "${"+key+"}")) {
+		if sensitive[key] && (strings.Contains(launch.Executable, "{{"+key+"}}") || strings.Contains(launch.Executable, "${"+key+"}")) {
 			return servers.Server{}, nil, errors.New("sensitive variables are not permitted in a launch executable")
 		}
 	}
-	executable, err := templates.Expand(template.Launch.Executable, values, known)
+	executable, err := templates.ExpandRelativePath(launch.Executable, values, known)
 	if err != nil {
 		return servers.Server{}, nil, errors.New("launch executable expansion failed")
 	}
-	executable = filepath.FromSlash(executable)
-	if filepath.IsAbs(executable) || strings.Contains(filepath.ToSlash(filepath.Clean(executable)), "../") {
-		return servers.Server{}, nil, errors.New("launch executable is unsafe")
+	expectedExecutable := filepath.Join(root, filepath.FromSlash(executable))
+	resolvedExecutable, err := filepath.EvalSymlinks(expectedExecutable)
+	if err != nil || !inside(root, resolvedExecutable) {
+		return servers.Server{}, nil, errors.New("expected launch executable is missing or unsafe")
 	}
-	arguments := make([]string, 0, len(template.Launch.Arguments))
-	for _, raw := range template.Launch.Arguments {
+	executableInfo, err := os.Stat(resolvedExecutable)
+	if err != nil || !executableInfo.Mode().IsRegular() {
+		return servers.Server{}, nil, errors.New("expected launch executable is missing or unsafe")
+	}
+	workingDirectory := root
+	if launch.WorkingDirectory != "" {
+		relativeWorkingDirectory, expandErr := templates.ExpandRelativePath(launch.WorkingDirectory, values, known)
+		if expandErr != nil {
+			return servers.Server{}, nil, errors.New("working directory expansion failed")
+		}
+		workingDirectory, err = filepath.EvalSymlinks(filepath.Join(root, filepath.FromSlash(relativeWorkingDirectory)))
+		if err != nil || !inside(root, workingDirectory) {
+			return servers.Server{}, nil, errors.New("working directory is missing or unsafe")
+		}
+		workingInfo, statErr := os.Stat(workingDirectory)
+		if statErr != nil || !workingInfo.IsDir() {
+			return servers.Server{}, nil, errors.New("working directory is missing or unsafe")
+		}
+	}
+	arguments := make([]string, 0, len(launch.Arguments))
+	for _, raw := range launch.Arguments {
 		value, err := templates.Expand(raw, values, known)
 		if err != nil {
 			return servers.Server{}, nil, errors.New("launch argument expansion failed")
@@ -429,13 +508,46 @@ func buildServer(template templates.Template, name, root string, values map[stri
 	environment := map[string]string{}
 	for key, value := range values {
 		environment[key] = value
-		metadata = append(metadata, servers.ProvisionedVariable{Key: key, Sensitive: sensitive[key]})
+		metadata = append(metadata, servers.ProvisionedVariable{Key: key, Sensitive: sensitive[key], Source: template.SourceType, Version: template.Version})
 	}
-	server := servers.Server{CreationMode: servers.CreationTemplate, Name: name, Description: template.Description, WorkingDirectory: root, Executable: executable, Arguments: arguments, EnvironmentVariables: environment, RuntimeType: "native", RestartPolicy: "never", StopMethod: "terminate", StopTimeoutSeconds: 15, AutoRestartMaxAttempts: 3, AutoRestartWindowSeconds: 300, AutoRestartDelaySeconds: 5}
+	stopMethod := launch.StopMethod
+	if stopMethod == "" {
+		stopMethod = "terminate"
+	}
+	stopTimeout := launch.StopTimeout
+	if stopTimeout == 0 {
+		stopTimeout = 15
+	}
+	server := servers.Server{CreationMode: servers.CreationTemplate, Name: name, Description: template.Description, WorkingDirectory: workingDirectory, Executable: resolvedExecutable, Arguments: arguments, EnvironmentVariables: environment, RuntimeType: "native", RestartPolicy: "never", StopMethod: stopMethod, StopCommand: launch.StopCommand, StopTimeoutSeconds: stopTimeout, AutoRestartMaxAttempts: 3, AutoRestartWindowSeconds: 300, AutoRestartDelaySeconds: 5}
 	if err = server.Validate(); err != nil {
 		return servers.Server{}, nil, errors.New("installed server definition is invalid")
 	}
 	return server, metadata, nil
+}
+
+func resolveTemplatePorts(definitions []templates.TemplatePort, values map[string]string) ([]ports.Port, error) {
+	result := make([]ports.Port, 0, len(definitions))
+	for _, definition := range definitions {
+		value := definition.Port
+		if definition.Variable != "" {
+			parsed, err := strconv.Atoi(values[definition.Variable])
+			if err != nil {
+				return nil, errors.New("template port value is invalid")
+			}
+			value = parsed + definition.Offset
+		}
+		candidate := ports.Port{Name: definition.Name, Protocol: definition.Protocol, Port: value}
+		if err := ports.Validate(&candidate); err != nil {
+			return nil, errors.New("template port value is invalid")
+		}
+		for _, existing := range result {
+			if ports.Conflict(candidate, existing) {
+				return nil, errors.New("template ports conflict")
+			}
+		}
+		result = append(result, candidate)
+	}
+	return result, nil
 }
 
 func targetAvailable(root string) error {

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "7-days-to-die",
+  "name": "7 Days to Die",
+  "description": "Install the official dedicated server through SteamCMD and run it as a native GameNode server.",
+  "version": "1.1.0",
+  "category": "steamcmd",
+  "minimum_gamenode_version": "0.2.0",
+  "known_limitations": ["Initial installation is large and can take a significant amount of time.", "SteamCMD is used for initial installation only; automatic updates are not enabled."],
+  "icon": "steamcmd",
+  "source_type": "official",
+  "source_identifier": "7-days-to-die",
+  "source_format_version": "1",
+  "source_metadata": {"author":"GameNode","tags":["7dtd","steam","steamcmd","survival","zombies"]},
+  "installer": {"type":"steamcmd","steamcmd":{"app_id":294420,"validate":true,"login_mode":"anonymous","platform":"native","install_target":"server_root"}},
+  "platform_launches": {
+    "windows": {"executable":"7DaysToDieServer.exe","arguments":["-quit","-batchmode","-nographics","-configfile=serverconfig.xml","-dedicated"],"working_root":"server_root","stop_method":"terminate","stop_timeout_seconds":30},
+    "linux": {"executable":"7DaysToDieServer.x86_64","arguments":["-quit","-batchmode","-nographics","-configfile=serverconfig.xml","-dedicated"],"working_root":"server_root","stop_method":"terminate","stop_timeout_seconds":30}
+  },
+  "variables": [
+    {"name":"Server name","description":"Public server name stored in serverconfig.xml.","key":"SERVER_NAME","default_value":"My GameNode Server","user_viewable":true,"user_editable":true,"type":"string","sensitive":false,"required":true,"nullable":false,"validation":{"min_length":1,"max_length":128}},
+    {"name":"Server port","description":"Primary game port. GameNode also registers the documented adjacent UDP ports.","key":"SERVER_PORT","default_value":"26900","user_viewable":true,"user_editable":true,"type":"integer","sensitive":false,"required":true,"nullable":false,"validation":{"min":1024,"max":65532}},
+    {"name":"Maximum players","description":"Maximum supported concurrent players.","key":"MAX_PLAYERS","default_value":"8","user_viewable":true,"user_editable":true,"type":"integer","sensitive":false,"required":true,"nullable":false,"validation":{"min":1,"max":8}},
+    {"name":"Server password","description":"Optional join password stored in serverconfig.xml.","key":"SERVER_PASSWORD","default_value":"","user_viewable":true,"user_editable":true,"type":"secret","sensitive":true,"required":false,"nullable":true,"validation":{"max_length":128}}
+  ],
+  "ports": [
+    {"name":"Game TCP","protocol":"tcp","variable":"SERVER_PORT"},
+    {"name":"Game UDP","protocol":"udp","variable":"SERVER_PORT"},
+    {"name":"Game UDP +1","protocol":"udp","variable":"SERVER_PORT","offset":1},
+    {"name":"Game UDP +2","protocol":"udp","variable":"SERVER_PORT","offset":2},
+    {"name":"Game UDP +3","protocol":"udp","variable":"SERVER_PORT","offset":3}
+  ],
+  "configuration": {"adapters":[{"id":"7dtd-serverconfig","schema_version":1,"file":"serverconfig.adapter.json"}]},
+  "compatibility": {"status":"compatible","findings":[]},
+  "read_only": true,
+  "platforms": ["windows","linux"],
+  "prerequisites": ["Network access to Steam content servers","Sufficient storage for the dedicated server"]
+}

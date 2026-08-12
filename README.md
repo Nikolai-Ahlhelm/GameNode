@@ -2,7 +2,7 @@
 
 GameNode is a self-contained, single-node game-server management platform for Windows and Linux. It manages existing native applications through a local web interface; it does not require containers, templates, or a central controller.
 
-The current implementation covers the foundation, native runtime, live console, server-root file browser, RBAC, monitoring and health state, auto-restart, port management, audit log, dashboards, typed settings, diagnostics, support bundles, safe Egg template import, and native SteamCMD provisioning. Cluster/controller operation, Docker/Podman, a marketplace, automatic server updates, backups, scheduling, and firewall/NAT automation are intentionally out of scope.
+The current implementation covers the foundation, native runtime, live console, server-root file browser, RBAC, monitoring and health state, auto-restart, port management, audit log, dashboards, typed settings, diagnostics, support bundles, the Official Game Library, safe Egg template import, and native SteamCMD provisioning. Cluster/controller operation, Docker/Podman, a marketplace, automatic server updates, backups, scheduling, and firewall/NAT automation are intentionally out of scope.
 
 ## Capabilities
 
@@ -16,6 +16,7 @@ The current implementation covers the foundation, native runtime, live console, 
 - Inspect append-only audit records, safe diagnostics, typed monitoring settings, and a bounded sanitized support bundle.
 - Analyze and persist Pelican/Pterodactyl Eggs as normalized GameNode templates with compatibility reports and native SteamCMD/launch plans.
 - Provision supported templates asynchronously through a managed SteamCMD installation, then create an ordinary native GameNode server.
+- Adopt an existing Minecraft NeoForge installation through the Official read-only template and a conservative launcher resolver.
 
 ## Security model
 
@@ -108,7 +109,7 @@ The race detector must run natively on the target OS/architecture; CI runs it on
 
 ## CI and releases
 
-Pull requests targeting `master` and pushes to `master` run the GitHub Actions CI workflow. It verifies Go formatting, vet, tests, a Linux race-detector pass, native Windows tests, frontend type/helper tests, and production frontend builds. Successful `master` runs expose unsigned Windows amd64 and Linux amd64 development binaries as workflow artifacts for 14 days.
+Pull requests targeting `main` and pushes to `main` run the GitHub Actions CI workflow. It verifies Go formatting, vet, tests, a Linux race-detector pass, native Windows tests, frontend type/helper tests, and production frontend builds. Successful `main` runs expose unsigned Windows amd64 and Linux amd64 development binaries as workflow artifacts for 14 days.
 
 To publish an official release, push a semantic version tag such as `v0.1.0`. The release workflow repeats the required verification, builds the frontend before each final Go binary so its assets are embedded, and publishes these assets:
 
@@ -130,7 +131,7 @@ Release binaries expose the tag in Diagnostics and also include the build commit
 
 ## Operational limitations
 
-GameNode is intentionally a local, single-node product. It provides no distributed controller, remote-node protocol, automatic firewall/NAT management, permanent port reservation, container runtime, or game installer. Port availability probes are best effort and retain the normal bind-time TOCTOU window. A process discovered after GameNode restarts can be identity-verified but remains console-detached. Review [docs/runtime.md](docs/runtime.md) and [docs/security.md](docs/security.md) when deploying under a service account.
+GameNode is intentionally a local, single-node product. It provides no distributed controller, remote-node protocol, automatic firewall/NAT management, permanent port reservation, container runtime, or generic installer beyond the reviewed native template flows described below. Port availability probes are best effort and retain the normal bind-time TOCTOU window. A process discovered after GameNode restarts can be identity-verified but remains console-detached. Review [docs/runtime.md](docs/runtime.md) and [docs/security.md](docs/security.md) when deploying under a service account.
 # Egg template import foundation (v0.2)
 
 GameNode can analyze and import Pelican/Pterodactyl v2 Egg JSON files into a normalized, persisted GameNode template. Eggs are an import format only: the native runtime never reads Egg JSON, executes Egg shell scripts, starts Docker images, or maps container paths onto the host. The Templates UI provides upload, compatibility preview, variable inspection, import, detail, and delete workflows protected by independent global `Templates.View` and `Templates.Manage` permissions.
@@ -142,3 +143,13 @@ The importer recognizes a conservative SteamCMD pattern and creates a native ins
 Templates with a supported anonymous SteamCMD plan and a safe launch definition can be provisioned from the Templates UI. GameNode bootstraps SteamCMD from a fixed official Valve HTTPS source into `<data>/tools/steamcmd`, installs game files into `<data>/servers/<directory>`, expands only declared template variables, and transactionally creates a normal GameNode server after installation succeeds. Jobs expose bounded phase/status information, support cancellation, prevent concurrent use of the same target, and retain a clear `files_may_remain` signal after failure.
 
 Egg scripts, arbitrary URLs, free-form SteamCMD flags, credentialed login, Docker images, and update-on-start hooks are not executed. Sensitive values are masked by the server API and excluded from audit/support output; this version stores environment values in the existing SQLite server record without application-level at-rest encryption. Provisioning jobs interrupted by a GameNode restart are marked failed rather than resumed. See [architecture](docs/architecture.md), [security](docs/security.md), and [API](docs/api.md) for the precise boundary.
+
+# Official Game Library and Minecraft NeoForge (v0.2)
+
+The Game Library loads a schema-versioned manifest from the repository's fixed [GitHub Raw `main` path](https://raw.githubusercontent.com/Nikolai-Ahlhelm/GameNode/main/templates/catalog.json). Official JSON lives under [`templates/`](templates/README.md), remains Git-reviewed in this repository, and is not duplicated into user-editable SQLite template rows. GameNode shows a validated last-good cache immediately from `<data>/templates/cache`, refreshes when the library opens or when requested, and keeps imported Eggs usable during a GitHub outage. There are no community sources, user-configurable catalog URLs, GitHub tokens, hashes, or signatures in this milestone.
+
+The Official catalog includes **Minecraft NeoForge**, **7 Days to Die**, and **Project Zomboid**. NeoForge's Adopt Existing flow derives a direct Java process without invoking its generated scripts. The Steam games use fixed catalog-owned App IDs, typed launch values, and declared ports. Project Zomboid App ID `380870` is currently declared Windows-only: GameNode invokes its installed `jre64/bin/java.exe` with the vendor JSON's fixed JVM/classpath definition instead of executing `StartServer64.bat`, confines generated data below the server root, and stops with the documented stdin `quit` command. App IDs, login commands, URLs, and SteamCMD flags are never user input. A normal server is committed only after SteamCMD succeeds and the platform-specific executable is verified inside the managed root.
+
+Official games may also ship versioned declarative configuration adapters in their own game directory. 7 Days to Die maps selected settings to `serverconfig.xml`; Project Zomboid template `1.1.0` maps a reviewed subset of its generated `Server/gamenode.ini`. GameNode persists the exact adapter with each server and exposes typed Game Settings on the Configuration tab. A post-start adapter remains clearly pending until the game creates its file. Remote JSON may select only the compiled `xml-properties` or strict flat `ini-key-values` implementation; it cannot provide XPath, parser code, scripts, hooks, or escaping paths. Writes are bounded, format-aware, backed up, atomic, audit-recorded, and never return secret values. Project Zomboid's executable `SandboxVars.lua` remains unmanaged.
+
+The template does not download Minecraft or NeoForge, write `eula.txt`, overwrite the server directory, or interpret arbitrary launcher syntax. It verifies but does not execute free-form `user_jvm_args.txt`; typed minimum/maximum memory replace the reference file's empty defaults. It also supports `nogui` and graceful `stop` over the attached console with a timeout/kill fallback. The local `server-test` reference resolves as NeoForge `26.2.0.59` for Minecraft `26.2`.

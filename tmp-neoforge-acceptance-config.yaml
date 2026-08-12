@@ -1,0 +1,13 @@
+server:
+  listen: "127.0.0.1:18443"
+data:
+  directory: "./tmp-neoforge-acceptance-data"
+database:
+  path: "./tmp-neoforge-acceptance-data/gamenode.db"
+logging:
+  level: "info"
+filesystem:
+  max_upload_bytes: 67108864
+monitoring:
+  sample_interval_seconds: 1
+  history_limit: 60

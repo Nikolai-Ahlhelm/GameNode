@@ -165,11 +165,25 @@ func newID() (string, error) {
 }
 func stamp(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
 
-type Service struct{ store *Store }
+type Service struct {
+	store    *Store
+	builtins map[string]Template
+	catalog  *CatalogManager
+}
+
+func NewServiceWithCatalog(store *Store, catalog *CatalogManager) *Service {
+	return &Service{store: store, builtins: map[string]Template{}, catalog: catalog}
+}
 
 var ErrInvalidEgg = errors.New("invalid egg")
 
-func NewService(store *Store) *Service { return &Service{store: store} }
+func NewService(store *Store) *Service {
+	builtins, err := loadBuiltins()
+	if err != nil {
+		panic(err)
+	}
+	return &Service{store: store, builtins: builtins}
+}
 func (s *Service) Analyze(data []byte) (Template, error) {
 	template, err := AnalyzeEgg(data)
 	if err != nil {
@@ -184,6 +198,50 @@ func (s *Service) Import(ctx context.Context, data []byte) (Template, error) {
 	}
 	return s.store.Create(ctx, template)
 }
-func (s *Service) List(ctx context.Context) ([]Template, error)         { return s.store.List(ctx) }
-func (s *Service) Get(ctx context.Context, id string) (Template, error) { return s.store.Get(ctx, id) }
-func (s *Service) Delete(ctx context.Context, id string) error          { return s.store.Delete(ctx, id) }
+func (s *Service) List(ctx context.Context) ([]Template, error) {
+	imported, err := s.store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := sortedBuiltins(s.builtins)
+	if s.catalog != nil {
+		result = append(result, s.catalog.List().Templates...)
+	}
+	return append(result, imported...), nil
+}
+func (s *Service) Get(ctx context.Context, id string) (Template, error) {
+	if template, ok := s.builtins[id]; ok {
+		return template, nil
+	}
+	if s.catalog != nil {
+		if template, ok := s.catalog.Get(id); ok {
+			return template, nil
+		}
+	}
+	return s.store.Get(ctx, id)
+}
+func (s *Service) Delete(ctx context.Context, id string) error {
+	if _, ok := s.builtins[id]; ok {
+		return ErrBuiltinReadOnly
+	}
+	if s.catalog != nil {
+		if _, ok := s.catalog.Get(id); ok {
+			return ErrBuiltinReadOnly
+		}
+	}
+	return s.store.Delete(ctx, id)
+}
+
+func (s *Service) Catalog() CatalogResult {
+	if s.catalog == nil {
+		return CatalogResult{SchemaVersion: CatalogSchemaVersion, Templates: []Template{}, Status: CatalogStatus{Source: "none"}}
+	}
+	return s.catalog.List()
+}
+
+func (s *Service) RefreshCatalog(ctx context.Context) (CatalogResult, error) {
+	if s.catalog == nil {
+		return s.Catalog(), ErrCatalogUnavailable
+	}
+	return s.catalog.Refresh(ctx)
+}

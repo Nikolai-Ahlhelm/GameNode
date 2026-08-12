@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -78,6 +79,15 @@ func TestTemplateImportPreviewPersistenceDeleteAndAudit(t *testing.T) {
 		t.Fatalf("unauthenticated=%d", response.Code)
 	}
 	admin := createAdminSession(t, h)
+	if response := templateRequest(h, http.MethodGet, "/api/v1/template-catalog", nil, &admin, false); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"schema_version":1`) {
+		t.Fatalf("catalog get=%d %s", response.Code, response.Body.String())
+	}
+	if response := templateRequest(h, http.MethodPost, "/api/v1/template-catalog/refresh", []byte(`{}`), &admin, false); response.Code != http.StatusForbidden {
+		t.Fatalf("catalog refresh without csrf=%d", response.Code)
+	}
+	if response := templateRequest(h, http.MethodPost, "/api/v1/template-catalog/refresh", []byte(`{}`), &admin, true); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unconfigured catalog refresh=%d %s", response.Code, response.Body.String())
+	}
 	if response := templateRequest(h, http.MethodPost, "/api/v1/templates/analyze/egg", eggEnvelope(t), &admin, false); response.Code != http.StatusForbidden {
 		t.Fatalf("preview without csrf=%d", response.Code)
 	}
@@ -109,6 +119,31 @@ func TestTemplateImportPreviewPersistenceDeleteAndAudit(t *testing.T) {
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE action='template.delete' AND result='success'`).Scan(&deletes); err != nil || deletes != 1 {
 		t.Fatalf("deletes=%d err=%v", deletes, err)
+	}
+}
+
+func TestBuiltinNeoForgeListResolveAndReadOnly(t *testing.T) {
+	h, _ := newTestServer(t)
+	admin := createAdminSession(t, h)
+	listed := templateRequest(h, http.MethodGet, "/api/v1/templates", nil, &admin, false)
+	if listed.Code != http.StatusOK || !strings.Contains(listed.Body.String(), "builtin-minecraft-neoforge") || !strings.Contains(listed.Body.String(), `"read_only":true`) {
+		t.Fatalf("built-in list=%d %s", listed.Code, listed.Body.String())
+	}
+	deleted := templateRequest(h, http.MethodDelete, "/api/v1/templates/builtin-minecraft-neoforge", nil, &admin, true)
+	if deleted.Code != http.StatusConflict || !strings.Contains(deleted.Body.String(), "read_only_template") {
+		t.Fatalf("built-in delete=%d %s", deleted.Code, deleted.Body.String())
+	}
+	root, err := filepath.Abs(filepath.Join("..", "..", "server-test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(root); os.IsNotExist(err) {
+		t.Skip("local NeoForge reference server is not present")
+	}
+	body, _ := json.Marshal(map[string]any{"server_root": root, "minimum_memory_mb": 1024, "maximum_memory_mb": 4096, "nogui": true})
+	resolved := templateRequest(h, http.MethodPost, "/api/v1/templates/builtin-minecraft-neoforge/resolve", body, &admin, false)
+	if resolved.Code != http.StatusOK || !strings.Contains(resolved.Body.String(), `"neoforge_version":"26.2.0.59"`) || !strings.Contains(resolved.Body.String(), `"minecraft_version":"26.2"`) {
+		t.Fatalf("built-in resolve=%d %s", resolved.Code, resolved.Body.String())
 	}
 }
 
@@ -153,6 +188,9 @@ func TestTemplatePermissionsAreIndependentAndGlobalOnly(t *testing.T) {
 	viewer := makeUser("viewer", "Templates.View", "global")
 	if response := templateRequest(h, http.MethodGet, "/api/v1/templates", nil, &viewer, false); response.Code != http.StatusOK {
 		t.Fatalf("viewer list=%d", response.Code)
+	}
+	if response := templateRequest(h, http.MethodPost, "/api/v1/template-catalog/refresh", []byte(`{}`), &viewer, true); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("viewer refresh permission=%d %s", response.Code, response.Body.String())
 	}
 	if response := templateRequest(h, http.MethodPost, "/api/v1/templates/analyze/egg", eggEnvelope(t), &viewer, true); response.Code != http.StatusForbidden {
 		t.Fatalf("view implied manage=%d", response.Code)

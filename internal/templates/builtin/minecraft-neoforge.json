@@ -1,0 +1,31 @@
+{
+  "id": "builtin-minecraft-neoforge",
+  "name": "Minecraft NeoForge",
+  "description": "Adopt an existing NeoForge dedicated server installation and launch its generated Java argument files directly, without a shell.",
+  "source_type": "builtin",
+  "source_identifier": "minecraft-neoforge",
+  "source_format_version": "1",
+  "source_metadata": {
+    "author": "GameNode",
+    "tags": ["minecraft", "neoforge", "java"]
+  },
+  "installer": {"type": "existing"},
+  "launch": {
+    "executable": "java",
+    "arguments": [],
+    "working_root": "server_root",
+    "stop_method": "stdin_command",
+    "stop_command": "stop",
+    "stop_timeout_seconds": 60,
+    "resolver": "neoforge"
+  },
+  "variables": [
+    {"name":"Minimum memory","description":"Initial Java heap in MiB","key":"MIN_MEMORY_MB","default_value":"1024","user_viewable":true,"user_editable":true,"type":"integer","sensitive":false,"required":true,"nullable":false,"validation":{"min":256,"max":262144}},
+    {"name":"Maximum memory","description":"Maximum Java heap in MiB","key":"MAX_MEMORY_MB","default_value":"4096","user_viewable":true,"user_editable":true,"type":"integer","sensitive":false,"required":true,"nullable":false,"validation":{"min":512,"max":262144}},
+    {"name":"Disable graphical console","description":"Pass nogui to the Minecraft server","key":"NOGUI","default_value":"true","user_viewable":true,"user_editable":true,"type":"boolean","sensitive":false,"required":true,"nullable":false,"validation":{}}
+  ],
+  "compatibility": {"status":"compatible","findings":[]},
+  "read_only": true,
+  "platforms": ["windows", "linux"],
+  "prerequisites": ["Java must already be installed"]
+}
