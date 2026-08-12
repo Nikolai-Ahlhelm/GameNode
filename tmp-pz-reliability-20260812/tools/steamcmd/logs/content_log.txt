@@ -1,0 +1,42 @@
+
+
+[2026-08-12 19:52:33] Client version: 1785799152
+[2026-08-12 19:52:33] Loaded 0 apps from install folder "i:\gamenode\tmp-pz-reliability-20260812\servers\project-zomboid\steamapps\appmanifest_*.acf".
+[2026-08-12 19:52:33] Triggered async write of Steam library folders configuration (1 libraries).
+[2026-08-12 19:52:38] Failed installing AppID 380870 (Missing configuration)
+
+
+[2026-08-12 19:52:41] Client version: 1785799152
+[2026-08-12 19:52:41] Loaded 0 apps from install folder "i:\gamenode\tmp-pz-reliability-20260812\servers\project-zomboid\steamapps\appmanifest_*.acf".
+[2026-08-12 19:52:41] Triggered async write of Steam library folders configuration (1 libraries).
+[2026-08-12 19:52:42] AppID 380870 state changed : Update Required,
+[2026-08-12 19:52:42] AppID 380870 scheduler update : Priority First, not played for 4294967116 seconds, update disabled for 0 seconds
+[2026-08-12 19:52:42] AppID 380870 state changed : Update Required,Update Queued,
+[2026-08-12 19:52:42] AppID 380870 scheduler update : Priority First, not played for 4294967116 seconds, update disabled for 0 seconds
+[2026-08-12 19:52:42] AppID 380870 state changed : Update Required,Update Queued,Update Running,
+[2026-08-12 19:52:42] AppID 380870 App update changed : Running Update,
+[2026-08-12 19:52:42] AppID 380870 App update changed : Running Update,Reconfiguring,
+[2026-08-12 19:52:43] Got 5 download sources and 0 caching proxies via ContentServerDirectoryService::BYieldingGetServersForSteamPipe (CellID 5 / Launcher 3)
+[2026-08-12 19:52:43] Moving to source priority class '2'
+[2026-08-12 19:52:43] Created download interface of type 'CDN' (2) to host fastly.cdn.steampipe.steamcontent.com (fastly.cdn.steampipe.steamcontent.com)
+[2026-08-12 19:52:43] HTTP (CDN,31) - fastly.cdn.steampipe.steamcontent.com (0.0.0.0:0 / 0.0.0.0:0, host: fastly.cdn.steampipe.steamcontent.com): AuthenticateDepotID (1004) - Success!
+[2026-08-12 19:52:43] HTTP/2 available
+[2026-08-12 19:52:43] Created ipv4-only http client
+[2026-08-12 19:52:44] HTTPS (CDN,31) - fastly.cdn.steampipe.steamcontent.com (199.232.211.82:443 / 199.232.211.82:443, host: fastly.cdn.steampipe.steamcontent.com): fastly.cdn.steampipe.steamcontent.com/depot/1004/manifest/5612541580377302256/5/2229636597672014012 - manifest request received 200 (OK) HTTP response
+[2026-08-12 19:52:44] HTTPS (CDN,31) - fastly.cdn.steampipe.steamcontent.com (199.232.211.82:443 / 199.232.211.82:443, host: fastly.cdn.steampipe.steamcontent.com): AuthenticateDepotID (380871) - Success!
+[2026-08-12 19:52:45] HTTPS (CDN,31) - fastly.cdn.steampipe.steamcontent.com (199.232.211.82:443 / 199.232.211.82:443, host: fastly.cdn.steampipe.steamcontent.com): AuthenticateDepotID (380874) - Success!
+[2026-08-12 19:52:45] HTTPS (CDN,31) - fastly.cdn.steampipe.steamcontent.com (199.232.211.82:443 / 199.232.211.82:443, host: fastly.cdn.steampipe.steamcontent.com): fastly.cdn.steampipe.steamcontent.com/depot/380874/manifest/8626440533803009640/5/5300273752522152497 - manifest request received 200 (OK) HTTP response
+[2026-08-12 19:52:45] HTTPS (CDN,31) - fastly.cdn.steampipe.steamcontent.com (199.232.211.82:443 / 199.232.211.82:443, host: fastly.cdn.steampipe.steamcontent.com): fastly.cdn.steampipe.steamcontent.com/depot/380871/manifest/2587362105419356756/5/1360300485629234636 - manifest request received 200 (OK) HTTP response
+[2026-08-12 19:52:46] AppID 380870 App update changed : Running Update,
+[2026-08-12 19:52:46] AppID 380870 App update changed : Running Update,Verifying Installed,
+[2026-08-12 19:52:46] AppID 380870 App update changed : Running Update,
+[2026-08-12 19:52:46] AppID 380870 App update changed : Running Update,Preallocating,
+[2026-08-12 19:52:46] AppID 380870 update canceled : Failed to preallocate (Not enough disk space) "6.41 GB"
+[2026-08-12 19:52:46] AppID 380870 App update changed : Running Update,Preallocating,Stopping,
+[2026-08-12 19:52:46] AppID 380870 preallocated 8 files (61 MB) 
+[2026-08-12 19:52:46] AppID 380870 App update changed : Running Update,Stopping,
+[2026-08-12 19:52:46] AppID 380870 App update changed : None
+[2026-08-12 19:52:46] AppID 380870 state changed : Update Required,Update Queued, (Not enough disk space)
+[2026-08-12 19:52:46] AppID 380870 state changed : Update Required,Update Paused,
+[2026-08-12 19:52:46] AppID 380870 scheduler finished : removed from schedule (result Not enough disk space, state 0x202) 
+[2026-08-12 19:52:46] HTTPS (CDN,31) - fastly.cdn.steampipe.steamcontent.com (199.232.211.82:443 / 199.232.211.82:443, host: fastly.cdn.steampipe.steamcontent.com): Closing connection

@@ -466,6 +466,57 @@ func TestStopKeepsConsoleUntilActualExitAndUsesFinalizer(t *testing.T) {
 	}
 }
 
+func TestStdinStopFinalizesWhenTimeoutKillFindsProcessAlreadyExited(t *testing.T) {
+	service, f, manager, db := testService(t)
+	defer db.Close()
+	server := testServer(t)
+	server.StopMethod = "stdin_command"
+	server.StopCommand = "quit"
+	server.StopTimeoutSeconds = 1
+	record, err := service.Create(context.Background(), server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Start(context.Background(), record.Server.ID); err != nil {
+		t.Fatal(err)
+	}
+	input := &testInput{}
+	f.options.IO.Stdin(input)
+	f.kill = func() error { return runtime.ErrNotRunning }
+	stopped, err := service.Stop(context.Background(), record.Server.ID)
+	if err != nil || stopped.Runtime.CurrentState != StateStopped || stopped.Runtime.PID != 0 {
+		t.Fatalf("stop=%#v err=%v", stopped.Runtime, err)
+	}
+	if _, ok := manager.CurrentSession(record.Server.ID); ok {
+		t.Fatal("stale console session remained current")
+	}
+}
+
+func TestStartReconcilesExitedActiveInstanceWhoseWaitCallbackIsDelayed(t *testing.T) {
+	service, f, manager, db := testService(t)
+	defer db.Close()
+	record, err := service.Create(context.Background(), testServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Start(context.Background(), record.Server.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.useStatus = true
+	f.status = runtime.Status{Running: false, Known: true}
+	f.mu.Unlock()
+	if _, err = service.Start(context.Background(), record.Server.ID); err != nil {
+		t.Fatalf("reconciled start: %v", err)
+	}
+	if f.starts != 2 {
+		t.Fatalf("starts=%d", f.starts)
+	}
+	if current, ok := manager.CurrentSession(record.Server.ID); !ok || current.InstanceID == "" {
+		t.Fatal("new console session was not attached")
+	}
+}
+
 func TestKillUsesCentralFinalizer(t *testing.T) {
 	service, _, manager, db := testService(t)
 	defer db.Close()
@@ -787,5 +838,42 @@ func TestInvalidRediscoveryDoesNotDetachAndManagedStartClearsDetached(t *testing
 	}
 	if _, ok := manager.CurrentSession(record.Server.ID); !ok {
 		t.Fatal("managed start did not create an attached session")
+	}
+}
+
+func TestRediscoveryStatusErrorDoesNotRetainRunningOrAllowDuplicateStart(t *testing.T) {
+	service, f, manager, db := testService(t)
+	defer db.Close()
+	record, err := service.Create(context.Background(), testServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := service.store.Get(context.Background(), record.Server.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted.Runtime.PID = 321
+	persisted.Runtime.processStartKey = "unverified"
+	persisted.Runtime.CurrentState = StateRunning
+	if err = service.store.SaveRuntime(context.Background(), record.Server.ID, persisted.Runtime); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.useStatus = true
+	f.statusErr = errors.New("process query failed")
+	f.mu.Unlock()
+
+	got, err := service.Get(context.Background(), record.Server.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Runtime.CurrentState != StateUnknown || got.Runtime.PID != 321 || got.Runtime.LastError != "process status could not be verified" {
+		t.Fatalf("unexpected unverified state: %#v", got.Runtime)
+	}
+	if manager.IsDetached(record.Server.ID) {
+		t.Fatal("status-error rediscovery was marked detached")
+	}
+	if _, err = service.Start(context.Background(), record.Server.ID); err == nil {
+		t.Fatal("unverified process allowed a duplicate start")
 	}
 }

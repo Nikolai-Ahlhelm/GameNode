@@ -43,11 +43,18 @@ type fakeInstaller struct {
 	createExecutable bool
 	executable       string
 	configXML        string
+	output           string
 }
 
-func (i *fakeInstaller) Install(ctx context.Context, root string, plan steamcmd.InstallPlan, _ io.Writer, sink steamcmd.EventSink) error {
+func (i *fakeInstaller) Install(ctx context.Context, root string, plan steamcmd.InstallPlan, output io.Writer, sink steamcmd.EventSink) error {
 	i.calls.Add(1)
 	i.plan = plan
+	if output != nil {
+		_, _ = io.WriteString(output, "Steam> Downloading depot 1...\nSteam> Success\n")
+		if i.output != "" {
+			_, _ = io.WriteString(output, i.output)
+		}
+	}
 	if sink != nil {
 		sink(steamcmd.Event{Phase: "downloading_steamcmd", Summary: "Downloading SteamCMD"})
 		sink(steamcmd.Event{Phase: "steamcmd_ready", Summary: "SteamCMD ready"})
@@ -92,6 +99,12 @@ func (c *failingCreator) CreateProvisioned(context.Context, servers.Server, stri
 	return servers.Record{}, errors.New("database unavailable SECRET")
 }
 
+type portConflictCreator struct{}
+
+func (portConflictCreator) CreateProvisioned(context.Context, servers.Server, string, []servers.ProvisionedVariable, []ports.Port, []servers.ProvisionedConfigAdapter) (servers.Record, error) {
+	return servers.Record{}, servers.ErrProvisionedPortConflict
+}
+
 func provisionFixture(t *testing.T) (*sql.DB, string, templates.Template) {
 	t.Helper()
 	db, err := database.Open(":memory:")
@@ -127,6 +140,9 @@ func TestProvisioningSuccessCreatesNormalServerAfterInstall(t *testing.T) {
 	job = waitTerminal(t, service, job.ID)
 	if job.Status != Completed || job.ServerID == "" {
 		t.Fatalf("job=%#v", job)
+	}
+	if got := strings.Join(job.InstallerOutput, "\n"); !strings.Contains(got, "Downloading depot 1") || !strings.Contains(got, "Success") {
+		t.Fatalf("installer output=%q", got)
 	}
 	record, err := serverService.Get(context.Background(), job.ServerID)
 	if err != nil {
@@ -233,6 +249,95 @@ func TestInstallFailureAndDBFailureLeaveNoServer(t *testing.T) {
 				t.Fatal("ghost server created")
 			}
 		})
+	}
+}
+
+func TestRegistrationFailurePreservesCompletedInstallationForRecovery(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	installer := &fakeInstaller{createExecutable: true}
+	service := NewWithOptions(db, &templateSource{template: template}, installer, &failingCreator{}, data, Options{HostOS: "linux"})
+	defer service.Close()
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Seven", DirectoryName: "recovery", ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitTerminal(t, service, job.ID)
+	if job.FailureCode != "SERVER_DB_CREATE_FAILED" || job.FailurePhase != RegisteringServer || !job.InstallationCompleted || !job.RegistrationRecoverable {
+		t.Fatalf("registration failure lost installation state: %#v", job)
+	}
+	if installer.calls.Load() != 1 {
+		t.Fatalf("installer calls=%d", installer.calls.Load())
+	}
+}
+
+func TestRetryRegistrationReusesSnapshotWithoutRunningInstaller(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	installer := &fakeInstaller{createExecutable: true}
+	service := NewWithOptions(db, &templateSource{template: template}, installer, &failingCreator{}, data, Options{HostOS: "linux"})
+	defer service.Close()
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Seven", DirectoryName: "retry", ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitTerminal(t, service, job.ID)
+	service.servers = servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	retried, err := service.RetryRegistration(context.Background(), job.ID, "actor")
+	if err != nil || retried.Status != Completed || retried.ServerID == "" {
+		t.Fatalf("retry=%#v err=%v", retried, err)
+	}
+	if installer.calls.Load() != 1 {
+		t.Fatalf("retry invoked installer %d times", installer.calls.Load())
+	}
+	if _, err = service.RetryRegistration(context.Background(), job.ID, "actor"); !errors.Is(err, ErrRecoveryUnavailable) {
+		t.Fatalf("duplicate retry err=%v", err)
+	}
+}
+
+func TestValidationFailureIsNotReportedAsSteamCMDFailure(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	service := NewWithOptions(db, &templateSource{template: template}, &fakeInstaller{}, &failingCreator{}, data, Options{HostOS: "linux"})
+	defer service.Close()
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Seven", DirectoryName: "missing", ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitTerminal(t, service, job.ID)
+	if job.FailureCode != "EXPECTED_EXECUTABLE_MISSING" || job.FailurePhase != ValidatingInstallation || !job.InstallationCompleted {
+		t.Fatalf("validation result=%#v", job)
+	}
+}
+
+func TestSteamCMDDiskSpaceOutputGetsStableFailureCode(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	installer := &fakeInstaller{err: steamcmd.ErrInstallFailed, output: "Failed to preallocate (Not enough disk space) 6.41 GB\n"}
+	service := NewWithOptions(db, &templateSource{template: template}, installer, &failingCreator{}, data, Options{HostOS: "linux"})
+	defer service.Close()
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Seven", DirectoryName: "disk", ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitTerminal(t, service, job.ID)
+	if job.FailureCode != "STEAMCMD_INSUFFICIENT_DISK_SPACE" || job.ErrorSummary != "Not enough free disk space to install this server." {
+		t.Fatalf("disk fixture=%#v", job)
+	}
+}
+
+func TestProvisionedPortConflictHasSafeActionableFailure(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	service := NewWithOptions(db, &templateSource{template: template}, &fakeInstaller{createExecutable: true}, portConflictCreator{}, data, Options{HostOS: "linux"})
+	defer service.Close()
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Seven", DirectoryName: "seven", ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitTerminal(t, service, job.ID)
+	if job.Status != Failed || !job.FilesMayRemain || job.FailureCode != "SERVER_RELATED_DATA_FAILED" || job.ErrorSummary != "Game files were installed successfully, but one or more selected ports are already assigned to another GameNode server" {
+		t.Fatalf("job=%#v", job)
 	}
 }
 

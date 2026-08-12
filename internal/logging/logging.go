@@ -13,7 +13,11 @@ import (
 	"time"
 )
 
-const MaxHistoryEntries = 1000
+const (
+	MaxHistoryEntries = 1000
+	maxFileBytes      = 4 << 20
+	maxFileBackups    = 4
+)
 
 // Entry is a single in-memory application log line. The buffer is process
 // local only and is deliberately not restored from log files at startup.
@@ -134,13 +138,36 @@ func (m *Manager) write(line string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	name := "gamenode-" + time.Now().Format("2006-01-02") + ".log"
-	file, err := os.OpenFile(filepath.Join(m.directory, name), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	path := filepath.Join(m.directory, name)
+	if info, err := os.Stat(path); err == nil && info.Size()+int64(len(line)) > maxFileBytes {
+		if err := m.rotate(path); err != nil {
+			return err
+		}
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 	_, err = io.WriteString(file, line)
 	return err
+}
+
+func (m *Manager) rotate(path string) error {
+	oldest := path + fmt.Sprintf(".%d", maxFileBackups)
+	if err := os.Remove(oldest); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for index := maxFileBackups - 1; index >= 1; index-- {
+		from, to := path+fmt.Sprintf(".%d", index), path+fmt.Sprintf(".%d", index+1)
+		if err := os.Rename(from, to); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if err := os.Rename(path, path+".1"); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 type handler struct {

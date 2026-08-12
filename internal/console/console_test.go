@@ -66,6 +66,33 @@ func TestClearCurrentSessionIsStaleSafe(t *testing.T) {
 	}
 }
 
+func TestLastClosedSessionRetainsHistoryUntilNextStart(t *testing.T) {
+	m := NewManager()
+	session := m.CreateSession("server-a", "instance-a")
+	session.Publish("stderr", "eula must be accepted\n")
+	session.Close("crashed")
+	m.ClearCurrentSession("server-a", session.ID)
+	last, ok := m.LastClosedSession("server-a")
+	if !ok || last != session {
+		t.Fatal("last closed session missing")
+	}
+	events, done := last.Subscribe()
+	defer done()
+	if event := <-events; event.Data != "eula must be accepted\n" {
+		t.Fatalf("history = %#v", event)
+	}
+	if event, ok := <-events; !ok || event.State != "crashed" {
+		t.Fatalf("final state = %#v, open=%v", event, ok)
+	}
+	if _, ok := <-events; ok {
+		t.Fatal("closed session kept a subscriber open")
+	}
+	m.CreateSession("server-a", "instance-b")
+	if _, ok := m.LastClosedSession("server-a"); ok {
+		t.Fatal("new start did not clear the previous console history")
+	}
+}
+
 func TestRemoveSessionIsStaleSafe(t *testing.T) {
 	m := NewManager()
 	old := m.CreateSession("server-a", "old")
@@ -160,6 +187,22 @@ func TestDisconnectAndSlowSubscriberDoNotBlockPublish(t *testing.T) {
 	for range slow {
 	}
 	removeSlow()
+}
+
+func TestSubscribeBoundsLargeHistoryToSubscriberQueue(t *testing.T) {
+	s := NewManager().Start("server", &input{})
+	for i := 0; i < 1000; i++ {
+		s.Publish("stdout", "line")
+	}
+	events, unsubscribe := s.Subscribe()
+	defer unsubscribe()
+	var last Event
+	for count := 0; count < 128; count++ {
+		last = <-events
+	}
+	if last.Type != "state" || last.State != "running" {
+		t.Fatalf("last replayed event = %#v, want running state", last)
+	}
 }
 
 var _ io.WriteCloser = (*input)(nil)

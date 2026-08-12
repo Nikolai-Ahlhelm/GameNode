@@ -4,15 +4,56 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
 
+// File is the configuration selected at startup. Changes affect the next
+// process start; live services retain their startup configuration.
+type File struct {
+	mu    sync.Mutex
+	path  string
+	value Config
+}
+
+func NewFile(path string, value Config) *File { return &File{path: path, value: value} }
+
+func (f *File) Storage() (string, string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.value.Data.Directory, f.value.Database.Path
+}
+
+func (f *File) SetStorage(dataDirectory, databasePath string) error {
+	dataDirectory = filepath.Clean(strings.TrimSpace(dataDirectory))
+	databasePath = filepath.Clean(strings.TrimSpace(databasePath))
+	if !filepath.IsAbs(dataDirectory) || !filepath.IsAbs(databasePath) {
+		return fmt.Errorf("data directory and database path must be absolute")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	next := f.value
+	next.Data.Directory = dataDirectory
+	next.Database.Path = databasePath
+	contents, err := yaml.Marshal(next)
+	if err != nil {
+		return fmt.Errorf("serialize config: %w", err)
+	}
+	if err = os.WriteFile(f.path, contents, 0600); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	f.value = next
+	return nil
+}
+
 type Config struct {
 	Server struct {
-		Listen  string `yaml:"listen"`
-		TLSCert string `yaml:"tls_cert"`
-		TLSKey  string `yaml:"tls_key"`
+		Listen          string `yaml:"listen"`
+		TLSCert         string `yaml:"tls_cert"`
+		TLSKey          string `yaml:"tls_key"`
+		TrustLocalProxy bool   `yaml:"trust_local_proxy"`
 	} `yaml:"server"`
 	Data struct {
 		Directory string `yaml:"directory"`
@@ -42,6 +83,18 @@ func Default() Config {
 	c.Monitoring.SampleIntervalSeconds = 5
 	c.Monitoring.HistoryLimit = 300
 	return c
+}
+
+func defaultForConfigPath(path string) (Config, error) {
+	c := Default()
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return c, fmt.Errorf("resolve config path: %w", err)
+	}
+	data := filepath.Join(filepath.Dir(absolute), "data")
+	c.Data.Directory = data
+	c.Database.Path = filepath.Join(data, "gamenode.db")
+	return c, nil
 }
 
 func Load(path string) (Config, error) {
@@ -75,6 +128,52 @@ func Load(path string) (Config, error) {
 		return c, fmt.Errorf("monitoring.history_limit must be between 1 and 10000")
 	}
 	return c, nil
+}
+
+// LoadOrCreate loads path or creates a complete default configuration there on
+// first start. It never replaces an existing file.
+func LoadOrCreate(path string) (Config, error) {
+	if path == "" {
+		return Default(), nil
+	}
+	c, err := Load(path)
+	if err != nil {
+		return c, err
+	}
+	if _, err = os.Stat(path); err == nil {
+		return c, nil
+	} else if !os.IsNotExist(err) {
+		return c, fmt.Errorf("stat config: %w", err)
+	}
+	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return c, fmt.Errorf("create config directory: %w", err)
+	}
+	created, err := defaultForConfigPath(path)
+	if err != nil {
+		return c, err
+	}
+	contents, err := yaml.Marshal(created)
+	if err != nil {
+		return c, fmt.Errorf("serialize default config: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if os.IsExist(err) {
+		return Load(path)
+	}
+	if err != nil {
+		return c, fmt.Errorf("create config: %w", err)
+	}
+	if _, err = file.Write(contents); err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err != nil {
+		return c, fmt.Errorf("write default config: %w", err)
+	}
+	if closeErr != nil {
+		return c, fmt.Errorf("close default config: %w", closeErr)
+	}
+	return created, nil
 }
 
 func (c Config) EnsureDirectories() error {

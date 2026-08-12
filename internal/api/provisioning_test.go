@@ -40,7 +40,10 @@ func (s apiCatalogSource) FetchTemplate(context.Context, string) ([]byte, error)
 	return s.template, nil
 }
 
-func (i *apiInstaller) Install(ctx context.Context, root string, _ steamcmd.InstallPlan, _ io.Writer, sink steamcmd.EventSink) error {
+func (i *apiInstaller) Install(ctx context.Context, root string, _ steamcmd.InstallPlan, output io.Writer, sink steamcmd.EventSink) error {
+	if output != nil {
+		_, _ = io.WriteString(output, "Steam> Installing with password TOP_SECRET\n")
+	}
 	if sink != nil {
 		sink(steamcmd.Event{Phase: "installing", Summary: "Installing game files"})
 	}
@@ -136,7 +139,7 @@ func TestProvisioningAPIAuthCSRFAuditAndSecretRedaction(t *testing.T) {
 	var created map[string]any
 	json.NewDecoder(response.Body).Decode(&created)
 	job := waitAPIJob(t, fixture, admin, created["id"].(string))
-	if job["status"] != "completed" || strings.Contains(mustJSON(job), "TOP_SECRET") {
+	if job["status"] != "completed" || strings.Contains(mustJSON(job), "TOP_SECRET") || !strings.Contains(mustJSON(job), "[REDACTED]") {
 		t.Fatalf("job=%#v", job)
 	}
 	serverID := job["server_id"].(string)

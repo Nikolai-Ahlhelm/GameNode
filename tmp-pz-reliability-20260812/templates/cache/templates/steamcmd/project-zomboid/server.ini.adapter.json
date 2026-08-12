@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "id": "project-zomboid-server-ini",
+  "version": "1.0.0",
+  "format": "ini-key-values",
+  "target": "Server/gamenode.ini",
+  "restart_required": true,
+  "post_start_only": true,
+  "fields": [
+    {
+      "key": "PZ_PUBLIC_NAME",
+      "label": "Public server name",
+      "description": "Name shown in the Project Zomboid server browser.",
+      "section": "Identity",
+      "type": "string",
+      "property": "PublicName",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min_length": 1,
+        "max_length": 64
+      }
+    },
+    {
+      "key": "PZ_PUBLIC_DESCRIPTION",
+      "label": "Public description",
+      "description": "Short description shown in the public server browser.",
+      "section": "Identity",
+      "type": "string",
+      "property": "PublicDescription",
+      "required": false,
+      "nullable": true,
+      "sensitive": false,
+      "validation": {
+        "max_length": 256
+      }
+    },
+    {
+      "key": "PZ_PASSWORD",
+      "label": "Join password",
+      "description": "Optional password required when joining the server.",
+      "section": "Access",
+      "type": "secret",
+      "property": "Password",
+      "required": false,
+      "nullable": true,
+      "sensitive": true,
+      "validation": {
+        "max_length": 64
+      }
+    },
+    {
+      "key": "PZ_PUBLIC",
+      "label": "List publicly",
+      "description": "Advertise the server in the public server browser.",
+      "section": "Access",
+      "type": "boolean",
+      "property": "Public",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    },
+    {
+      "key": "PZ_OPEN",
+      "label": "Allow new players",
+      "description": "Allow players without an existing account or whitelist entry to join.",
+      "section": "Access",
+      "type": "boolean",
+      "property": "Open",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    },
+    {
+      "key": "PZ_MAX_PLAYERS",
+      "label": "Maximum players",
+      "description": "Maximum number of simultaneous players.",
+      "section": "Gameplay",
+      "type": "integer",
+      "property": "MaxPlayers",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min": 1,
+        "max": 100
+      }
+    },
+    {
+      "key": "PZ_PVP",
+      "label": "Player versus player",
+      "description": "Allow players to damage other players.",
+      "section": "Gameplay",
+      "type": "boolean",
+      "property": "PVP",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    },
+    {
+      "key": "PZ_PAUSE_EMPTY",
+      "label": "Pause while empty",
+      "description": "Pause world simulation when no players are connected.",
+      "section": "Gameplay",
+      "type": "boolean",
+      "property": "PauseEmpty",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    },
+    {
+      "key": "PZ_SAVE_INTERVAL",
+      "label": "Autosave interval",
+      "description": "Minutes between automatic world saves; zero uses the game default behavior.",
+      "section": "Persistence",
+      "type": "integer",
+      "property": "SaveWorldEveryMinutes",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min": 0,
+        "max": 1440
+      }
+    },
+    {
+      "key": "PZ_BACKUPS_ON_START",
+      "label": "Backup on start",
+      "description": "Let Project Zomboid create a backup whenever the server starts.",
+      "section": "Persistence",
+      "type": "boolean",
+      "property": "BackupsOnStart",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    }
+  ]
+}

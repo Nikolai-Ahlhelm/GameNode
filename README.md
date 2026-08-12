@@ -70,7 +70,9 @@ Pop-Location
 go build -o gamenode.exe ./cmd/gamenode
 ```
 
-The frontend build is embedded in the executable, so Node.js is not required at runtime. Open `http://127.0.0.1:8443`, or pass `-config path/to/config.yaml` for an explicit configuration file. Configure both `server.tls_cert` and `server.tls_key` in production so session cookies are marked `Secure`.
+The frontend build is embedded in the executable, so Node.js is not required at runtime. On its first start, the executable creates `config.yaml` beside itself when no `-config` path is supplied. Before the first administrator is created, the guided setup offers the default data and database paths or lets an operator choose absolute alternatives; a restart applies changed paths. It can then optionally prepare SteamCMD from Valve's fixed source. Open `http://127.0.0.1:8443`, or pass `-config path/to/config.yaml` for an explicit configuration file, which is also created with defaults when absent. Configure both `server.tls_cert` and `server.tls_key` in production so session cookies are marked `Secure`.
+
+For TLS terminated by a reverse proxy on the same machine, keep GameNode bound to loopback and set `server.trust_local_proxy: true`. GameNode then accepts `X-Forwarded-Proto` and `X-Forwarded-Host` only from `127.0.0.1` or `::1`, and marks session cookies `Secure`. Do not enable this setting for a proxy reached over the network.
 
 ## Server and file-browser usage
 

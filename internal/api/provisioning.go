@@ -17,9 +17,10 @@ import (
 )
 
 type provisionInput struct {
-	ServerName    string            `json:"server_name"`
-	DirectoryName string            `json:"directory_name"`
-	Variables     map[string]string `json:"variables"`
+	ServerName      string            `json:"server_name"`
+	DirectoryName   string            `json:"directory_name"`
+	Variables       map[string]string `json:"variables"`
+	RecoverExisting bool              `json:"recover_existing"`
 }
 
 func decodeProvisionInput(w http.ResponseWriter, r *http.Request, value *provisionInput) bool {
@@ -67,7 +68,7 @@ func (s *Server) startProvisioning(w http.ResponseWriter, r *http.Request, templ
 	if !decodeProvisionInput(w, r, &input) {
 		return
 	}
-	job, err := s.provisioning.Start(r.Context(), provisioning.Request{TemplateID: templateID, ServerName: input.ServerName, DirectoryName: input.DirectoryName, Values: input.Variables, ActorUserID: actor.ID, ActorUsername: actor.Username})
+	job, err := s.provisioning.Start(r.Context(), provisioning.Request{TemplateID: templateID, ServerName: input.ServerName, DirectoryName: input.DirectoryName, Values: input.Variables, ActorUserID: actor.ID, ActorUsername: actor.Username, RecoverExisting: input.RecoverExisting})
 	if err != nil {
 		s.log.With("module", "Provisioning.Start").Warn("provisioning request rejected", "template_id", templateID, "actor_user_id", actor.ID, "failure", provisioningFailure(err))
 		provisioningError(w, err)
@@ -85,6 +86,8 @@ func provisioningFailure(err error) string {
 		return "not_provisionable"
 	case errors.Is(err, provisioning.ErrTargetConflict):
 		return "target_conflict"
+	case errors.Is(err, provisioning.ErrRecoveryUnavailable):
+		return "recovery_unavailable"
 	case errors.Is(err, sql.ErrNoRows):
 		return "template_not_found"
 	default:
@@ -119,12 +122,13 @@ func (s *Server) templateProvisionability(w http.ResponseWriter, r *http.Request
 func (s *Server) provisioningJobHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/provisioning/jobs/")
 	parts := strings.Split(path, "/")
-	if parts[0] == "" || len(parts) > 2 || (len(parts) == 2 && parts[1] != "cancel") {
+	if parts[0] == "" || len(parts) > 2 || (len(parts) == 2 && parts[1] != "cancel" && parts[1] != "retry-registration") {
 		notFound(w)
 		return
 	}
-	cancel := len(parts) == 2
-	if cancel && r.Method != http.MethodPost {
+	cancel := len(parts) == 2 && parts[1] == "cancel"
+	retryRegistration := len(parts) == 2 && parts[1] == "retry-registration"
+	if (cancel || retryRegistration) && r.Method != http.MethodPost {
 		method(w)
 		return
 	}
@@ -132,7 +136,7 @@ func (s *Server) provisioningJobHandler(w http.ResponseWriter, r *http.Request) 
 		method(w)
 		return
 	}
-	actor, ok := s.requireProvisionPermission(w, r, cancel)
+	actor, ok := s.requireProvisionPermission(w, r, cancel || retryRegistration)
 	if !ok {
 		return
 	}
@@ -149,7 +153,20 @@ func (s *Server) provisioningJobHandler(w http.ResponseWriter, r *http.Request) 
 		internal(w)
 		return
 	}
-	if !cancel {
+	if !cancel && !retryRegistration {
+		jsonOut(w, http.StatusOK, job)
+		return
+	}
+	if retryRegistration {
+		owner := actor.ID
+		if actor.IsAdmin {
+			owner = job.ActorUserID
+		}
+		job, err = s.provisioning.RetryRegistration(r.Context(), parts[0], owner)
+		if err != nil {
+			errorOut(w, http.StatusConflict, "registration_retry_unavailable", "server registration cannot be retried for this provisioning job")
+			return
+		}
 		jsonOut(w, http.StatusOK, job)
 		return
 	}
@@ -196,6 +213,8 @@ func provisioningError(w http.ResponseWriter, err error) {
 		errorOut(w, http.StatusUnprocessableEntity, "not_provisionable", "template is not provisionable on this host")
 	case errors.Is(err, provisioning.ErrTargetConflict):
 		errorOut(w, http.StatusConflict, "target_conflict", "server target is already populated or in use")
+	case errors.Is(err, provisioning.ErrRecoveryUnavailable):
+		errorOut(w, http.StatusConflict, "recovery_unavailable", "the installed server cannot be safely recovered")
 	default:
 		errorOut(w, http.StatusBadRequest, "invalid_provision_request", "provisioning request is invalid")
 	}

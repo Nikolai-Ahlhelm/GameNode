@@ -223,6 +223,7 @@ func TestConsoleWebSocketMalformedAndOversizedInput(t *testing.T) {
 func TestConsoleWebSocketClosedState(t *testing.T) {
 	h, _, m, cookie, record, _ := consoleFixture(t)
 	session := m.Start(record.Server.ID, &consoleInput{})
+	session.Publish("stderr", "You need to agree to the EULA\n")
 	session.Close("stopped")
 	m.ClearCurrentSession(record.Server.ID, session.ID)
 	client, _, err := dialConsole(t, h.URL, record.Server.ID, cookie, h.URL)
@@ -230,7 +231,13 @@ func TestConsoleWebSocketClosedState(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	if got := readConsole(t, client); got.Type != "console" || got.State != "closed" {
+	if got := readConsole(t, client); got.Type != "console" || got.State != "attached" {
+		t.Fatalf("attach state %#v", got)
+	}
+	if got := readConsole(t, client); got.Data != "You need to agree to the EULA\n" || got.Stream != "stderr" {
+		t.Fatalf("retained output %#v", got)
+	}
+	if got := readConsole(t, client); got.Type != "state" || got.State != "stopped" {
 		t.Fatalf("closed state %#v", got)
 	}
 }

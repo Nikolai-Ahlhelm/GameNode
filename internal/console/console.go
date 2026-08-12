@@ -37,11 +37,12 @@ type Manager struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
 	current  map[string]string
+	last     map[string]string
 	detached map[string]bool
 }
 
 func NewManager() *Manager {
-	return &Manager{sessions: map[string]*Session{}, current: map[string]string{}, detached: map[string]bool{}}
+	return &Manager{sessions: map[string]*Session{}, current: map[string]string{}, last: map[string]string{}, detached: map[string]bool{}}
 }
 
 func (m *Manager) CreateSession(server, instance string) *Session {
@@ -50,6 +51,7 @@ func (m *Manager) CreateSession(server, instance string) *Session {
 	s := newSession(newSessionID(), server, instance)
 	m.sessions[s.ID] = s
 	m.current[server] = s.ID
+	delete(m.last, server)
 	delete(m.detached, server)
 	return s
 }
@@ -70,7 +72,21 @@ func (m *Manager) ClearCurrentSession(server, expected string) {
 	defer m.mu.Unlock()
 	if m.current[server] == expected {
 		delete(m.current, server)
+		m.last[server] = expected
 	}
+}
+
+// LastClosedSession returns the most recent managed console after its process
+// ended. Its output is in-memory only and is replaced by the next start.
+func (m *Manager) LastClosedSession(server string) (*Session, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	id, ok := m.last[server]
+	if !ok {
+		return nil, false
+	}
+	session, ok := m.sessions[id]
+	return session, ok
 }
 
 func (m *Manager) RemoveSession(server, id string) {
@@ -78,6 +94,9 @@ func (m *Manager) RemoveSession(server, id string) {
 	defer m.mu.Unlock()
 	if m.current[server] == id {
 		delete(m.current, server)
+	}
+	if m.last[server] == id {
+		delete(m.last, server)
 	}
 	delete(m.sessions, id)
 }
@@ -227,10 +246,23 @@ func (s *Session) Subscribe() (<-chan Event, func()) {
 	if s.full {
 		count = len(s.events)
 	}
+	// Subscriber queues are intentionally bounded. Replaying the complete
+	// 1,000-event history into a 128-event queue would block this method while
+	// holding the session lock, leaving an otherwise attached WebSocket empty.
+	// Preserve one slot for the current state and replay only the newest output.
+	maxReplay := cap(c) - 1
+	if count > maxReplay {
+		start = (start + count - maxReplay) % len(s.events)
+		count = maxReplay
+	}
 	for i := 0; i < count; i++ {
 		c <- s.events[(start+i)%len(s.events)]
 	}
 	c <- Event{Type: "state", State: s.state, Timestamp: time.Now().UTC()}
+	if s.state != "running" {
+		close(c)
+		return c, func() {}
+	}
 	s.subscribers[c] = struct{}{}
 	return c, func() {
 		s.mu.Lock()

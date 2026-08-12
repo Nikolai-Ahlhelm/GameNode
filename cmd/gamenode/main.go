@@ -36,13 +36,23 @@ import (
 var webAssets embed.FS
 
 func main() {
-	configPath := flag.String("config", "config.yaml", "Path to YAML configuration")
+	configPath := flag.String("config", "", "Path to YAML configuration (defaults to config.yaml beside the executable)")
 	flag.Parse()
-	cfg, err := config.Load(*configPath)
+	path := *configPath
+	if path == "" {
+		executable, pathErr := os.Executable()
+		if pathErr != nil {
+			fmt.Fprintln(os.Stderr, "configuration path error:", pathErr)
+			os.Exit(1)
+		}
+		path = filepath.Join(filepath.Dir(executable), "config.yaml")
+	}
+	cfg, err := config.LoadOrCreate(path)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		os.Exit(1)
 	}
+	configFile := config.NewFile(path, cfg)
 	if err = cfg.EnsureDirectories(); err != nil {
 		fmt.Fprintln(os.Stderr, "data directory error:", err)
 		os.Exit(1)
@@ -87,7 +97,8 @@ func main() {
 		os.Exit(1)
 	}
 	static := spaHandler(assets)
-	secure := cfg.Server.TLSCert != ""
+	transportTLS := cfg.Server.TLSCert != ""
+	secureCookie := transportTLS || cfg.Server.TrustLocalProxy
 	serverService := servers.NewServiceWithMonitoring(servers.NewStore(db), runtime.NewNative(), console.NewManager(), monitoring.Options{Interval: time.Duration(currentSettings.Monitoring.SampleIntervalSeconds) * time.Second, HistoryLimit: currentSettings.Monitoring.HistoryLimit})
 	if err = serverService.Rediscover(context.Background()); err != nil {
 		log.Error("server rediscovery failed", "error", err.Error())
@@ -109,10 +120,10 @@ func main() {
 		log.Error("provisioning recovery failed", "error", err.Error())
 		os.Exit(1)
 	}
-	handler := api.New(auth.New(db), serverService, log, secure, api.Options{Filesystem: files, Settings: settingService, Diagnostics: diagnosticService, Templates: templateService, Provisioning: provisioner, GameConfig: gameConfigService, Logs: logManager}).Handler(static)
+	handler := api.New(auth.New(db), serverService, log, secureCookie, api.Options{TrustLocalProxy: cfg.Server.TrustLocalProxy, Filesystem: files, Settings: settingService, Diagnostics: diagnosticService, Templates: templateService, Provisioning: provisioner, GameConfig: gameConfigService, Logs: logManager, SetupConfig: configFile, SteamCMD: steamManager}).Handler(static)
 	server := &http.Server{Addr: cfg.Server.Listen, Handler: handler, ReadHeaderTimeout: 0, ReadTimeout: 15e9, WriteTimeout: 15e9, IdleTimeout: 60e9}
-	log.Info("GameNode starting", "listen", cfg.Server.Listen, "tls", secure)
-	if secure {
+	log.Info("GameNode starting", "listen", cfg.Server.Listen, "tls", transportTLS, "trust_local_proxy", cfg.Server.TrustLocalProxy)
+	if transportTLS {
 		err = server.ListenAndServeTLS(cfg.Server.TLSCert, cfg.Server.TLSKey)
 	} else {
 		err = server.ListenAndServe()
