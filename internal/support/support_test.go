@@ -208,7 +208,7 @@ func TestSettingsExportIsWhitelisted(t *testing.T) {
 		if err := json.Unmarshal(data.Bytes(), &raw); err != nil {
 			t.Fatal(err)
 		}
-		if len(raw) != 3 || raw["monitoring"] == nil || raw["restart_required"] == nil || raw["restart_required_fields"] == nil {
+		if len(raw) != 4 || raw["monitoring"] == nil || raw["logging"] == nil || raw["restart_required"] == nil || raw["restart_required_fields"] == nil {
 			t.Fatalf("unexpected settings fields: %v", raw)
 		}
 		return
@@ -261,7 +261,7 @@ func TestUnknownAppSettingIsExcluded(t *testing.T) {
 		if err := json.Unmarshal(data.Bytes(), &raw); err != nil {
 			t.Fatal(err)
 		}
-		if len(raw) != 3 || raw["monitoring"] == nil || raw["restart_required"] == nil || raw["restart_required_fields"] == nil || strings.Contains(data.String(), secret) {
+		if len(raw) != 4 || raw["monitoring"] == nil || raw["logging"] == nil || raw["restart_required"] == nil || raw["restart_required_fields"] == nil || strings.Contains(data.String(), secret) {
 			t.Fatal("unknown setting leaked into settings export")
 		}
 		return

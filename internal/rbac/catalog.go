@@ -8,6 +8,7 @@ var Catalog = []Permission{
 	{"Files.View", "Files", "View files"}, {"Files.Edit", "Files", "Edit files"}, {"Files.Upload", "Files", "Upload files"}, {"Files.Download", "Files", "Download files"}, {"Files.Delete", "Files", "Delete files"}, {"Files.Rename", "Files", "Rename files"},
 	{"Ports.View", "Ports", "View server ports"}, {"Ports.Manage", "Ports", "Manage server ports"},
 	{"Users.View", "Identity", "View users"}, {"Users.Manage", "Identity", "Manage users"}, {"Groups.View", "Identity", "View groups"}, {"Groups.Manage", "Identity", "Manage groups"}, {"Roles.View", "Identity", "View roles"}, {"Roles.Manage", "Identity", "Manage roles"}, {"Settings.View", "Platform", "View settings"}, {"Settings.Manage", "Platform", "Manage settings"},
+	{"Log.Read", "Log", "Read current application log"}, {"Log.FlushDirectory", "Log", "Clear application log files"},
 	{"Templates.View", "Templates", "View imported game templates"}, {"Templates.Manage", "Templates", "Analyze, import, and delete game templates"},
 	{"Monitoring.View", "Monitoring", "View monitoring"}, {"Audit.View", "Audit", "View audit"},
 }
@@ -26,7 +27,7 @@ func Known(key string) bool {
 // assignment, even when a caller happens to evaluate a server scope.
 func GlobalOnly(key string) bool {
 	switch key {
-	case "Server.Create", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Templates.View", "Templates.Manage", "Audit.View":
+	case "Server.Create", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Audit.View":
 		return true
 	default:
 		return false

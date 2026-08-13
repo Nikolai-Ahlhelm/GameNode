@@ -1,0 +1,8 @@
+
+
+[2026-08-12 19:52:29] Client version: 1785799152
+[2026-08-12 19:52:29] Disabling compatibility layer.
+
+
+[2026-08-12 19:52:39] Client version: 1785799152
+[2026-08-12 19:52:39] Disabling compatibility layer.

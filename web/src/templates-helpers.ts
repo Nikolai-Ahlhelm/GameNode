@@ -23,7 +23,7 @@ export function variableTypeLabel(type: string): string {
 }
 
 export function provisioningStatusLabel(status: string): string {
-  return ({ pending: 'Queued', preparing: 'Preparing server storage', downloading_steamcmd: 'Downloading SteamCMD', steamcmd_ready: 'SteamCMD ready', installing: 'Installing game files', creating_server: 'Creating GameNode server', completed: 'Complete', failed: 'Failed', cancelled: 'Cancelled' } as Record<string,string>)[status] ?? 'Provisioning';
+  return ({ pending: 'Queued', preparing: 'Preparing server storage', downloading_steamcmd: 'Downloading SteamCMD', steamcmd_ready: 'SteamCMD ready', installing: 'Installing game files', steamcmd_completed: 'SteamCMD completed', validating_installation: 'Validating installation', installation_validated: 'Installation validated', resolving_launch: 'Resolving server launch', registering_server: 'Registering server', server_registered: 'Server registered', creating_server: 'Creating GameNode server', completed: 'Complete', failed: 'Failed', cancelled: 'Cancelled' } as Record<string,string>)[status] ?? 'Provisioning';
 }
 export function provisioningTerminal(status: string): boolean { return ['completed','failed','cancelled'].includes(status); }
 export function templateInputType(type: string, sensitive: boolean): 'text'|'password'|'number'|'checkbox' { if(sensitive||type==='secret')return 'password';if(type==='integer'||type==='number')return 'number';if(type==='boolean')return 'checkbox';return 'text'; }

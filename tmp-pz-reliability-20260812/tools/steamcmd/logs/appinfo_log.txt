@@ -1,0 +1,44 @@
+
+
+[2026-08-12 19:52:29] Client version: 1785799152
+[2026-08-12 19:52:29] ThreadedReadFromDisk: loading appinfo cache from: I:\GameNode\tmp-pz-reliability-20260812\tools\steamcmd/appcache/appinfo.vdf
+[2026-08-12 19:52:29] ThreadedReadFromDisk: failed to open file: I:\GameNode\tmp-pz-reliability-20260812\tools\steamcmd/appcache/appinfo.vdf
+[2026-08-12 19:52:29] CAppInfoCacheReadFromDiskThread took 0 milliseconds to initialize
+[2026-08-12 19:52:33] RequestAppInfoUpdate: AppIDs 7
+[2026-08-12 19:52:33] Change number 0->37974789, apps: 0/0, packages: 0/0
+[2026-08-12 19:52:33] Requesting 1 apps, 1 packages (meta data, 1024 prev attempts, expected 0 KB)
+[2026-08-12 19:52:33] Downloaded 1 apps via HTTP, 15 KB (3 KB compressed)
+[2026-08-12 19:52:33] Requesting 0 apps, 1 packages (full data, 1024 prev attempts, expected 17 KB)
+[2026-08-12 19:52:34] UpdatesJob: finished OK, apps updated 1 (15 KB), packages updated 1 (17 KB)
+[2026-08-12 19:52:34] Requesting 736 apps, 0 packages (meta data, 1024 prev attempts, expected 34 KB)
+[2026-08-12 19:52:35] Requested 90 app access tokens, 23 received, 67 denied
+[2026-08-12 19:52:35] Updated SHAs with 23 new access tokens
+[2026-08-12 19:52:36] Downloaded 205 apps via HTTP, 2741 KB (644 KB compressed)
+[2026-08-12 19:52:36] Requesting 532 apps, 0 packages (full data, 1024 prev attempts, expected 2249 KB)
+[2026-08-12 19:52:38] UpdatesJob: finished OK, apps updated 737 (5017 KB), packages updated 0 (0 KB)
+[2026-08-12 19:52:38] UpdatesJob: apps still needs updates, run again
+[2026-08-12 19:52:38] Requesting 67 apps, 0 packages (meta data, 1024 prev attempts, expected 3 KB)
+[2026-08-12 19:52:38] RequestAppInfoUpdate: AppIDs 380870
+[2026-08-12 19:52:38] Requested 67 app access tokens, 0 received, 67 denied
+[2026-08-12 19:52:38] UpdatesJob: finished OK, apps updated 0 (0 KB), packages updated 0 (0 KB)
+[2026-08-12 19:52:38] UpdatesJob: apps still needs updates, run again
+[2026-08-12 19:52:38] ThreadedWriteToDisk: writing appinfo cache to: I:\GameNode\tmp-pz-reliability-20260812\tools\steamcmd/appcache/appinfo.vdf
+[2026-08-12 19:52:38] App cache write succeeded I:\GameNode\tmp-pz-reliability-20260812\tools\steamcmd/appcache/appinfo.vdf (737 apps, 2452 KB) in 19 ms
+
+
+[2026-08-12 19:52:39] Client version: 1785799152
+[2026-08-12 19:52:39] ThreadedReadFromDisk: loading appinfo cache from: I:\GameNode\tmp-pz-reliability-20260812\tools\steamcmd/appcache/appinfo.vdf
+[2026-08-12 19:52:39] ThreadedReadFromDisk: header version: 0x7564429
+[2026-08-12 19:52:39] ThreadedReadFromDisk: apps updated: 737
+[2026-08-12 19:52:39] CAppInfoCacheReadFromDiskThread took 19 milliseconds to initialize
+[2026-08-12 19:52:41] RequestAppInfoUpdate: AppIDs 7
+[2026-08-12 19:52:41] Change number 37974789->37974792, apps: 0/2, packages: 0/1
+[2026-08-12 19:52:41] Requesting 68 apps, 0 packages (meta data, 1024 prev attempts, expected 3 KB)
+[2026-08-12 19:52:42] Requested 67 app access tokens, 0 received, 67 denied
+[2026-08-12 19:52:42] UpdatesJob: finished OK, apps updated 0 (0 KB), packages updated 0 (0 KB)
+[2026-08-12 19:52:42] RequestAppInfoUpdate: AppIDs 380870
+[2026-08-12 19:52:42] Requesting 1 apps, 0 packages (meta data, 1024 prev attempts, expected 0 KB)
+[2026-08-12 19:52:42] Requesting 1 apps, 0 packages (full data, 1024 prev attempts, expected 4 KB)
+[2026-08-12 19:52:42] UpdatesJob: finished OK, apps updated 1 (4 KB), packages updated 0 (0 KB)
+[2026-08-12 19:52:46] ThreadedWriteToDisk: writing appinfo cache to: I:\GameNode\tmp-pz-reliability-20260812\tools\steamcmd/appcache/appinfo.vdf
+[2026-08-12 19:52:46] App cache write succeeded I:\GameNode\tmp-pz-reliability-20260812\tools\steamcmd/appcache/appinfo.vdf (738 apps, 2454 KB) in 23 ms

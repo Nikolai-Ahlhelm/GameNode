@@ -1,0 +1,56 @@
+"UserLocalConfigStore"
+{
+	"AppInfoChangeNumber"		"37974792"
+	"Software"
+	{
+		"Valve"
+		{
+			"Steam"
+			{
+				"apps"
+				{
+					"380870"
+					{
+						"LastPlayed"		"1786557342"
+					}
+				}
+			}
+		}
+	}
+	"depots"
+	{
+		"1004"
+		{
+			"CDN"
+			{
+				"fastly.cdn.steampipe.steamcontent.com"
+				{
+					"token"		""
+					"Expires"		"1786568143"
+				}
+			}
+		}
+		"380871"
+		{
+			"CDN"
+			{
+				"fastly.cdn.steampipe.steamcontent.com"
+				{
+					"token"		""
+					"Expires"		"1786568144"
+				}
+			}
+		}
+		"380874"
+		{
+			"CDN"
+			{
+				"fastly.cdn.steampipe.steamcontent.com"
+				{
+					"token"		""
+					"Expires"		"1786568145"
+				}
+			}
+		}
+	}
+}

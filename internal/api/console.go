@@ -44,7 +44,7 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request, id string) {
 	if !ok {
 		return
 	}
-	if !sameOrigin(r) {
+	if !s.sameOrigin(r) {
 		forbidden(w, "cross-origin request rejected")
 		return
 	}
@@ -55,7 +55,7 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	_ = record
 	upgrader := consoleUpgrader
-	upgrader.CheckOrigin = sameOrigin
+	upgrader.CheckOrigin = s.sameOrigin
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -65,12 +65,15 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request, id string) {
 	manager := s.servers.Console()
 	session, attached := manager.CurrentSession(id)
 	if !attached {
-		state := "closed"
 		if manager.IsDetached(id) {
-			state = "detached"
+			writeConsole(conn, consoleMessage{Type: "console", State: "detached"})
+			return
 		}
-		writeConsole(conn, consoleMessage{Type: "console", State: state})
-		return
+		session, attached = manager.LastClosedSession(id)
+		if !attached {
+			writeConsole(conn, consoleMessage{Type: "console", State: "closed"})
+			return
+		}
 	}
 	if !writeConsole(conn, consoleMessage{Type: "console", State: "attached"}) {
 		return

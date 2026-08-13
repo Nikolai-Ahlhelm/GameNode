@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,6 +22,7 @@ import (
 	"gamenode/internal/diagnostics"
 	"gamenode/internal/filesystem"
 	"gamenode/internal/gameconfig"
+	"gamenode/internal/logging"
 	"gamenode/internal/monitoring"
 	"gamenode/internal/provisioning"
 	"gamenode/internal/runtime"
@@ -36,29 +36,32 @@ import (
 var webAssets embed.FS
 
 func main() {
-	configPath := flag.String("config", "config.yaml", "Path to YAML configuration")
+	configPath := flag.String("config", "", "Path to YAML configuration (defaults to config.yaml beside the executable)")
 	flag.Parse()
-	cfg, err := config.Load(*configPath)
+	path := *configPath
+	if path == "" {
+		executable, pathErr := os.Executable()
+		if pathErr != nil {
+			fmt.Fprintln(os.Stderr, "configuration path error:", pathErr)
+			os.Exit(1)
+		}
+		path = filepath.Join(filepath.Dir(executable), "config.yaml")
+	}
+	cfg, err := config.LoadOrCreate(path)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		os.Exit(1)
 	}
+	configFile := config.NewFile(path, cfg)
 	if err = cfg.EnsureDirectories(); err != nil {
 		fmt.Fprintln(os.Stderr, "data directory error:", err)
 		os.Exit(1)
 	}
-	level := new(slog.LevelVar)
-	switch strings.ToLower(cfg.Logging.Level) {
-	case "debug":
-		level.Set(slog.LevelDebug)
-	case "warn":
-		level.Set(slog.LevelWarn)
-	case "error":
-		level.Set(slog.LevelError)
-	default:
-		level.Set(slog.LevelInfo)
+	logManager, log, err := logging.New(filepath.Join(cfg.Data.Directory, "log"), cfg.Logging.Level)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "logging error:", err)
+		os.Exit(1)
 	}
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 	db, err := database.Open(cfg.Database.Path)
 	if err != nil {
 		log.Error("open database failed", "error", err.Error())
@@ -69,19 +72,33 @@ func main() {
 		log.Error("migration failed", "error", err.Error())
 		os.Exit(1)
 	}
-	settingService := settings.New(db, settings.Defaults{MonitoringSampleIntervalSeconds: cfg.Monitoring.SampleIntervalSeconds, MonitoringHistoryLimit: cfg.Monitoring.HistoryLimit})
+	settingService := settings.New(db, settings.Defaults{MonitoringSampleIntervalSeconds: cfg.Monitoring.SampleIntervalSeconds, MonitoringHistoryLimit: cfg.Monitoring.HistoryLimit, LoggingLevel: cfg.Logging.Level})
 	currentSettings, err := settingService.Get(context.Background())
 	if err != nil {
 		log.Error("load persisted settings failed", "error", err.Error())
 		os.Exit(1)
 	}
+	if err = logManager.SetLevel(currentSettings.Logging.Level); err != nil {
+		log.Error("invalid persisted logging level", "module", "Settings.Logging", "error", err.Error())
+		os.Exit(1)
+	}
+	settingService.SetOnUpdate(func(values settings.Values, changed []string) {
+		for _, field := range changed {
+			if field == "logging.level" {
+				if setErr := logManager.SetLevel(values.Logging.Level); setErr != nil {
+					log.Error("logging level could not be applied", "module", "Settings.Logging", "error", setErr.Error())
+				}
+			}
+		}
+	})
 	assets, err := fs.Sub(webAssets, "webassets")
 	if err != nil {
 		log.Error("embedded frontend unavailable", "error", err.Error())
 		os.Exit(1)
 	}
 	static := spaHandler(assets)
-	secure := cfg.Server.TLSCert != ""
+	transportTLS := cfg.Server.TLSCert != ""
+	secureCookie := transportTLS || cfg.Server.TrustLocalProxy
 	serverService := servers.NewServiceWithMonitoring(servers.NewStore(db), runtime.NewNative(), console.NewManager(), monitoring.Options{Interval: time.Duration(currentSettings.Monitoring.SampleIntervalSeconds) * time.Second, HistoryLimit: currentSettings.Monitoring.HistoryLimit})
 	if err = serverService.Rediscover(context.Background()); err != nil {
 		log.Error("server rediscovery failed", "error", err.Error())
@@ -96,17 +113,17 @@ func main() {
 		os.Exit(1)
 	}
 	steamManager := steamcmd.New(filepath.Join(cfg.Data.Directory, "tools", "steamcmd"), steamPlatform, nil, nil)
-	provisioner := provisioning.New(db, templateService, steamManager, serverService, cfg.Data.Directory)
+	provisioner := provisioning.NewWithOptions(db, templateService, steamManager, serverService, cfg.Data.Directory, provisioning.Options{Log: log})
 	gameConfigService := gameconfig.New(db, serverService)
 	defer provisioner.Close()
 	if err = provisioner.Initialize(context.Background()); err != nil {
 		log.Error("provisioning recovery failed", "error", err.Error())
 		os.Exit(1)
 	}
-	handler := api.New(auth.New(db), serverService, log, secure, api.Options{Filesystem: files, Settings: settingService, Diagnostics: diagnosticService, Templates: templateService, Provisioning: provisioner, GameConfig: gameConfigService}).Handler(static)
+	handler := api.New(auth.New(db), serverService, log, secureCookie, api.Options{TrustLocalProxy: cfg.Server.TrustLocalProxy, Filesystem: files, Settings: settingService, Diagnostics: diagnosticService, Templates: templateService, Provisioning: provisioner, GameConfig: gameConfigService, Logs: logManager, SetupConfig: configFile, SteamCMD: steamManager}).Handler(static)
 	server := &http.Server{Addr: cfg.Server.Listen, Handler: handler, ReadHeaderTimeout: 0, ReadTimeout: 15e9, WriteTimeout: 15e9, IdleTimeout: 60e9}
-	log.Info("GameNode starting", "listen", cfg.Server.Listen, "tls", secure)
-	if secure {
+	log.Info("GameNode starting", "listen", cfg.Server.Listen, "tls", transportTLS, "trust_local_proxy", cfg.Server.TrustLocalProxy)
+	if transportTLS {
 		err = server.ListenAndServeTLS(cfg.Server.TLSCert, cfg.Server.TLSKey)
 	} else {
 		err = server.ListenAndServe()

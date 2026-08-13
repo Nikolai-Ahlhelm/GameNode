@@ -34,7 +34,13 @@ const (
 	StateUnknown     = "unknown"
 )
 
-var environmentKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var (
+	environmentKey              = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	ErrProvisionedPortConflict  = errors.New("provisioned port conflicts with another server")
+	ErrInvalidProvisionedPort   = errors.New("invalid provisioned port")
+	ErrProvisionedPortsConflict = errors.New("provisioned ports conflict")
+	ErrProvisionedConfigAdapter = errors.New("provisioned configuration adapter could not be stored")
+)
 
 type Server struct {
 	ID                            string            `json:"id"`
@@ -61,17 +67,21 @@ type Server struct {
 }
 
 type RuntimeState struct {
-	PID             int        `json:"pid,omitempty"`
-	ProcessStartAt  *time.Time `json:"process_started_at,omitempty"`
-	LastStartAt     *time.Time `json:"last_start_at,omitempty"`
-	LastStopAt      *time.Time `json:"last_stop_at,omitempty"`
-	LastExitAt      *time.Time `json:"last_exit_at,omitempty"`
-	ExitCode        *int       `json:"exit_code,omitempty"`
-	LastCrashAt     *time.Time `json:"last_crash_at,omitempty"`
-	CrashCount      int        `json:"crash_count"`
-	RestartCount    int        `json:"restart_count"`
-	LastError       string     `json:"last_error,omitempty"`
-	CurrentState    string     `json:"current_state"`
+	PID            int        `json:"pid,omitempty"`
+	ProcessStartAt *time.Time `json:"process_started_at,omitempty"`
+	LastStartAt    *time.Time `json:"last_start_at,omitempty"`
+	LastStopAt     *time.Time `json:"last_stop_at,omitempty"`
+	LastExitAt     *time.Time `json:"last_exit_at,omitempty"`
+	ExitCode       *int       `json:"exit_code,omitempty"`
+	LastCrashAt    *time.Time `json:"last_crash_at,omitempty"`
+	CrashCount     int        `json:"crash_count"`
+	RestartCount   int        `json:"restart_count"`
+	LastError      string     `json:"last_error,omitempty"`
+	CurrentState   string     `json:"current_state"`
+	// ConsoleDetached is runtime-only state. It is true only when GameNode has
+	// identity-verified a process that survived a GameNode restart; its original
+	// stdout/stderr/stdin pipes cannot be recovered.
+	ConsoleDetached bool `json:"console_detached,omitempty"`
 	processStartKey string
 }
 
@@ -290,16 +300,16 @@ func (store *Store) CreateProvisioned(ctx context.Context, server Server, templa
 	for index := range provisionedPorts {
 		candidate := provisionedPorts[index]
 		if err = ports.Validate(&candidate); err != nil {
-			return Record{}, errors.New("invalid provisioned port")
+			return Record{}, ErrInvalidProvisionedPort
 		}
 		for _, existing := range existingPorts {
 			if ports.Conflict(candidate, existing) {
-				return Record{}, errors.New("provisioned port conflicts with another server")
+				return Record{}, ErrProvisionedPortConflict
 			}
 		}
 		for prior := 0; prior < index; prior++ {
 			if ports.Conflict(candidate, provisionedPorts[prior]) {
-				return Record{}, errors.New("provisioned ports conflict")
+				return Record{}, ErrProvisionedPortsConflict
 			}
 		}
 		provisionedPorts[index] = candidate
@@ -315,10 +325,10 @@ func (store *Store) CreateProvisioned(ctx context.Context, server Server, templa
 	}
 	for _, adapter := range configAdapters {
 		if !environmentKey.MatchString(strings.ReplaceAll(adapter.ID, "-", "_")) || adapter.SchemaVersion != 1 || adapter.Version == "" || adapter.TemplateID != templateID || len(adapter.DefinitionJSON) == 0 || len(adapter.DefinitionJSON) > 128<<10 || !json.Valid(adapter.DefinitionJSON) {
-			return Record{}, errors.New("invalid provisioned configuration adapter")
+			return Record{}, ErrProvisionedConfigAdapter
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO server_config_adapters(server_id,adapter_id,adapter_schema_version,adapter_version,template_id,template_version,definition_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, server.ID, adapter.ID, adapter.SchemaVersion, adapter.Version, adapter.TemplateID, adapter.TemplateVersion, string(adapter.DefinitionJSON), stamp(now), stamp(now)); err != nil {
-			return Record{}, err
+			return Record{}, fmt.Errorf("%w: %v", ErrProvisionedConfigAdapter, err)
 		}
 	}
 	if err = tx.Commit(); err != nil {
@@ -615,7 +625,31 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 }
 func (s *Service) Start(ctx context.Context, id string) (Record, error) {
 	s.cancelAutoRestart(id)
+	// A Windows child can terminate while Cmd.Wait is still waiting for a
+	// descendant that inherited its console pipes. Do not let that delayed
+	// callback permanently block a subsequent manual start behind a stale
+	// in-memory instance/session.
+	s.reconcileExitedActive(ctx, id)
 	return s.start(ctx, id, false)
+}
+
+func (s *Service) reconcileExitedActive(ctx context.Context, id string) {
+	value, ok := s.instances.Load(id)
+	if !ok {
+		return
+	}
+	instance, ok := value.(*processInstance)
+	if !ok {
+		return
+	}
+	status, err := s.runtime.Status(ctx, instance.identity)
+	if err != nil || !status.Known || status.Running {
+		return
+	}
+	// This is only a fallback when the OS has already identity-verified that
+	// the process is gone. The normal Wait callback remains the authoritative
+	// source of real exit codes.
+	s.finalizeInstance(instance, runtime.ExitResult{ExitCode: 0})
 }
 
 func (s *Service) start(ctx context.Context, id string, restart bool) (Record, error) {
@@ -633,6 +667,9 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 	}
 	if record.Runtime.CurrentState == StateRunning || record.Runtime.CurrentState == StateStarting || record.Runtime.CurrentState == StateStopping {
 		return Record{}, errors.New("server is already running")
+	}
+	if record.Runtime.CurrentState == StateUnknown && record.Runtime.PID != 0 && record.Runtime.processStartKey != "" {
+		return Record{}, errors.New("server process status could not be verified")
 	}
 	// Preflight before state mutation, console-session creation, or Runtime.Start.
 	if err = s.ports.Check(ctx, id); err != nil {
@@ -769,8 +806,16 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 			case <-process.done:
 				timer.Stop()
 			case <-timer.C:
-				if killErr := s.runtime.Kill(context.Background(), identity); killErr != nil {
+				killErr := s.runtime.Kill(context.Background(), identity)
+				if killErr != nil && !errors.Is(killErr, runtime.ErrNotRunning) {
 					return Record{}, killErr
+				}
+				if errors.Is(killErr, runtime.ErrNotRunning) {
+					// The game accepted the stdin stop command and exited, but the
+					// Wait callback is delayed by inherited Windows pipe handles.
+					// Its identity is already known absent, so finish the managed
+					// lifecycle instead of leaving the server permanently stopping.
+					s.finalizeInstance(process, runtime.ExitResult{ExitCode: 0})
 				}
 				<-process.done
 			case <-ctx.Done():
@@ -935,10 +980,17 @@ func (s *Service) refreshRecord(ctx context.Context, record Record) Record {
 	}
 	status, err := s.runtime.Status(ctx, runtime.Identity{PID: record.Runtime.PID, StartKey: record.Runtime.processStartKey})
 	if err != nil {
+		// Never retain "running" unless the process identity was verified. Keep
+		// the identity so a later refresh can resolve the uncertainty, and block
+		// a new start so an unverified live process cannot be duplicated.
+		record.Runtime.CurrentState = StateUnknown
+		record.Runtime.LastError = "process status could not be verified"
+		_ = s.store.SaveRuntime(context.Background(), record.Server.ID, record.Runtime)
 		return record
 	}
 	if status.Running {
 		record.Runtime.CurrentState = StateRunning
+		record.Runtime.ConsoleDetached = true
 		_ = s.store.SaveRuntime(context.Background(), record.Server.ID, record.Runtime)
 		s.console.MarkDetached(record.Server.ID)
 		return record
@@ -955,6 +1007,7 @@ func (s *Service) refreshRecord(ctx context.Context, record Record) Record {
 	record.Runtime.PID = 0
 	record.Runtime.processStartKey = ""
 	record.Runtime.ProcessStartAt = nil
+	record.Runtime.ConsoleDetached = false
 	_ = s.store.SaveRuntime(context.Background(), record.Server.ID, record.Runtime)
 	return record
 }

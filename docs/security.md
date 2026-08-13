@@ -36,7 +36,7 @@
 - Uploads use a bounded `multipart/form-data` request and stream directly into a temporary file within a sandbox-validated existing target directory. Multipart filenames are treated as untrusted filenames, not paths. The default 64 MiB limit is configurable with `filesystem.max_upload_bytes`; incomplete, oversized, and failed uploads do not commit a target file.
 - Downloads open only sandbox-validated regular files and stream directly to the HTTP response. Attachment filenames are derived from the validated relative basename and encoded with `Content-Disposition`; absolute host paths, request paths, and file content are not logged.
 
-For production, configure TLS (`server.tls_cert` and `server.tls_key`) so cookies receive the `Secure` attribute. The default HTTP listener is intended for local development only.
+For production, configure TLS (`server.tls_cert` and `server.tls_key`) so cookies receive the `Secure` attribute. The default HTTP listener is intended for local development only. When TLS is terminated by a local reverse proxy, `server.trust_local_proxy: true` accepts the forwarded scheme and host only when the immediate peer is a loopback address, and also enables secure session cookies. It must not be enabled for a network-reachable proxy.
 # Egg import threat model
 
 Egg JSON is untrusted template input. Import is bounded to 256 KiB, 32 nesting levels, 128 variables, 128 compatibility findings, and 16 KiB per relevant string. Variable keys must be process-environment identifiers and are unique case-insensitively. Unknown harmless top-level fields are ignored and reported; malformed documents and important invalid structures receive controlled API errors without parser internals.

@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "templates": [
+    {
+      "id": "minecraft-neoforge",
+      "name": "Minecraft NeoForge",
+      "description": "Adopt an existing NeoForge server and run its generated Java argument files without a shell.",
+      "category": "minecraft",
+      "version": "1.0.0",
+      "template_schema_version": 1,
+      "platforms": [
+        "windows",
+        "linux"
+      ],
+      "installer": "existing",
+      "file": "minecraft/neoforge/template.json",
+      "tags": [
+        "minecraft",
+        "java",
+        "mods",
+        "neoforge"
+      ],
+      "icon": "minecraft",
+      "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "7-days-to-die",
+      "name": "7 Days to Die",
+      "description": "Install the official dedicated server through SteamCMD and run it as a native GameNode server.",
+      "category": "steamcmd",
+      "version": "1.1.0",
+      "template_schema_version": 1,
+      "platforms": [
+        "windows",
+        "linux"
+      ],
+      "installer": "steamcmd",
+      "file": "steamcmd/7-days-to-die/template.json",
+      "tags": [
+        "7dtd",
+        "steam",
+        "steamcmd",
+        "survival",
+        "zombies"
+      ],
+      "icon": "steamcmd",
+      "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "project-zomboid",
+      "name": "Project Zomboid",
+      "description": "Install the official dedicated server through SteamCMD and run its bundled Java runtime without scripts.",
+      "category": "steamcmd",
+      "version": "1.1.0",
+      "template_schema_version": 1,
+      "platforms": [
+        "windows"
+      ],
+      "installer": "steamcmd",
+      "file": "steamcmd/project-zomboid/template.json",
+      "tags": [
+        "project-zomboid",
+        "steam",
+        "steamcmd",
+        "survival",
+        "zombies",
+        "java"
+      ],
+      "icon": "steamcmd",
+      "minimum_gamenode_version": "0.2.0"
+    }
+  ]
+}

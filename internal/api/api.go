@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"gamenode/internal/audit"
@@ -19,12 +20,14 @@ import (
 	"gamenode/internal/filesystem"
 	"gamenode/internal/gameconfig"
 	"gamenode/internal/identity"
+	"gamenode/internal/logging"
 	"gamenode/internal/monitoring"
 	"gamenode/internal/ports"
 	"gamenode/internal/provisioning"
 	"gamenode/internal/rbac"
 	"gamenode/internal/servers"
 	"gamenode/internal/settings"
+	"gamenode/internal/steamcmd"
 	"gamenode/internal/support"
 	"gamenode/internal/templates"
 )
@@ -32,21 +35,40 @@ import (
 const sessionCookie = "gamenode_session"
 
 type Server struct {
-	auth         *auth.Service
-	audit        *audit.Service
-	log          *slog.Logger
-	secureCookie bool
-	servers      *servers.Service
-	files        *filesystem.Service
-	identity     *identity.Service
-	rbac         *rbac.Service
-	ports        *ports.Service
-	settings     *settings.Service
-	diagnostics  *diagnostics.Service
-	support      supportGenerator
-	templates    *templates.Service
-	provisioning *provisioning.Service
-	gameConfig   *gameconfig.Service
+	auth            *auth.Service
+	audit           *audit.Service
+	log             *slog.Logger
+	secureCookie    bool
+	trustLocalProxy bool
+	servers         *servers.Service
+	files           *filesystem.Service
+	identity        *identity.Service
+	rbac            *rbac.Service
+	ports           *ports.Service
+	settings        *settings.Service
+	diagnostics     *diagnostics.Service
+	support         supportGenerator
+	templates       *templates.Service
+	provisioning    *provisioning.Service
+	gameConfig      *gameconfig.Service
+	logs            *logging.Manager
+	setupConfig     setupConfigStore
+	steamcmd        steamBootstrapper
+	bootstrapMu     sync.Mutex
+	bootstrap       bootstrapStatus
+}
+
+type setupConfigStore interface {
+	Storage() (string, string)
+	SetStorage(string, string) error
+}
+type steamBootstrapper interface {
+	Detect() bool
+	Ensure(context.Context, steamcmd.EventSink) error
+}
+type bootstrapStatus struct {
+	Status  string `json:"status"`
+	Summary string `json:"summary"`
 }
 
 type supportGenerator interface {
@@ -54,13 +76,20 @@ type supportGenerator interface {
 }
 
 type Options struct {
-	Filesystem   *filesystem.Service
-	Settings     *settings.Service
-	Diagnostics  *diagnostics.Service
-	Support      supportGenerator
-	Templates    *templates.Service
-	Provisioning *provisioning.Service
-	GameConfig   *gameconfig.Service
+	// TrustLocalProxy permits forwarded scheme and host headers only when the
+	// immediate peer is a loopback reverse proxy. It must not be used for a
+	// proxy reached over the network.
+	TrustLocalProxy bool
+	Filesystem      *filesystem.Service
+	Settings        *settings.Service
+	Diagnostics     *diagnostics.Service
+	Support         supportGenerator
+	Templates       *templates.Service
+	Provisioning    *provisioning.Service
+	GameConfig      *gameconfig.Service
+	Logs            *logging.Manager
+	SetupConfig     setupConfigStore
+	SteamCMD        steamBootstrapper
 }
 
 // auditInput deliberately contains only values selected by the application. It
@@ -101,7 +130,7 @@ func (s *Server) recordAudit(r *http.Request, in auditInput) {
 		event.RemoteIP = r.RemoteAddr
 	}
 	if err := s.audit.Record(r.Context(), event); err != nil {
-		s.log.Error("audit write failed", "error", err.Error(), "action", in.action)
+		s.log.With("module", "Audit.Record").Error("audit write failed", "error", err.Error(), "action", in.action)
 	}
 }
 
@@ -164,7 +193,23 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	if len(options) > 0 {
 		gameConfigService = options[0].GameConfig
 	}
-	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identity.New(a.Database()), rbac: rbac.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, gameConfig: gameConfigService, log: log, secureCookie: secureCookie}
+	var logManager *logging.Manager
+	if len(options) > 0 {
+		logManager = options[0].Logs
+	}
+	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identity.New(a.Database()), rbac: rbac.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie}
+	if len(options) > 0 {
+		result.trustLocalProxy = options[0].TrustLocalProxy
+		result.setupConfig = options[0].SetupConfig
+		result.steamcmd = options[0].SteamCMD
+	}
+	result.bootstrap = bootstrapStatus{Status: "unavailable", Summary: "SteamCMD setup is unavailable"}
+	if result.steamcmd != nil {
+		result.bootstrap = bootstrapStatus{Status: "idle", Summary: "SteamCMD has not been prepared"}
+		if result.steamcmd.Detect() {
+			result.bootstrap = bootstrapStatus{Status: "ready", Summary: "SteamCMD is ready"}
+		}
+	}
 	if provisioner != nil {
 		provisioner.SetObserver(result.recordProvisioningCompletion)
 	}
@@ -173,6 +218,8 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 func (s *Server) Handler(static http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/setup/status", s.setupStatus)
+	mux.HandleFunc("/api/v1/setup/config", s.setupConfigHandler)
+	mux.HandleFunc("/api/v1/setup/steamcmd", s.setupSteamCMDStatus)
 	mux.HandleFunc("/api/v1/setup", s.setup)
 	mux.HandleFunc("/api/v1/auth/login", s.login)
 	mux.HandleFunc("/api/v1/auth/logout", s.logout)
@@ -180,6 +227,8 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/dashboard", s.dashboard)
 	mux.HandleFunc("/api/v1/audit", s.auditHandler)
 	mux.HandleFunc("/api/v1/settings", s.settingsHandler)
+	mux.HandleFunc("/api/v1/settings/logs", s.applicationLogsHandler)
+	mux.HandleFunc("/api/v1/settings/logs/clear", s.clearLogsHandler)
 	mux.HandleFunc("/api/v1/diagnostics", s.diagnosticsHandler)
 	mux.HandleFunc("/api/v1/support/bundle", s.supportBundleHandler)
 	mux.HandleFunc("/api/v1/users", s.usersHandler)
@@ -201,9 +250,10 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 }
 
 type credentials struct {
-	Username string `json:"username"`
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Username        string `json:"username"`
+	Email           string `json:"email"`
+	Password        string `json:"password"`
+	PrepareSteamCMD bool   `json:"prepare_steamcmd"`
 }
 
 func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request) {
@@ -216,14 +266,19 @@ func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request) {
 		internal(w)
 		return
 	}
-	jsonOut(w, http.StatusOK, map[string]bool{"setup_required": required})
+	response := map[string]any{"setup_required": required}
+	if required && s.setupConfig != nil {
+		data, database := s.setupConfig.Storage()
+		response["storage"] = map[string]string{"data_directory": data, "database_path": database}
+	}
+	jsonOut(w, http.StatusOK, response)
 }
 func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		method(w)
 		return
 	}
-	if !sameOrigin(r) {
+	if !s.sameOrigin(r) {
 		forbidden(w, "cross-origin request rejected")
 		return
 	}
@@ -233,19 +288,108 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	}
 	u, e := s.auth.CreateInitialAdmin(r.Context(), in.Username, in.Email, in.Password)
 	if e != nil {
-		s.log.Warn("initial administrator creation failed", "reason", e.Error())
+		s.log.With("module", "Auth.Setup").Warn("initial administrator creation failed", "reason", e.Error())
 		bad(w, "initial setup could not be completed")
 		return
 	}
-	s.log.Info("initial administrator created", "user_id", u.ID)
+	s.log.With("module", "Auth.Setup").Info("initial administrator created", "user_id", u.ID)
+	if in.PrepareSteamCMD {
+		s.startSteamCMDBootstrap()
+	}
 	s.issueLogin(w, r, u, in.Password)
+}
+
+func (s *Server) setupConfigHandler(w http.ResponseWriter, r *http.Request) {
+	if s.setupConfig == nil {
+		notFound(w)
+		return
+	}
+	required, err := s.auth.SetupRequired(r.Context())
+	if err != nil {
+		internal(w)
+		return
+	}
+	if !required {
+		forbidden(w, "initial setup has already been completed")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		data, database := s.setupConfig.Storage()
+		jsonOut(w, http.StatusOK, map[string]string{"data_directory": data, "database_path": database})
+	case http.MethodPatch:
+		if !s.sameOrigin(r) {
+			forbidden(w, "cross-origin request rejected")
+			return
+		}
+		var in struct {
+			DataDirectory string `json:"data_directory"`
+			DatabasePath  string `json:"database_path"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		if err := s.setupConfig.SetStorage(in.DataDirectory, in.DatabasePath); err != nil {
+			bad(w, "configuration paths must be absolute and writable")
+			return
+		}
+		jsonOut(w, http.StatusOK, map[string]bool{"restart_required": true})
+	default:
+		method(w)
+	}
+}
+
+func (s *Server) setupSteamCMDStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w)
+		return
+	}
+	u, _, ok := s.requireAuth(w, r, false)
+	if !ok || !u.IsAdmin {
+		if ok {
+			forbidden(w, "administrator access required")
+		}
+		return
+	}
+	s.bootstrapMu.Lock()
+	state := s.bootstrap
+	s.bootstrapMu.Unlock()
+	jsonOut(w, http.StatusOK, state)
+}
+
+func (s *Server) startSteamCMDBootstrap() {
+	if s.steamcmd == nil {
+		return
+	}
+	s.bootstrapMu.Lock()
+	if s.bootstrap.Status == "preparing" || s.bootstrap.Status == "ready" {
+		s.bootstrapMu.Unlock()
+		return
+	}
+	s.bootstrap = bootstrapStatus{Status: "preparing", Summary: "Downloading and preparing SteamCMD"}
+	s.bootstrapMu.Unlock()
+	go func() {
+		err := s.steamcmd.Ensure(context.Background(), func(event steamcmd.Event) {
+			s.bootstrapMu.Lock()
+			s.bootstrap = bootstrapStatus{Status: "preparing", Summary: event.Summary}
+			s.bootstrapMu.Unlock()
+		})
+		s.bootstrapMu.Lock()
+		defer s.bootstrapMu.Unlock()
+		if err != nil {
+			s.bootstrap = bootstrapStatus{Status: "failed", Summary: "SteamCMD could not be prepared"}
+			s.log.With("module", "SteamCMD.Setup").Error("SteamCMD bootstrap failed", "error", err.Error())
+			return
+		}
+		s.bootstrap = bootstrapStatus{Status: "ready", Summary: "SteamCMD is ready"}
+	}()
 }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		method(w)
 		return
 	}
-	if !sameOrigin(r) {
+	if !s.sameOrigin(r) {
 		forbidden(w, "cross-origin request rejected")
 		return
 	}
@@ -262,7 +406,7 @@ func (s *Server) issueLogin(w http.ResponseWriter, r *http.Request, u auth.User,
 		u, raw, csrf, e = s.auth.Login(r.Context(), username[0], password)
 		if e != nil {
 			s.recordAudit(r, auditInput{action: audit.Login, resourceType: audit.Auth, resourceName: strings.TrimSpace(username[0]), result: audit.Failure, errorCode: "invalid_credentials", errorSummary: "invalid credentials"})
-			s.log.Warn("failed login", "source_ip", r.RemoteAddr)
+			s.log.With("module", "Auth.Login").Warn("failed login", "source_ip", r.RemoteAddr)
 			unauthorized(w)
 			return
 		}
@@ -279,7 +423,7 @@ func (s *Server) issueLogin(w http.ResponseWriter, r *http.Request, u auth.User,
 }
 func (s *Server) setSessionAndRespond(ctx context.Context, w http.ResponseWriter, u auth.User, raw, csrf string) {
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: raw, Path: "/", HttpOnly: true, Secure: s.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: int((24 * time.Hour).Seconds())})
-	s.log.Info("user logged in", "user_id", u.ID)
+	s.log.With("module", "Auth.Login").Info("user logged in", "user_id", u.ID)
 	capabilities, err := s.globalCapabilities(ctx, u)
 	if err != nil {
 		internal(w)
@@ -319,7 +463,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recordAudit(r, auditInput{action: audit.Logout, resourceType: audit.Auth, result: audit.Success, actor: &u})
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, Secure: s.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: -1})
-	s.log.Info("user logged out", "user_id", u.ID)
+	s.log.With("module", "Auth.Logout").Info("user logged out", "user_id", u.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -385,7 +529,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, http.StatusOK, response)
 }
 
-var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View"}
+var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View"}
 
 func (s *Server) allowed(ctx context.Context, u auth.User, permission string, scope rbac.Scope) (bool, error) {
 	return s.rbac.Allowed(ctx, u.ID, permission, scope)
@@ -508,23 +652,48 @@ func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request, csrfRequire
 		unauthorized(w)
 		return auth.User{}, "", false
 	}
-	if csrfRequired && (!sameOrigin(r) || r.Header.Get("X-CSRF-Token") != csrf) {
+	if csrfRequired && (!s.sameOrigin(r) || r.Header.Get("X-CSRF-Token") != csrf) {
 		forbidden(w, "csrf validation failed")
 		return auth.User{}, "", false
 	}
 	return u, csrf, true
 }
-func sameOrigin(r *http.Request) bool {
+func (s *Server) sameOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return true
 	}
 	u, e := url.Parse(origin)
 	scheme := "http"
+	host := r.Host
 	if r.TLS != nil {
 		scheme = "https"
+	} else if s.trustLocalProxy && isLoopbackPeer(r.RemoteAddr) {
+		if forwardedScheme := singleForwardedValue(r.Header.Get("X-Forwarded-Proto")); forwardedScheme == "http" || forwardedScheme == "https" {
+			scheme = forwardedScheme
+		}
+		if forwardedHost := singleForwardedValue(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+			host = forwardedHost
+		}
 	}
-	return e == nil && u.Host == r.Host && u.Scheme == scheme
+	return e == nil && u.Host == host && u.Scheme == scheme
+}
+
+func isLoopbackPeer(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func singleForwardedValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.Contains(value, ",") {
+		return ""
+	}
+	return value
 }
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)

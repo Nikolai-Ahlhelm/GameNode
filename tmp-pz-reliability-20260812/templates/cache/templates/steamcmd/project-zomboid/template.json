@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "id": "project-zomboid",
+  "name": "Project Zomboid",
+  "description": "Install the official dedicated server through SteamCMD and run its bundled Java runtime without scripts.",
+  "version": "1.1.0",
+  "category": "steamcmd",
+  "minimum_gamenode_version": "0.2.0",
+  "known_limitations": [
+    "The current Windows Steam build is supported and verified; Linux remains hidden until its direct native launch has been acceptance-tested.",
+    "The first start creates Project Zomboid configuration and world data below the isolated server root.",
+    "SteamCMD is used for initial installation only; automatic updates are not enabled."
+  ],
+  "icon": "steamcmd",
+  "source_type": "official",
+  "source_identifier": "project-zomboid",
+  "source_format_version": "1",
+  "source_metadata": {
+    "author": "GameNode",
+    "tags": [
+      "project-zomboid",
+      "steam",
+      "steamcmd",
+      "survival",
+      "zombies",
+      "java"
+    ],
+    "original_sha256": ""
+  },
+  "installer": {
+    "type": "steamcmd",
+    "steamcmd": {
+      "app_id": 380870,
+      "validate": true,
+      "login_mode": "anonymous",
+      "platform": "native",
+      "install_target": "server_root"
+    }
+  },
+  "platform_launches": {
+    "windows": {
+      "executable": "jre64/bin/java.exe",
+      "arguments": [
+        "-Djava.awt.headless=true",
+        "-Xmx3072m",
+        "-Dzomboid.steam=1",
+        "-Dzomboid.znetlog=1",
+        "-Djava.library.path=natives/",
+        "-XX:-CreateCoredumpOnCrash",
+        "-XX:-OmitStackTraceInFastThrow",
+        "-XX:+UseZGC",
+        "-cp",
+        "java/.;java/projectzomboid.jar",
+        "zombie.network.GameServer",
+        "-statistic",
+        "0",
+        "-cachedir=.",
+        "-servername",
+        "gamenode",
+        "-port",
+        "{{SERVER_PORT}}"
+      ],
+      "working_root": "server_root",
+      "stop_command": "quit",
+      "stop_method": "stdin_command",
+      "stop_timeout_seconds": 60
+    }
+  },
+  "variables": [
+    {
+      "name": "Server port",
+      "description": "Primary Project Zomboid game port.",
+      "key": "SERVER_PORT",
+      "default_value": "16261",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1024,
+        "max": 65534
+      }
+    }
+  ],
+  "ports": [
+    {
+      "name": "Game UDP",
+      "protocol": "udp",
+      "variable": "SERVER_PORT"
+    },
+    {
+      "name": "Direct connection UDP",
+      "protocol": "udp",
+      "variable": "SERVER_PORT",
+      "offset": 1
+    }
+  ],
+  "configuration": {
+    "adapters": [
+      {
+        "id": "project-zomboid-server-ini",
+        "schema_version": 1,
+        "file": "server.ini.adapter.json"
+      }
+    ]
+  },
+  "compatibility": {
+    "status": "compatible",
+    "findings": []
+  },
+  "read_only": true,
+  "platforms": [
+    "windows"
+  ],
+  "prerequisites": [
+    "Network access to Steam content servers",
+    "At least 8 GB free storage for the current dedicated server build",
+    "At least 4 GB available memory"
+  ],
+  "created_at": "0001-01-01T00:00:00Z",
+  "updated_at": "0001-01-01T00:00:00Z"
+}

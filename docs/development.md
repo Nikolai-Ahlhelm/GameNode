@@ -9,6 +9,8 @@
 
 Copy `config.example.yaml` to `config.yaml`. Start the backend with `go run ./cmd/gamenode -config config.yaml`. In another shell, run `npm ci` and `npm run dev` in `web`. Vite proxies `/api` to the Go server.
 
+On Windows, `./start-dev.ps1` starts both development processes in separate terminals. It uses `npm.cmd`, so restrictive PowerShell execution policies do not block the Node commands, and starts terminals without a PowerShell profile. It uses `config.yaml` beside the script by default; pass `-Config C:\path\to\config.yaml` to select another configuration file.
+
 ## Verification
 
 Run `go test ./...`, `go test -race ./...`, and `go vet ./...`, then `npm ci`, `npm run check`, `npm run test:helpers`, and `npm run build` in `web`. The race detector must run on the same operating system and architecture as the produced test binary; CI runs it on native Linux amd64. See `docs/ci.md` for the complete CI job and artifact matrix.

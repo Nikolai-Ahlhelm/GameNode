@@ -71,6 +71,7 @@ const (
 	RoleAssignmentAdd       = "role.assignment_add"
 	RoleAssignmentRemove    = "role.assignment_remove"
 	SettingsUpdate          = "settings.update"
+	SettingsLogsClear       = "settings.logs_clear"
 	SupportBundleGenerate   = "support.bundle_generate"
 	TemplateImport          = "template.import"
 	TemplateDelete          = "template.delete"

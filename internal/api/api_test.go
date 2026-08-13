@@ -429,6 +429,47 @@ func TestSecureCookieIsEnabledForTLS(t *testing.T) {
 	t.Fatal("TLS session cookie was not marked Secure")
 }
 
+func TestLocalReverseProxyAcceptsForwardedHTTPSOriginOnlyFromLoopback(t *testing.T) {
+	newHandler := func(t *testing.T) http.Handler {
+		t.Helper()
+		db, err := database.Open(":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { db.Close() })
+		if err = database.Migrate(db, gamenode.MigrationFiles); err != nil {
+			t.Fatal(err)
+		}
+		return api.New(auth.New(db), servers.NewService(servers.NewStore(db), runtime.NewNative()), slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil)), true, api.Options{TrustLocalProxy: true}).Handler(http.NotFoundHandler())
+	}
+	request := func(remote string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8888/api/v1/setup", bytes.NewBufferString(`{"username":"admin","email":"admin@example.test","password":"a password long enough"}`))
+		r.Host = "127.0.0.1:8888"
+		r.RemoteAddr = remote
+		r.Header.Set("Origin", "https://gn.example.test")
+		r.Header.Set("X-Forwarded-Proto", "https")
+		r.Header.Set("X-Forwarded-Host", "gn.example.test")
+		return r
+	}
+
+	h := newHandler(t)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, request("127.0.0.1:55000"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("loopback proxy setup: %d %s", w.Code, w.Body.String())
+	}
+	if cookies := w.Result().Cookies(); len(cookies) != 1 || !cookies[0].Secure {
+		t.Fatal("reverse-proxy session cookie was not marked Secure")
+	}
+
+	h = newHandler(t)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, request("192.0.2.25:55000"))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("non-loopback forwarded origin status = %d, body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestUserManagementRequiresAdministrator(t *testing.T) {
 	h, db := newTestServer(t)
 	setup := httptest.NewRequest(http.MethodPost, "/api/v1/setup", bytes.NewBufferString(`{"username":"admin","email":"admin@example.test","password":"a password long enough"}`))
