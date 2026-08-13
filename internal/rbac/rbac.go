@@ -14,6 +14,7 @@ import (
 
 var ErrUnknownPermission = errors.New("unknown permission")
 var ErrDuplicateAssignment = errors.New("duplicate role assignment")
+var ErrInvalidScope = errors.New("role contains permissions that are global only")
 
 type Scope struct {
 	Type string  `json:"scope_type"`
@@ -23,11 +24,21 @@ type Role struct {
 	ID                   string    `json:"id"`
 	Name                 string    `json:"name"`
 	Description          string    `json:"description"`
+	Permissions          []string  `json:"permissions,omitempty"`
+	ServerAssignable     bool      `json:"server_assignable"`
 	CreatedAt, UpdatedAt time.Time `json:"-"`
 }
 type Assignment struct {
-	ID, RoleID, RoleName string
-	Scope                Scope
+	ID       string `json:"id"`
+	RoleID   string `json:"role_id"`
+	RoleName string `json:"role_name"`
+	Scope    Scope  `json:"scope"`
+}
+type SubjectAssignment struct {
+	Assignment
+	SubjectType string `json:"subject_type"`
+	SubjectID   string `json:"subject_id"`
+	SubjectName string `json:"subject_name"`
 }
 type Service struct {
 	db  *sql.DB
@@ -69,6 +80,16 @@ func (s *Service) ListRoles(c context.Context) ([]Role, error) {
 		}
 		r.CreatedAt, _ = time.Parse(time.RFC3339Nano, a)
 		r.UpdatedAt, _ = time.Parse(time.RFC3339Nano, b)
+		if r.Permissions, e = s.GetRolePermissions(c, r.ID); e != nil {
+			return nil, e
+		}
+		r.ServerAssignable = true
+		for _, permission := range r.Permissions {
+			if GlobalOnly(permission) {
+				r.ServerAssignable = false
+				break
+			}
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -171,6 +192,17 @@ func (s *Service) assign(c context.Context, table, col, subject, role string, sc
 		return sql.ErrNoRows
 	}
 	if sc.Type == "server" {
+		permissions, e := s.GetRolePermissions(c, role)
+		if e != nil {
+			return e
+		}
+		for _, permission := range permissions {
+			if GlobalOnly(permission) {
+				return ErrInvalidScope
+			}
+		}
+	}
+	if sc.Type == "server" {
 		if e := s.db.QueryRowContext(c, "SELECT COUNT(*) FROM servers WHERE id=?", *sc.ID).Scan(&n); e != nil || n == 0 {
 			return sql.ErrNoRows
 		}
@@ -180,6 +212,28 @@ func (s *Service) assign(c context.Context, table, col, subject, role string, sc
 		return ErrDuplicateAssignment
 	}
 	return e
+}
+
+// ListServerAssignments exposes the existing assignment tables in a server
+// context; it does not compute or persist effective permissions.
+func (s *Service) ListServerAssignments(c context.Context, server string) ([]SubjectAssignment, error) {
+	const q = `SELECT a.id,a.role_id,r.name,a.scope_type,a.scope_id,'user',u.id,u.username FROM user_role_assignments a JOIN roles r ON r.id=a.role_id JOIN users u ON u.id=a.user_id WHERE a.scope_type='server' AND a.scope_id=? UNION ALL SELECT a.id,a.role_id,r.name,a.scope_type,a.scope_id,'group',g.id,g.name FROM group_role_assignments a JOIN roles r ON r.id=a.role_id JOIN groups g ON g.id=a.group_id WHERE a.scope_type='server' AND a.scope_id=? ORDER BY 8 COLLATE NOCASE`
+	rows, e := s.db.QueryContext(c, q, server, server)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	var out []SubjectAssignment
+	for rows.Next() {
+		var item SubjectAssignment
+		var scopeID string
+		if e = rows.Scan(&item.ID, &item.RoleID, &item.RoleName, &item.Scope.Type, &scopeID, &item.SubjectType, &item.SubjectID, &item.SubjectName); e != nil {
+			return nil, e
+		}
+		item.Scope.ID = &scopeID
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 func (s *Service) ListUserAssignments(c context.Context, user string) ([]Assignment, error) {
 	return s.list(c, "user_role_assignments", "user_id", user)

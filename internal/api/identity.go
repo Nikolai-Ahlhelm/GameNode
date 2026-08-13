@@ -10,6 +10,7 @@ import (
 	"gamenode/internal/audit"
 	"gamenode/internal/auth"
 	"gamenode/internal/identity"
+	"gamenode/internal/rbac"
 )
 
 func (s *Server) recordIdentityAudit(r *http.Request, actor auth.User, action, resourceType, id, name, result string, metadata map[string]any, err error) {
@@ -33,13 +34,24 @@ func (s *Server) recordIdentityAudit(r *http.Request, actor auth.User, action, r
 func (s *Server) usersHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		if _, _, ok := s.requireGlobalPermission(w, r, "Users.View", false); !ok {
+		actor, _, ok := s.requireGlobalPermission(w, r, "Users.View", false)
+		if !ok {
 			return
 		}
-		users, err := s.identity.ListUsers(r.Context())
+		users, err := s.identity.ListUserSummaries(r.Context())
 		if err != nil {
 			internal(w)
 			return
+		}
+		groupMembershipsVisible, err := s.allowed(r.Context(), actor, "Groups.View", rbac.Scope{Type: "global"})
+		if err != nil {
+			internal(w)
+			return
+		}
+		if !groupMembershipsVisible {
+			for i := range users {
+				users[i].GroupCount = nil
+			}
 		}
 		jsonOut(w, http.StatusOK, map[string]any{"users": users})
 	case http.MethodPost:
@@ -78,6 +90,25 @@ func (s *Server) userHandler(w http.ResponseWriter, r *http.Request) {
 	id := parts[0]
 	if len(parts) >= 2 && parts[1] == "roles" {
 		s.userRolesHandler(w, r, id, parts)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "groups" {
+		if r.Method != http.MethodGet {
+			method(w)
+			return
+		}
+		if _, _, ok := s.requireGlobalPermission(w, r, "Users.View", false); !ok {
+			return
+		}
+		if _, _, ok := s.requireGlobalPermission(w, r, "Groups.View", false); !ok {
+			return
+		}
+		groups, err := s.identity.GroupsForUser(r.Context(), id)
+		if err != nil {
+			identityError(w, err)
+			return
+		}
+		jsonOut(w, http.StatusOK, map[string]any{"groups": groups})
 		return
 	}
 	if len(parts) == 2 && parts[1] == "password" {
@@ -184,13 +215,24 @@ func (s *Server) userHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) groupsHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		if _, _, ok := s.requireGlobalPermission(w, r, "Groups.View", false); !ok {
+		actor, _, ok := s.requireGlobalPermission(w, r, "Groups.View", false)
+		if !ok {
 			return
 		}
-		groups, err := s.identity.ListGroups(r.Context())
+		groups, err := s.identity.ListGroupSummaries(r.Context())
 		if err != nil {
 			internal(w)
 			return
+		}
+		roleAssignmentsVisible, err := s.allowed(r.Context(), actor, "Roles.View", rbac.Scope{Type: "global"})
+		if err != nil {
+			internal(w)
+			return
+		}
+		if !roleAssignmentsVisible {
+			for i := range groups {
+				groups[i].AssignmentCount = nil
+			}
 		}
 		jsonOut(w, http.StatusOK, map[string]any{"groups": groups})
 	case http.MethodPost:
@@ -345,11 +387,15 @@ func identityError(w http.ResponseWriter, err error) {
 		return
 	}
 	if errors.Is(err, identity.ErrLastActiveAdmin) {
-		errorOut(w, http.StatusConflict, "last_active_admin", err.Error())
+		errorOut(w, http.StatusConflict, "last_active_admin", "At least one active administrator must remain.")
 		return
 	}
-	if errors.Is(err, identity.ErrDuplicateMember) || strings.Contains(strings.ToLower(err.Error()), "constraint") {
+	if errors.Is(err, identity.ErrDuplicateUsername) || errors.Is(err, identity.ErrDuplicateEmail) || errors.Is(err, identity.ErrDuplicateGroup) || errors.Is(err, identity.ErrDuplicateMember) {
 		errorOut(w, http.StatusConflict, "conflict", err.Error())
+		return
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "constraint") {
+		errorOut(w, http.StatusConflict, "conflict", "The requested identity change conflicts with existing data.")
 		return
 	}
 	message := err.Error()

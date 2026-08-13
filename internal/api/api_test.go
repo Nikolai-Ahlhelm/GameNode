@@ -497,6 +497,85 @@ func TestUserManagementRequiresAdministrator(t *testing.T) {
 	}
 }
 
+func TestIdentityAdministrationLifecycleCSRFAndAudit(t *testing.T) {
+	h, db := newTestServer(t)
+	setup := httptest.NewRequest(http.MethodPost, "/api/v1/setup", bytes.NewBufferString(`{"username":"admin","email":"admin@example.test","password":"a password long enough"}`))
+	setup.Header.Set("Content-Type", "application/json")
+	setupResponse := httptest.NewRecorder()
+	h.ServeHTTP(setupResponse, setup)
+	if setupResponse.Code != http.StatusOK {
+		t.Fatalf("setup: %d %s", setupResponse.Code, setupResponse.Body.String())
+	}
+	var session struct {
+		CSRF string `json:"csrf_token"`
+	}
+	if err := json.Unmarshal(setupResponse.Body.Bytes(), &session); err != nil {
+		t.Fatal(err)
+	}
+	cookie := setupResponse.Result().Cookies()[0]
+	request := func(method, path, body string, withCSRF bool) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+		r.AddCookie(cookie)
+		if body != "" {
+			r.Header.Set("Content-Type", "application/json")
+		}
+		if withCSRF {
+			r.Header.Set("X-CSRF-Token", session.CSRF)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	created := request(http.MethodPost, "/api/v1/users", `{"username":"member","email":"member@example.test","password":"a password long enough"}`, true)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create user: %d %s", created.Code, created.Body.String())
+	}
+	var payload struct {
+		User identity.User `json:"user"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if response := request(http.MethodPatch, "/api/v1/users/"+payload.User.ID, `{"display_name":"Member One"}`, false); response.Code != http.StatusForbidden {
+		t.Fatalf("patch without CSRF: %d %s", response.Code, response.Body.String())
+	}
+	if response := request(http.MethodPatch, "/api/v1/users/"+payload.User.ID, `{"display_name":"Member One"}`, true); response.Code != http.StatusOK {
+		t.Fatalf("edit user: %d %s", response.Code, response.Body.String())
+	}
+	if response := request(http.MethodPost, "/api/v1/users/"+payload.User.ID+"/password", `{"password":"a different password long enough"}`, true); response.Code != http.StatusNoContent {
+		t.Fatalf("reset password: %d %s", response.Code, response.Body.String())
+	}
+	for _, enabled := range []bool{false, true} {
+		response := request(http.MethodPatch, "/api/v1/users/"+payload.User.ID, `{"enabled":`+strconv.FormatBool(enabled)+`}`, true)
+		if response.Code != http.StatusOK {
+			t.Fatalf("set enabled=%t: %d %s", enabled, response.Code, response.Body.String())
+		}
+	}
+	if response := request(http.MethodDelete, "/api/v1/users/"+payload.User.ID, "", true); response.Code != http.StatusNoContent {
+		t.Fatalf("delete user: %d %s", response.Code, response.Body.String())
+	}
+	var adminID string
+	if err := db.QueryRow("SELECT id FROM users WHERE username='admin'").Scan(&adminID); err != nil {
+		t.Fatal(err)
+	}
+	lastAdmin := request(http.MethodPatch, "/api/v1/users/"+adminID, `{"enabled":false}`, true)
+	if lastAdmin.Code != http.StatusConflict || !strings.Contains(lastAdmin.Body.String(), "At least one active administrator must remain.") {
+		t.Fatalf("last admin response: %d %s", lastAdmin.Code, lastAdmin.Body.String())
+	}
+	for _, action := range []string{audit.UserCreate, audit.UserUpdate, audit.UserPasswordReset, audit.UserDisable, audit.UserEnable, audit.UserDelete} {
+		events, err := audit.New(db).List(context.Background(), audit.Filter{Action: action})
+		if err != nil || len(events) == 0 {
+			t.Fatalf("audit action %s: %v %v", action, events, err)
+		}
+		for _, event := range events {
+			if strings.Contains(string(event.Metadata), "different password") {
+				t.Fatalf("password leaked to audit metadata for %s", action)
+			}
+		}
+	}
+}
+
 func TestServerCRUD(t *testing.T) {
 	h, _ := newTestServer(t)
 	setup := httptest.NewRequest(http.MethodPost, "/api/v1/setup", bytes.NewBufferString(`{"username":"admin","email":"admin@example.test","password":"a password long enough"}`))
@@ -607,6 +686,9 @@ func TestIdentityRBACAndFilesystemMigrationSmoke(t *testing.T) {
 	}
 	if response := request(http.MethodPost, "/api/v1/groups/"+group.Group.ID+"/members", `{"user_id":"`+user.User.ID+`"}`); response.Code != http.StatusNoContent {
 		t.Fatalf("add member: %d %s", response.Code, response.Body.String())
+	}
+	if response := request(http.MethodGet, "/api/v1/users/"+user.User.ID+"/groups", ""); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), group.Group.ID) {
+		t.Fatalf("list user groups: %d %s", response.Code, response.Body.String())
 	}
 
 	executable, err := os.Executable()

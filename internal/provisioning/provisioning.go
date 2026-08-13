@@ -261,8 +261,17 @@ func (s *Service) SetObserver(observer Observer) {
 	defer s.mu.Unlock()
 	s.observer = observer
 }
-func (s *Service) Initialize(ctx context.Context) error { return s.store.InterruptActive(ctx) }
+func (s *Service) Initialize(ctx context.Context) error {
+	s.log.Info("provisioning recovery started", "module", "Provisioning.Recovery")
+	if err := s.store.InterruptActive(ctx); err != nil {
+		s.log.Error("provisioning recovery failed", "module", "Provisioning.Recovery", "error", err)
+		return err
+	}
+	s.log.Info("provisioning recovery completed", "module", "Provisioning.Recovery")
+	return nil
+}
 func (s *Service) Close() {
+	s.log.Info("provisioning service shutdown started", "module", "Provisioning.Shutdown")
 	s.mu.Lock()
 	s.closed = true
 	s.cancel()
@@ -271,9 +280,11 @@ func (s *Service) Close() {
 	}
 	s.mu.Unlock()
 	s.wg.Wait()
+	s.log.Info("provisioning service shutdown completed", "module", "Provisioning.Shutdown")
 }
 
 func (s *Service) Start(ctx context.Context, request Request) (Job, error) {
+	s.log.Info("provisioning request validation started", "module", "Provisioning.Start", "template_id", request.TemplateID, "actor_user_id", request.ActorUserID, "recover_existing", request.RecoverExisting)
 	if strings.TrimSpace(request.ActorUserID) == "" {
 		return Job{}, errors.New("provisioning actor is required")
 	}
@@ -333,6 +344,7 @@ func (s *Service) Start(ctx context.Context, request Request) (Job, error) {
 	}
 	if err = s.store.Create(ctx, job); err != nil {
 		s.mu.Unlock()
+		s.log.Error("provisioning job could not be persisted", "module", "Provisioning.Start", "template_id", template.ID, "error", err)
 		return Job{}, err
 	}
 	jobCtx, cancel := context.WithCancel(s.ctx)
@@ -344,6 +356,7 @@ func (s *Service) Start(ctx context.Context, request Request) (Job, error) {
 	s.pruneOutputsLocked()
 	s.wg.Add(1)
 	s.mu.Unlock()
+	s.log.Info("provisioning job queued", "module", "Provisioning.Start", "job_id", job.ID, "template_id", job.TemplateID, "app_id", job.AppID)
 	go s.execute(jobCtx, current, template, *launch, values, sensitive, provisionedPorts, plan)
 	return job, nil
 }
@@ -382,19 +395,23 @@ func (s *Service) Check(ctx context.Context, templateID string) (Provisionabilit
 	return Provisionability{Provisionable: true, HostPlatform: s.hostOS, Summary: "Native SteamCMD installation and structured launch are available", Installer: templates.InstallerSteamCMD, AppID: plan.AppID, Validate: plan.Validate, LaunchExecutable: launch.Executable}, nil
 }
 func (s *Service) Cancel(ctx context.Context, id, actorID string) (Job, error) {
+	s.log.Info("provisioning cancellation requested", "module", "Provisioning.Cancel", "job_id", id, "actor_user_id", actorID)
 	s.mu.Lock()
 	current, ok := s.active[id]
 	if !ok || current.job.ActorUserID != actorID || current.finalizing {
 		s.mu.Unlock()
+		s.log.Warn("provisioning cancellation rejected", "module", "Provisioning.Cancel", "job_id", id, "error", ErrJobNotActive)
 		return Job{}, ErrJobNotActive
 	}
 	current.cancel()
 	s.mu.Unlock()
 	s.finish(current, Cancelled, "Provisioning was cancelled", "", true, "")
+	s.log.Info("provisioning cancellation accepted", "module", "Provisioning.Cancel", "job_id", id)
 	return s.store.Get(ctx, id)
 }
 
 func (s *Service) execute(ctx context.Context, current *run, template templates.Template, launch templates.LaunchDefinition, values map[string]string, sensitive map[string]bool, provisionedPorts []ports.Port, plan steamcmd.InstallPlan) {
+	s.log.Info("provisioning worker started", "module", "Provisioning.Worker", "job_id", current.job.ID, "template_id", template.ID, "recovering", current.recovering)
 	defer s.wg.Done()
 	defer s.release(current)
 	var err error
@@ -409,7 +426,7 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 		s.phase(current, Preparing, "Preparing managed server storage")
 		created, err := prepareRoot(current.root, current.job.ID)
 		if err != nil {
-			s.log.With("module", "Provisioning.Prepare").Error("managed server storage could not be prepared", "job_id", current.job.ID, "template_id", template.ID)
+			s.log.With("module", "Provisioning.Prepare").Error("managed server storage could not be prepared", "job_id", current.job.ID, "template_id", template.ID, "error", err)
 			s.finish(current, Failed, "Provisioning failed", "Server target could not be prepared", false, "")
 			return
 		}
@@ -438,7 +455,7 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 			if s.installerReportedDiskSpace(current.job.ID) {
 				failureCode, errorSummary = "STEAMCMD_INSUFFICIENT_DISK_SPACE", "Not enough free disk space to install this server."
 			}
-			s.log.With("module", "SteamCMD.Install").Error("SteamCMD installation failed", "job_id", current.job.ID, "template_id", template.ID, "app_id", plan.AppID, "failure", steamCMDFailure(err))
+			s.log.With("module", "SteamCMD.Install").Error("SteamCMD installation failed", "job_id", current.job.ID, "template_id", template.ID, "app_id", plan.AppID, "failure", steamCMDFailure(err), "error", err)
 			s.fail(current, Installing, failureCode, "Game installation failed", errorSummary, true)
 			return
 		}
@@ -465,14 +482,14 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 		}
 		if !adapter.PostStartOnly {
 			if err = gameconfig.Apply(current.root, adapter, adapterValues); err != nil {
-				s.log.With("module", "Provisioning.GameConfig").Error("game configuration could not be written", "job_id", current.job.ID, "template_id", template.ID, "adapter_id", adapter.ID)
+				s.log.With("module", "Provisioning.GameConfig").Error("game configuration could not be written", "job_id", current.job.ID, "template_id", template.ID, "adapter_id", adapter.ID, "error", err)
 				s.fail(current, ResolvingLaunch, "LAUNCH_RESOLUTION_FAILED", "Game configuration failed", "Installed files remain but the validated game configuration could not be written", true)
 				return
 			}
 		}
 		definitionJSON, marshalErr := json.Marshal(adapter)
 		if marshalErr != nil {
-			s.log.With("module", "Provisioning.GameConfig").Error("game configuration snapshot could not be created", "job_id", current.job.ID, "template_id", template.ID, "adapter_id", adapter.ID)
+			s.log.With("module", "Provisioning.GameConfig").Error("game configuration snapshot could not be created", "job_id", current.job.ID, "template_id", template.ID, "adapter_id", adapter.ID, "error", marshalErr)
 			s.fail(current, ResolvingLaunch, "LAUNCH_RESOLUTION_FAILED", "Game configuration failed", "Configuration snapshot could not be created", true)
 			return
 		}
@@ -480,13 +497,17 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 	}
 	server, metadata, err := buildServer(template, launch, current.job.ServerName, current.root, values, sensitive)
 	if err != nil {
-		s.log.With("module", "Provisioning.ServerConfig").Error("server configuration could not be built", "job_id", current.job.ID, "template_id", template.ID)
+		s.log.With("module", "Provisioning.ServerConfig").Error("server configuration could not be built", "job_id", current.job.ID, "template_id", template.ID, "error", err)
 		s.fail(current, ResolvingLaunch, "LAUNCH_RESOLUTION_FAILED", "Launch resolution failed", "Game files were installed successfully, but GameNode could not resolve the native server launch", true)
 		return
 	}
 	snapshot, marshalErr := json.Marshal(registrationSnapshot{Server: server, TemplateID: template.ID, Variables: metadata, Ports: provisionedPorts, ConfigAdapters: configSnapshots})
-	if marshalErr != nil || s.store.SaveRegistrationSnapshot(context.Background(), current.job.ID, snapshot) != nil {
-		s.log.Error("registration snapshot could not be persisted", "module", "Provisioning.Registration", "job_id", current.job.ID, "phase", RegisteringServer, "error_code", "SERVER_RELATED_DATA_FAILED")
+	snapshotErr := marshalErr
+	if snapshotErr == nil {
+		snapshotErr = s.store.SaveRegistrationSnapshot(context.Background(), current.job.ID, snapshot)
+	}
+	if snapshotErr != nil {
+		s.log.Error("registration snapshot could not be persisted", "module", "Provisioning.Registration", "job_id", current.job.ID, "phase", RegisteringServer, "error_code", "SERVER_RELATED_DATA_FAILED", "error", snapshotErr)
 		s.fail(current, RegisteringServer, "SERVER_RELATED_DATA_FAILED", "Server registration failed", "Game files were installed successfully, but GameNode could not prepare the server registration", true)
 		return
 	}
@@ -502,7 +523,7 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 	record, err := s.servers.CreateProvisioned(ctx, server, template.ID, metadata, provisionedPorts, configSnapshots)
 	if err != nil {
 		failure, summary := serverCreationFailure(err)
-		s.log.With("module", "Server.Create").Error("provisioned server could not be created", "job_id", current.job.ID, "template_id", template.ID, "failure", failure)
+		s.log.With("module", "Server.Create").Error("provisioned server could not be created", "job_id", current.job.ID, "template_id", template.ID, "failure", failure, "error", err)
 		s.fail(current, RegisteringServer, failure, "Server registration failed", summary, true)
 		return
 	}
@@ -603,9 +624,12 @@ func (s *Service) phase(current *run, status, summary string) {
 	}
 	current.job.UpdatedAt = now
 	job := current.job
-	_ = s.store.Update(context.Background(), job)
+	if err := s.store.Update(context.Background(), job); err != nil {
+		s.log.Error("provisioning phase could not be persisted", "module", "Provisioning.Phase", "job_id", job.ID, "phase", status, "error", err)
+	}
 	s.store.Event(context.Background(), job.ID, status, "PHASE_CHANGED", summary, now)
 	s.mu.Unlock()
+	s.log.Info("provisioning phase changed", "module", "Provisioning.Phase", "job_id", job.ID, "template_id", job.TemplateID, "phase", status, "summary", summary)
 }
 func (s *Service) installationCompleted(current *run) {
 	s.mu.Lock()
@@ -635,7 +659,9 @@ func (s *Service) finish(current *run, status, summary, errorSummary string, fil
 		job := current.job
 		observer := s.observer
 		s.mu.Unlock()
-		_ = s.store.Update(context.Background(), job)
+		if err := s.store.Update(context.Background(), job); err != nil {
+			s.log.Error("terminal provisioning state could not be persisted", "module", "Provisioning.Complete", "job_id", job.ID, "status", status, "error", err)
+		}
 		code := "JOB_COMPLETED"
 		if status == Failed {
 			code = "JOB_FAILED"
@@ -647,6 +673,11 @@ func (s *Service) finish(current *run, status, summary, errorSummary string, fil
 		if observer != nil {
 			action := map[string]string{Completed: "server.provision_complete", Failed: "server.provision_fail", Cancelled: "server.provision_cancel"}[status]
 			observer(Event{action, job, now.Sub(job.CreatedAt)})
+		}
+		if status == Failed {
+			s.log.Error("provisioning job failed", "module", "Provisioning.Complete", "job_id", job.ID, "template_id", job.TemplateID, "phase", job.FailurePhase, "failure_code", job.FailureCode, "summary", errorSummary)
+		} else {
+			s.log.Info("provisioning job finished", "module", "Provisioning.Complete", "job_id", job.ID, "template_id", job.TemplateID, "status", status, "server_id", serverID)
 		}
 	})
 }

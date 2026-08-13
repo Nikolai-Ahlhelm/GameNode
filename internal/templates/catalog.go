@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -160,15 +161,27 @@ type CatalogManager struct {
 	mu             sync.RWMutex
 	items          map[string]Template
 	status         CatalogStatus
+	log            *slog.Logger
 }
 
 func NewCatalogManager(source CatalogSource, dataDirectory, currentVersion string) *CatalogManager {
-	m := &CatalogManager{source: source, cacheDirectory: filepath.Join(filepath.Clean(dataDirectory), "templates", "cache"), currentVersion: currentVersion, now: func() time.Time { return time.Now().UTC() }, items: map[string]Template{}, status: CatalogStatus{Source: "none"}}
+	m := &CatalogManager{source: source, cacheDirectory: filepath.Join(filepath.Clean(dataDirectory), "templates", "cache"), currentVersion: currentVersion, now: func() time.Time { return time.Now().UTC() }, items: map[string]Template{}, status: CatalogStatus{Source: "none"}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	if items, fetched, err := m.readCache(); err == nil {
 		m.items = items
 		m.status = CatalogStatus{Source: "cache", FetchedAt: fetched, Cached: true}
 	}
 	return m
+}
+
+func (m *CatalogManager) SetLogger(log *slog.Logger) {
+	if log == nil {
+		return
+	}
+	m.mu.Lock()
+	m.log = log
+	items, source := len(m.items), m.status.Source
+	m.mu.Unlock()
+	m.log.Info("official game catalog initialized", "module", "Templates.Catalog", "source", source, "templates", items)
 }
 
 func (m *CatalogManager) List() CatalogResult {
@@ -190,29 +203,35 @@ func (m *CatalogManager) Get(id string) (Template, bool) {
 }
 
 func (m *CatalogManager) Refresh(ctx context.Context) (CatalogResult, error) {
+	m.log.Info("official game catalog refresh started", "module", "Templates.Catalog")
 	m.refreshMu.Lock()
 	defer m.refreshMu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 	manifestData, err := m.source.FetchCatalog(ctx)
 	if err != nil {
+		m.log.Error("official game catalog manifest download failed", "module", "Templates.Catalog", "error", err)
 		return m.failed(err)
 	}
 	manifest, err := decodeCatalog(manifestData)
 	if err != nil {
+		m.log.Error("official game catalog manifest validation failed", "module", "Templates.Catalog", "error", err)
 		return m.failed(err)
 	}
 	items := make(map[string]Template, len(manifest.Templates))
 	validEntries := make([]CatalogEntry, 0, len(manifest.Templates))
 	invalid := 0
 	for _, entry := range manifest.Templates {
+		m.log.Debug("official game template download started", "module", "Templates.Catalog", "template_id", entry.ID, "version", entry.Version)
 		data, fetchErr := m.source.FetchTemplate(ctx, entry.File)
 		if fetchErr != nil {
+			m.log.Warn("official game template download failed", "module", "Templates.Catalog", "template_id", entry.ID, "error", fetchErr)
 			invalid++
 			continue
 		}
 		template, decodeErr := decodeOfficial(data, entry, m.currentVersion)
 		if decodeErr != nil {
+			m.log.Warn("official game template validation failed", "module", "Templates.Catalog", "template_id", entry.ID, "error", decodeErr)
 			invalid++
 			continue
 		}
@@ -223,6 +242,7 @@ func (m *CatalogManager) Refresh(ctx context.Context) (CatalogResult, error) {
 			}
 		}
 		items[template.ID] = template
+		m.log.Debug("official game template loaded", "module", "Templates.Catalog", "template_id", entry.ID, "version", entry.Version, "adapters", len(template.ResolvedAdapters))
 		validEntries = append(validEntries, entry)
 	}
 	if len(manifest.Templates) > 0 && len(items) == 0 {
@@ -231,6 +251,7 @@ func (m *CatalogManager) Refresh(ctx context.Context) (CatalogResult, error) {
 	manifest.Templates = validEntries
 	fetched := m.now()
 	if err = m.writeCache(manifest, items, fetched); err != nil {
+		m.log.Error("official game catalog cache update failed", "module", "Templates.Catalog", "error", err)
 		return m.failed(err)
 	}
 	m.mu.Lock()
@@ -238,6 +259,7 @@ func (m *CatalogManager) Refresh(ctx context.Context) (CatalogResult, error) {
 	m.status = CatalogStatus{Source: "remote", FetchedAt: fetched, InvalidTemplates: invalid}
 	result := m.listLocked()
 	m.mu.Unlock()
+	m.log.Info("official game catalog refresh completed", "module", "Templates.Catalog", "templates", len(items), "invalid_templates", invalid)
 	return result, nil
 }
 
@@ -280,11 +302,14 @@ func (m *CatalogManager) fetchAdapters(ctx context.Context, templateFile string,
 		relative := path.Join(path.Dir(templateFile), reference.File)
 		data, err := m.source.FetchTemplate(ctx, relative)
 		if err != nil || len(data) > MaxAdapterBytes {
+			m.log.Warn("official game configuration adapter download failed", "module", "Templates.Catalog", "template_id", template.ID, "adapter_id", reference.ID, "error", err)
 			continue
 		}
 		adapter, err := decodeConfigAdapter(data, reference, template)
 		if err == nil {
 			result = append(result, adapter)
+		} else {
+			m.log.Warn("official game configuration adapter validation failed", "module", "Templates.Catalog", "template_id", template.ID, "adapter_id", reference.ID, "error", err)
 		}
 	}
 	return result

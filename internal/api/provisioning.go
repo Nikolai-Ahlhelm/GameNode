@@ -183,7 +183,7 @@ func (s *Server) provisioningJobHandler(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) recordProvisioningCompletion(event provisioning.Event) {
-	metadata, _ := json.Marshal(map[string]any{"template_id": event.Job.TemplateID, "job_id": event.Job.ID, "installer_type": event.Job.InstallerType, "app_id": event.Job.AppID, "duration_seconds": int64(event.Duration / time.Second)})
+	metadata, _ := json.Marshal(map[string]any{"template_id": event.Job.TemplateID, "job_id": event.Job.ID, "installer_type": event.Job.InstallerType, "app_id": event.Job.AppID, "duration_seconds": int64(event.Duration / time.Second), "failure_phase": event.Job.FailurePhase, "failure_code": event.Job.FailureCode, "files_may_remain": event.Job.FilesMayRemain})
 	var resourceID *string
 	var serverID *string
 	if event.Job.ServerID != "" {

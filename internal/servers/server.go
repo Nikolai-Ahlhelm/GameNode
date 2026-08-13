@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -524,6 +526,7 @@ type Service struct {
 	autoRestarts sync.Map
 	autoAttempts sync.Map
 	autoMu       sync.Mutex
+	log          *slog.Logger
 }
 
 // processInstance binds one native process identity to the console session
@@ -554,7 +557,15 @@ func NewServiceWithMonitoring(store *Store, r runtime.Runtime, manager *console.
 	if manager == nil {
 		manager = console.NewManager()
 	}
-	return &Service{store: store, runtime: r, console: manager, monitoring: monitoring.New(r, options), ports: ports.New(store.db)}
+	return &Service{store: store, runtime: r, console: manager, monitoring: monitoring.New(r, options), ports: ports.New(store.db), log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+}
+
+// SetLogger connects the application logger before the service begins serving requests.
+func (s *Service) SetLogger(log *slog.Logger) {
+	if log != nil {
+		s.log = log
+		s.monitoring.SetLogger(log)
+	}
 }
 func (s *Service) Console() *console.Manager { return s.console }
 func (s *Service) MonitoringSnapshot(ctx context.Context, id string) (monitoring.Snapshot, error) {
@@ -579,10 +590,22 @@ func (s *Service) MonitoringHistory(ctx context.Context, id string) ([]monitorin
 	return s.monitoring.History(id), nil
 }
 func (s *Service) Create(ctx context.Context, server Server) (Record, error) {
-	return s.store.Create(ctx, server)
+	record, err := s.store.Create(ctx, server)
+	if err != nil {
+		s.log.Error("server registration failed", "module", "Server.Create", "error", err)
+		return Record{}, err
+	}
+	s.log.Info("server registered", "module", "Server.Create", "server_id", record.Server.ID, "creation_mode", record.Server.CreationMode)
+	return record, nil
 }
 func (s *Service) CreateProvisioned(ctx context.Context, server Server, templateID string, variables []ProvisionedVariable, provisionedPorts []ports.Port, configAdapters []ProvisionedConfigAdapter) (Record, error) {
-	return s.store.CreateProvisioned(ctx, server, templateID, variables, provisionedPorts, configAdapters)
+	record, err := s.store.CreateProvisioned(ctx, server, templateID, variables, provisionedPorts, configAdapters)
+	if err != nil {
+		s.log.Error("provisioned server registration failed", "module", "Server.Create", "template_id", templateID, "error", err)
+		return Record{}, err
+	}
+	s.log.Info("provisioned server registered", "module", "Server.Create", "server_id", record.Server.ID, "template_id", templateID, "ports", len(provisionedPorts), "config_adapters", len(configAdapters))
+	return record, nil
 }
 func (s *Service) SensitiveEnvironmentKeys(ctx context.Context, id string) ([]string, error) {
 	return s.store.SensitiveEnvironmentKeys(ctx, id)
@@ -593,37 +616,69 @@ func (s *Service) Get(ctx context.Context, id string) (Record, error) { return s
 // Rediscover refreshes persisted processes after GameNode starts. A verified
 // surviving process is running but deliberately detached from console I/O.
 func (s *Service) Rediscover(ctx context.Context) error {
-	_, err := s.refreshAll(ctx)
+	s.log.Info("server process rediscovery started", "module", "Server.Rediscovery")
+	records, err := s.refreshAll(ctx)
+	if err != nil {
+		s.log.Error("server process rediscovery failed", "module", "Server.Rediscovery", "error", err)
+		return err
+	}
+	running := 0
+	for _, record := range records {
+		if record.Runtime.CurrentState == StateRunning {
+			running++
+		}
+	}
+	s.log.Info("server process rediscovery completed", "module", "Server.Rediscovery", "servers", len(records), "running", running)
 	return err
 }
 func (s *Service) Update(ctx context.Context, id string, server Server) (Record, error) {
+	s.log.Info("server update started", "module", "Server.Update", "server_id", id)
 	lock := s.lock(id)
 	lock.Lock()
 	defer lock.Unlock()
 	record, err := s.refresh(ctx, id)
 	if err != nil {
+		s.log.Error("server update failed while loading state", "module", "Server.Update", "server_id", id, "error", err)
 		return Record{}, err
 	}
 	if record.Runtime.CurrentState == StateRunning || record.Runtime.CurrentState == StateStarting || record.Runtime.CurrentState == StateStopping {
-		return Record{}, errors.New("stop the server before editing")
+		err = errors.New("stop the server before editing")
+		s.log.Warn("server update rejected by lifecycle state", "module", "Server.Update", "server_id", id, "state", record.Runtime.CurrentState, "error", err)
+		return Record{}, err
 	}
-	return s.store.Update(ctx, id, server)
+	updated, err := s.store.Update(ctx, id, server)
+	if err != nil {
+		s.log.Error("server update failed", "module", "Server.Update", "server_id", id, "error", err)
+		return Record{}, err
+	}
+	s.log.Info("server update completed", "module", "Server.Update", "server_id", id)
+	return updated, nil
 }
 func (s *Service) Delete(ctx context.Context, id string) error {
+	s.log.Info("server deletion started", "module", "Server.Delete", "server_id", id)
 	s.cancelAutoRestart(id)
 	lock := s.lock(id)
 	lock.Lock()
 	defer lock.Unlock()
 	record, err := s.refresh(ctx, id)
 	if err != nil {
+		s.log.Error("server deletion failed while loading state", "module", "Server.Delete", "server_id", id, "error", err)
 		return err
 	}
 	if record.Runtime.CurrentState == StateRunning || record.Runtime.CurrentState == StateStarting || record.Runtime.CurrentState == StateStopping {
-		return errors.New("stop the server before deleting")
+		err = errors.New("stop the server before deleting")
+		s.log.Warn("server deletion rejected by lifecycle state", "module", "Server.Delete", "server_id", id, "state", record.Runtime.CurrentState, "error", err)
+		return err
 	}
-	return s.store.Delete(ctx, id)
+	if err = s.store.Delete(ctx, id); err != nil {
+		s.log.Error("server deletion failed", "module", "Server.Delete", "server_id", id, "error", err)
+		return err
+	}
+	s.log.Info("server deleted", "module", "Server.Delete", "server_id", id)
+	return nil
 }
 func (s *Service) Start(ctx context.Context, id string) (Record, error) {
+	s.log.Info("server start requested", "module", "Server.Start", "server_id", id)
 	s.cancelAutoRestart(id)
 	// A Windows child can terminate while Cmd.Wait is still waiting for a
 	// descendant that inherited its console pipes. Do not let that delayed
@@ -653,9 +708,16 @@ func (s *Service) reconcileExitedActive(ctx context.Context, id string) {
 }
 
 func (s *Service) start(ctx context.Context, id string, restart bool) (Record, error) {
+	operation := "start"
+	if restart {
+		operation = "restart start"
+	}
+	s.log.Info("server process start preparing", "module", "Server.Start", "server_id", id, "operation", operation)
 	if !restart {
 		if _, active := s.restarts.Load(id); active {
-			return Record{}, errors.New("server restart is in progress")
+			err := errors.New("server restart is in progress")
+			s.log.Warn("server start rejected", "module", "Server.Start", "server_id", id, "error", err)
+			return Record{}, err
 		}
 	}
 	lock := s.lock(id)
@@ -663,13 +725,18 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 	defer lock.Unlock()
 	record, err := s.refresh(ctx, id)
 	if err != nil {
+		s.log.Error("server process start failed while loading state", "module", "Server.Start", "server_id", id, "error", err)
 		return Record{}, err
 	}
 	if record.Runtime.CurrentState == StateRunning || record.Runtime.CurrentState == StateStarting || record.Runtime.CurrentState == StateStopping {
-		return Record{}, errors.New("server is already running")
+		err = errors.New("server is already running")
+		s.log.Warn("server process start rejected by lifecycle state", "module", "Server.Start", "server_id", id, "state", record.Runtime.CurrentState, "error", err)
+		return Record{}, err
 	}
 	if record.Runtime.CurrentState == StateUnknown && record.Runtime.PID != 0 && record.Runtime.processStartKey != "" {
-		return Record{}, errors.New("server process status could not be verified")
+		err = errors.New("server process status could not be verified")
+		s.log.Warn("server process start rejected because existing identity is unverified", "module", "Server.Start", "server_id", id, "pid", record.Runtime.PID, "error", err)
+		return Record{}, err
 	}
 	// Preflight before state mutation, console-session creation, or Runtime.Start.
 	if err = s.ports.Check(ctx, id); err != nil {
@@ -679,16 +746,19 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 		// a process crash and must not schedule another auto-restart.
 		record.Runtime.LastError = preflight.Error()
 		_ = s.store.SaveRuntime(context.Background(), id, record.Runtime)
+		s.log.Error("server port preflight failed", "module", "Server.Start", "server_id", id, "error", preflight)
 		return Record{}, preflight
 	}
 	now := time.Now().UTC()
 	record.Runtime.CurrentState = StateStarting
 	record.Runtime.LastError = ""
 	if err = s.store.SaveRuntime(ctx, id, record.Runtime); err != nil {
+		s.log.Error("server starting state could not be persisted", "module", "Server.Start", "server_id", id, "error", err)
 		return Record{}, err
 	}
 	instanceID, err := newID()
 	if err != nil {
+		s.log.Error("server process instance ID creation failed", "module", "Server.Start", "server_id", id, "error", err)
 		return Record{}, err
 	}
 	session := s.console.CreateSession(id, instanceID)
@@ -715,6 +785,7 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 		record.Runtime.CurrentState = StateStopped
 		record.Runtime.LastError = "start failed"
 		_ = s.store.SaveRuntime(context.Background(), id, record.Runtime)
+		s.log.Error("native server process failed to start", "module", "Server.Start", "server_id", id, "error", err)
 		return Record{}, err
 	}
 	record.Runtime.PID = identity.PID
@@ -728,23 +799,35 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 	record.Runtime.CurrentState = StateRunning
 	s.monitoring.ObserveRunning(id, identity, false)
 	if err = s.store.SaveRuntime(ctx, id, record.Runtime); err != nil {
+		s.log.Error("running server state could not be persisted", "module", "Server.Start", "server_id", id, "pid", identity.PID, "error", err)
 		return Record{}, err
 	}
 	instance := &processInstance{serverID: id, instanceID: instanceID, identity: identity, session: session, done: make(chan struct{})}
 	s.instances.Store(id, instance)
 	go s.captureExit(instance, exits)
-	return s.store.Get(ctx, id)
+	s.log.Info("native server process started", "module", "Server.Start", "server_id", id, "pid", identity.PID, "restart", restart)
+	result, err := s.store.Get(ctx, id)
+	if err != nil {
+		s.log.Error("started server state could not be loaded", "module", "Server.Start", "server_id", id, "pid", identity.PID, "error", err)
+		return Record{}, err
+	}
+	return result, nil
 }
 func (s *Service) Stop(ctx context.Context, id string) (Record, error) {
+	s.log.Info("server stop requested", "module", "Server.Stop", "server_id", id)
 	return s.signal(ctx, id, false)
 }
 func (s *Service) Kill(ctx context.Context, id string) (Record, error) {
+	s.log.Warn("server kill requested", "module", "Server.Kill", "server_id", id)
 	return s.signal(ctx, id, true)
 }
 func (s *Service) Restart(ctx context.Context, id string) (Record, error) {
+	s.log.Info("server restart requested", "module", "Server.Restart", "server_id", id)
 	s.cancelAutoRestart(id)
 	if _, loaded := s.restarts.LoadOrStore(id, struct{}{}); loaded {
-		return Record{}, errors.New("server restart is already in progress")
+		err := errors.New("server restart is already in progress")
+		s.log.Warn("server restart rejected", "module", "Server.Restart", "server_id", id, "error", err)
+		return Record{}, err
 	}
 	defer s.restarts.Delete(id)
 	if _, err := s.signalWithRestart(ctx, id, false, true); err != nil {
@@ -758,9 +841,15 @@ func (s *Service) signal(ctx context.Context, id string, kill bool) (Record, err
 }
 
 func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restart bool) (Record, error) {
+	module := "Server.Stop"
+	if kill {
+		module = "Server.Kill"
+	}
 	if !restart {
 		if _, active := s.restarts.Load(id); active {
-			return Record{}, errors.New("server restart is in progress")
+			err := errors.New("server restart is in progress")
+			s.log.Warn("server lifecycle operation rejected", "module", module, "server_id", id, "error", err)
+			return Record{}, err
 		}
 	}
 	lock := s.lock(id)
@@ -769,11 +858,14 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 	record, err := s.refresh(ctx, id)
 	if err != nil {
 		lock.Unlock()
+		s.log.Error("server lifecycle state could not be loaded", "module", module, "server_id", id, "error", err)
 		return Record{}, err
 	}
 	if record.Runtime.CurrentState != StateRunning {
 		lock.Unlock()
-		return Record{}, errors.New("server is not running")
+		err = errors.New("server is not running")
+		s.log.Warn("server lifecycle operation rejected by state", "module", module, "server_id", id, "state", record.Runtime.CurrentState, "error", err)
+		return Record{}, err
 	}
 	record.Runtime.CurrentState = StateStopping
 	_ = s.store.SaveRuntime(ctx, id, record.Runtime)
@@ -796,6 +888,7 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 		record.Runtime.LastError = "lifecycle operation failed"
 		_ = s.store.SaveRuntime(context.Background(), id, record.Runtime)
 		lock.Unlock()
+		s.log.Error("native server lifecycle operation failed", "module", module, "server_id", id, "pid", identity.PID, "error", err)
 		return Record{}, err
 	}
 	lock.Unlock()
@@ -808,6 +901,7 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 			case <-timer.C:
 				killErr := s.runtime.Kill(context.Background(), identity)
 				if killErr != nil && !errors.Is(killErr, runtime.ErrNotRunning) {
+					s.log.Error("server force-kill after stop timeout failed", "module", module, "server_id", id, "pid", identity.PID, "error", killErr)
 					return Record{}, killErr
 				}
 				if errors.Is(killErr, runtime.ErrNotRunning) {
@@ -820,18 +914,27 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 				<-process.done
 			case <-ctx.Done():
 				timer.Stop()
+				s.log.Warn("server lifecycle wait cancelled", "module", module, "server_id", id, "error", ctx.Err())
 				return Record{}, ctx.Err()
 			}
 		} else {
 			<-process.done
 		}
 	}
-	return s.store.Get(ctx, id)
+	result, err := s.store.Get(ctx, id)
+	if err != nil {
+		s.log.Error("final server lifecycle state could not be loaded", "module", module, "server_id", id, "error", err)
+		return Record{}, err
+	}
+	s.log.Info("server lifecycle operation completed", "module", module, "server_id", id, "state", result.Runtime.CurrentState, "restart", restart)
+	return result, nil
 }
 func (s *Service) captureExit(instance *processInstance, exits <-chan runtime.ExitResult) {
 	exit, ok := <-exits
 	if ok {
 		s.finalizeInstance(instance, exit)
+	} else {
+		s.log.Warn("native process exit channel closed without a result", "module", "Server.Exit", "server_id", instance.serverID, "pid", instance.identity.PID)
 	}
 }
 
@@ -839,6 +942,11 @@ func (s *Service) captureExit(instance *processInstance, exits <-chan runtime.Ex
 // mutates persisted state if the captured process identity still matches.
 func (s *Service) finalizeInstance(instance *processInstance, exit runtime.ExitResult) {
 	instance.finalize.Do(func() {
+		if exit.Err != nil {
+			s.log.Error("native server process exited with an error", "module", "Server.Exit", "server_id", instance.serverID, "pid", instance.identity.PID, "exit_code", exit.ExitCode, "error", exit.Err)
+		} else {
+			s.log.Info("native server process exited", "module", "Server.Exit", "server_id", instance.serverID, "pid", instance.identity.PID, "exit_code", exit.ExitCode)
+		}
 		defer close(instance.done)
 		lock := s.lock(instance.serverID)
 		lock.Lock()
@@ -871,11 +979,17 @@ func (s *Service) finalizeInstance(instance *processInstance, exit runtime.ExitR
 			if exit.Err != nil && !stopping {
 				record.Runtime.LastError = "process exited"
 			}
-			_ = s.store.SaveRuntime(context.Background(), instance.serverID, record.Runtime)
+			if saveErr := s.store.SaveRuntime(context.Background(), instance.serverID, record.Runtime); saveErr != nil {
+				s.log.Error("final server process state could not be persisted", "module", "Server.Exit", "server_id", instance.serverID, "error", saveErr)
+			}
 			s.monitoring.ObserveExit(instance.serverID, instance.identity)
 			if record.Runtime.CurrentState == StateCrashed {
 				s.scheduleAutoRestart(instance.serverID, instance.instanceID, record.Server)
 			}
+		} else if err != nil {
+			s.log.Error("server process exit could not load persisted state", "module", "Server.Exit", "server_id", instance.serverID, "error", err)
+		} else {
+			s.log.Warn("stale server process exit ignored", "module", "Server.Exit", "server_id", instance.serverID, "pid", instance.identity.PID)
 		}
 		s.instances.CompareAndDelete(instance.serverID, instance)
 	})
@@ -883,10 +997,12 @@ func (s *Service) finalizeInstance(instance *processInstance, exit runtime.ExitR
 func (s *Service) cancelAutoRestart(id string) {
 	if value, ok := s.autoRestarts.LoadAndDelete(id); ok {
 		value.(*pendingAutoRestart).cancel()
+		s.log.Info("pending automatic restart cancelled", "module", "Server.AutoRestart", "server_id", id)
 	}
 }
 func (s *Service) scheduleAutoRestart(id, generation string, server Server) {
 	if !server.AutoRestartEnabled {
+		s.log.Debug("automatic restart not scheduled because it is disabled", "module", "Server.AutoRestart", "server_id", id)
 		return
 	}
 	s.autoMu.Lock()
@@ -910,6 +1026,7 @@ func (s *Service) scheduleAutoRestart(id, generation string, server Server) {
 			_ = s.store.SaveRuntime(context.Background(), id, record.Runtime)
 		}
 		s.autoAttempts.Store(id, kept)
+		s.log.Warn("automatic restart limit reached", "module", "Server.AutoRestart", "server_id", id, "attempts", len(kept))
 		return
 	}
 	kept = append(kept, now)
@@ -919,11 +1036,13 @@ func (s *Service) scheduleAutoRestart(id, generation string, server Server) {
 	if old, loaded := s.autoRestarts.Swap(id, pending); loaded {
 		old.(*pendingAutoRestart).cancel()
 	}
+	s.log.Info("automatic server restart scheduled", "module", "Server.AutoRestart", "server_id", id, "attempt", len(kept), "delay_seconds", server.AutoRestartDelaySeconds)
 	go func() {
 		timer := time.NewTimer(time.Duration(server.AutoRestartDelaySeconds) * time.Second)
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
+			s.log.Debug("automatic server restart timer cancelled", "module", "Server.AutoRestart", "server_id", id)
 			return
 		case <-timer.C:
 		}
@@ -933,7 +1052,10 @@ func (s *Service) scheduleAutoRestart(id, generation string, server Server) {
 		}
 		// The finalizer has already persisted crashed state; this starts a fresh
 		// instance/session through the normal orchestration path.
-		_, _ = s.start(context.Background(), id, true)
+		s.log.Info("automatic server restart starting", "module", "Server.AutoRestart", "server_id", id)
+		if _, err := s.start(context.Background(), id, true); err != nil {
+			s.log.Error("automatic server restart failed", "module", "Server.AutoRestart", "server_id", id, "error", err)
+		}
 	}()
 }
 func (s *Service) autoRestartStatus(id string, server Server) (bool, int, bool) {

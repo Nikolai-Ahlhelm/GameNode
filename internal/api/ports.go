@@ -66,11 +66,13 @@ func (s *Server) portsHandler(w http.ResponseWriter, r *http.Request, server str
 		}
 		x, e := s.ports.Add(r.Context(), server, p)
 		if e != nil {
+			s.log.Error("port registration failed", "module", "Ports.Create", "server_id", server, "actor_user_id", u.ID, "error", e)
 			s.recordPortAudit(r, u, audit.PortCreate, audit.Failure, server, ports.Port{}, e)
 			portError(w, e)
 			return
 		}
 		s.recordPortAudit(r, u, audit.PortCreate, audit.Success, server, x, nil)
+		s.log.Info("port registered", "module", "Ports.Create", "server_id", server, "port_id", x.ID, "protocol", x.Protocol, "port", x.Port)
 		jsonOut(w, 201, map[string]any{"port": x})
 		return
 	}
@@ -84,11 +86,13 @@ func (s *Server) portsHandler(w http.ResponseWriter, r *http.Request, server str
 			return
 		}
 		if e != nil {
+			s.log.Error("port update failed", "module", "Ports.Update", "server_id", server, "port_id", id, "actor_user_id", u.ID, "error", e)
 			s.recordPortAudit(r, u, audit.PortUpdate, audit.Failure, server, ports.Port{ID: id}, e)
 			portError(w, e)
 			return
 		}
 		s.recordPortAudit(r, u, audit.PortUpdate, audit.Success, server, x, nil)
+		s.log.Info("port updated", "module", "Ports.Update", "server_id", server, "port_id", id, "protocol", x.Protocol, "port", x.Port)
 		jsonOut(w, 200, map[string]any{"port": x})
 		return
 	}
@@ -105,11 +109,13 @@ func (s *Server) portsHandler(w http.ResponseWriter, r *http.Request, server str
 		if e := s.ports.Delete(r.Context(), server, id); e == sql.ErrNoRows {
 			notFound(w)
 		} else if e != nil {
+			s.log.Error("port deletion failed", "module", "Ports.Delete", "server_id", server, "port_id", id, "actor_user_id", u.ID, "error", e)
 			s.recordPortAudit(r, u, audit.PortDelete, audit.Failure, server, existing, e)
 			internal(w)
 		} else {
 			existing.ID = id
 			s.recordPortAudit(r, u, audit.PortDelete, audit.Success, server, existing, nil)
+			s.log.Info("port deleted", "module", "Ports.Delete", "server_id", server, "port_id", id)
 			w.WriteHeader(204)
 		}
 		return

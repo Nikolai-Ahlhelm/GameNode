@@ -33,3 +33,13 @@ func GlobalOnly(key string) bool {
 		return false
 	}
 }
+
+// AllowedScopes describes the assignment scopes that can make a permission
+// effective. Server permissions may also be assigned globally; global grants
+// apply when a server permission is evaluated for a specific server.
+func AllowedScopes(key string) []string {
+	if GlobalOnly(key) {
+		return []string{"global"}
+	}
+	return []string{"global", "server"}
+}

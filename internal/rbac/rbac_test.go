@@ -2,6 +2,7 @@ package rbac
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"gamenode"
 	"gamenode/internal/auth"
@@ -9,6 +10,20 @@ import (
 	"gamenode/internal/identity"
 	"testing"
 )
+
+func testDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	if err = database.Migrate(db, gamenode.MigrationFiles); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
 
 func TestCatalogAndEvaluator(t *testing.T) {
 	if !Known("Server.Start") || Known("made.up") {
@@ -181,6 +196,31 @@ func TestPlatformPermissionsAreGlobalOnly(t *testing.T) {
 		if err != nil || !allowed {
 			t.Fatalf("global group %s = %v, %v", permission, allowed, err)
 		}
+	}
+}
+
+func TestServerAssignmentRejectsGlobalOnlyPermissions(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	users := identity.New(db)
+	u, err := users.CreateUser(ctx, identity.CreateUserInput{Username: "scoped", Email: "scoped@example.test", Password: "a password long enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(db)
+	role, err := service.CreateRole(ctx, "platform-only", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.ReplacePermissions(ctx, role.ID, []string{"Settings.Manage"}); err != nil {
+		t.Fatal(err)
+	}
+	serverID := "server-for-scope-test"
+	if _, err = db.ExecContext(ctx, "INSERT INTO servers(id,name,description,creation_mode,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", serverID, "scope", "", "custom", "C:/", "x", "[]", "{}", "native", 0, "never", "terminate", "", 15, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.AssignUser(ctx, u.ID, role.ID, Scope{Type: "server", ID: &serverID}); !errors.Is(err, ErrInvalidScope) {
+		t.Fatalf("expected invalid scope, got %v", err)
 	}
 }
 func mustFirstAssignment(t *testing.T, service *Service, ctx context.Context, user string) string {

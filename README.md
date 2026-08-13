@@ -2,7 +2,7 @@
 
 GameNode is a self-contained, single-node game-server management platform for Windows and Linux. It manages existing native applications through a local web interface; it does not require containers, templates, or a central controller.
 
-The current implementation covers the foundation, native runtime, live console, server-root file browser, RBAC, monitoring and health state, auto-restart, port management, audit log, dashboards, typed settings, diagnostics, support bundles, the Official Game Library, safe Egg template import, and native SteamCMD provisioning. Cluster/controller operation, Docker/Podman, a marketplace, automatic server updates, backups, scheduling, and firewall/NAT automation are intentionally out of scope.
+The current implementation covers the foundation, native runtime, live console, server-root file browser, RBAC, monitoring and health state, auto-restart, port management, audit log, dashboards, typed settings, diagnostics, support bundles, the Official Game Library, safe Egg template import, and native SteamCMD provisioning. When an existing database has pending schema migrations, startup creates a consistent `*.pre-migration-*.db` SQLite copy beside it before changing the schema; this is an upgrade safeguard, not a general backup system. Cluster/controller operation, Docker/Podman, a marketplace, automatic server updates, backups, scheduling, and firewall/NAT automation are intentionally out of scope.
 
 ## Capabilities
 
@@ -19,6 +19,8 @@ The current implementation covers the foundation, native runtime, live console, 
 - Adopt an existing Minecraft NeoForge installation through the Official read-only template and a conservative launcher resolver.
 
 ## Security model
+
+The dashboard can administer the existing RBAC model: reusable roles draw from the backend permission catalog, then administrators assign roles to users or groups globally or per server. Global-only permissions cannot be saved as server assignments. Grants are explicit: `Manage` never implies `View`.
 
 The backend is the authorization and filesystem security boundary.
 

@@ -32,6 +32,7 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		values, changed, err := s.settings.Update(r.Context(), patch)
 		if err != nil {
+			s.log.Error("settings update failed", "module", "Settings.Update", "actor_user_id", actor.ID, "error", err)
 			code, summary := auditFailure(err)
 			s.recordAudit(r, auditInput{action: audit.SettingsUpdate, resourceType: audit.Settings, result: audit.Failure, actor: &actor, errorCode: code, errorSummary: summary})
 			bad(w, err.Error())
@@ -39,6 +40,7 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		metadata, _ := json.Marshal(map[string]any{"changed_fields": changed})
 		s.recordAudit(r, auditInput{action: audit.SettingsUpdate, resourceType: audit.Settings, result: audit.Success, actor: &actor, metadata: metadata})
+		s.log.Info("settings updated", "module", "Settings.Update", "actor_user_id", actor.ID, "changed_fields", changed)
 		jsonOut(w, http.StatusOK, values)
 	default:
 		method(w)

@@ -16,7 +16,11 @@ func (s *Server) auditHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	f := audit.Filter{Action: q.Get("action"), ResourceType: q.Get("resource_type"), Result: q.Get("result")}
+	f := audit.Filter{Action: q.Get("action"), ResourceType: q.Get("resource_type"), Result: q.Get("result"), Query: q.Get("query")}
+	if len(f.Query) > 100 {
+		bad(w, "audit query is too long")
+		return
+	}
 	for key, target := range map[string]**string{"actor_user_id": &f.ActorUserID, "resource_id": &f.ResourceID, "server_id": &f.ServerID} {
 		if value := q.Get(key); value != "" {
 			copy := value
@@ -43,7 +47,7 @@ func (s *Server) auditHandler(w http.ResponseWriter, r *http.Request) {
 		bad(w, "invalid result")
 		return
 	}
-	validResource := map[string]bool{audit.Auth: true, audit.Server: true, audit.Port: true, audit.File: true, audit.Console: true, audit.User: true, audit.Group: true, audit.Role: true, audit.Settings: true, audit.System: true}
+	validResource := map[string]bool{audit.Auth: true, audit.Server: true, audit.Port: true, audit.File: true, audit.Console: true, audit.User: true, audit.Group: true, audit.Role: true, audit.Settings: true, audit.System: true, audit.Template: true}
 	if f.ResourceType != "" && !validResource[f.ResourceType] {
 		bad(w, "invalid resource type")
 		return

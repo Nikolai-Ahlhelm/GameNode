@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -77,6 +78,7 @@ type Manager struct {
 	downloader Downloader
 	runner     Runner
 	bootstrap  sync.Mutex
+	log        *slog.Logger
 }
 
 func New(root string, platform Platform, downloader Downloader, runner Runner) *Manager {
@@ -86,7 +88,12 @@ func New(root string, platform Platform, downloader Downloader, runner Runner) *
 	if runner == nil {
 		runner = NativeRunner{}
 	}
-	return &Manager{root: filepath.Clean(root), platform: platform, downloader: downloader, runner: runner}
+	return &Manager{root: filepath.Clean(root), platform: platform, downloader: downloader, runner: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+}
+func (m *Manager) SetLogger(log *slog.Logger) {
+	if log != nil {
+		m.log = log
+	}
 }
 func (m *Manager) Root() string       { return m.root }
 func (m *Manager) Executable() string { return filepath.Join(m.root, m.platform.Executable) }
@@ -96,63 +103,80 @@ func (m *Manager) Detect() bool {
 }
 
 func (m *Manager) Ensure(ctx context.Context, sink EventSink) error {
+	m.log.Info("SteamCMD readiness check started", "module", "SteamCMD.Bootstrap", "platform", m.platform.OS)
 	m.bootstrap.Lock()
 	defer m.bootstrap.Unlock()
 	if m.Detect() {
+		m.log.Info("SteamCMD is already available", "module", "SteamCMD.Bootstrap", "platform", m.platform.OS)
 		if sink != nil {
 			sink(Event{"steamcmd_ready", "Managed SteamCMD is ready"})
 		}
 		return nil
 	}
 	if _, err := os.Stat(m.root); err == nil {
+		m.log.Error("managed SteamCMD installation is incomplete", "module", "SteamCMD.Bootstrap", "error", ErrManagedInstallCorrupt)
 		return ErrManagedInstallCorrupt
 	} else if !os.IsNotExist(err) {
+		m.log.Error("managed SteamCMD directory could not be inspected", "module", "SteamCMD.Bootstrap", "error", err)
 		return errors.New("managed tools directory is unavailable")
 	}
+	m.log.Info("SteamCMD download starting", "module", "SteamCMD.Download", "platform", m.platform.OS)
 	if sink != nil {
 		sink(Event{"downloading_steamcmd", "Downloading SteamCMD from the trusted Valve source"})
 	}
 	parent := filepath.Dir(m.root)
 	if err := os.MkdirAll(parent, 0700); err != nil {
+		m.log.Error("SteamCMD tools directory creation failed", "module", "SteamCMD.Bootstrap", "error", err)
 		return errors.New("managed tools directory is unavailable")
 	}
 	temp, err := os.MkdirTemp(parent, ".steamcmd-bootstrap-")
 	if err != nil {
+		m.log.Error("SteamCMD temporary bootstrap directory creation failed", "module", "SteamCMD.Bootstrap", "error", err)
 		return errors.New("SteamCMD bootstrap could not start")
 	}
 	defer os.RemoveAll(temp)
 	archive := filepath.Join(temp, "steamcmd.archive")
 	if err = m.downloader.Download(ctx, archive); err != nil {
+		m.log.Error("SteamCMD download failed", "module", "SteamCMD.Download", "error", err)
 		return fmt.Errorf("SteamCMD download failed: %w", sanitized(err))
 	}
+	m.log.Info("SteamCMD download completed", "module", "SteamCMD.Download", "platform", m.platform.OS)
 	extract := filepath.Join(temp, "content")
 	if err = os.Mkdir(extract, 0700); err != nil {
+		m.log.Error("SteamCMD extraction directory creation failed", "module", "SteamCMD.Extract", "error", err)
 		return errors.New("SteamCMD bootstrap could not prepare extraction")
 	}
 	if err = Extract(m.platform.Archive, archive, extract); err != nil {
+		m.log.Error("SteamCMD archive extraction failed", "module", "SteamCMD.Extract", "error", err)
 		return fmt.Errorf("SteamCMD archive rejected: %w", err)
 	}
 	executable := filepath.Join(extract, m.platform.Executable)
 	info, err := os.Stat(executable)
 	if err != nil || !info.Mode().IsRegular() {
+		m.log.Error("SteamCMD executable is missing after extraction", "module", "SteamCMD.Extract", "error", err)
 		return errors.New("SteamCMD archive does not contain the expected executable")
 	}
 	if m.platform.OS == "linux" {
 		if err = os.Chmod(executable, 0700); err != nil {
+			m.log.Error("SteamCMD executable permission update failed", "module", "SteamCMD.Bootstrap", "error", err)
 			return errors.New("SteamCMD executable permissions could not be set")
 		}
 	}
 	if err = os.Rename(extract, m.root); err != nil {
+		m.log.Error("SteamCMD bootstrap commit failed", "module", "SteamCMD.Bootstrap", "error", err)
 		return errors.New("SteamCMD bootstrap could not be committed")
 	}
 	if sink != nil {
 		sink(Event{"steamcmd_ready", "Managed SteamCMD is ready"})
 	}
+	m.log.Info("SteamCMD bootstrap completed", "module", "SteamCMD.Bootstrap", "platform", m.platform.OS)
 	return nil
 }
 
 func (m *Manager) Install(ctx context.Context, root string, plan InstallPlan, output io.Writer, sink EventSink) error {
+	m.log.Info("SteamCMD game installation preparing", "module", "SteamCMD.Install", "app_id", plan.AppID, "validate", plan.Validate, "beta", plan.BetaBranch != "")
 	if err := ValidatePlan(plan); err != nil {
+		m.log.Error("SteamCMD install plan rejected", "module", "SteamCMD.Install", "app_id", plan.AppID, "error", err)
 		return err
 	}
 	if !filepath.IsAbs(root) {
@@ -163,6 +187,7 @@ func (m *Manager) Install(ctx context.Context, root string, plan InstallPlan, ou
 		return errors.New("installation root is unavailable")
 	}
 	if err = m.Ensure(ctx, sink); err != nil {
+		m.log.Error("SteamCMD game installation could not start", "module", "SteamCMD.Install", "app_id", plan.AppID, "error", err)
 		return err
 	}
 	args := BuildArguments(root, plan)
@@ -179,17 +204,22 @@ func (m *Manager) Install(ctx context.Context, root string, plan InstallPlan, ou
 	}
 	command := Command{Executable: m.Executable(), Arguments: args, WorkingDirectory: m.root, Output: output, Environment: environment}
 	for attempt := 0; attempt < 2; attempt++ {
+		m.log.Info("SteamCMD process starting", "module", "SteamCMD.Install", "app_id", plan.AppID, "attempt", attempt+1)
 		result, runErr := m.runner.Run(ctx, command)
 		if ctx.Err() != nil {
+			m.log.Warn("SteamCMD process cancelled", "module", "SteamCMD.Install", "app_id", plan.AppID, "attempt", attempt+1, "error", ctx.Err())
 			return context.Canceled
 		}
 		if runErr == nil && result.ExitCode == 0 {
+			m.log.Info("SteamCMD game installation completed", "module", "SteamCMD.Install", "app_id", plan.AppID, "attempt", attempt+1, "exit_code", result.ExitCode)
 			return nil
 		}
+		m.log.Warn("SteamCMD process attempt failed", "module", "SteamCMD.Install", "app_id", plan.AppID, "attempt", attempt+1, "exit_code", result.ExitCode, "error", runErr)
 		if attempt == 0 && sink != nil {
 			sink(Event{"installing", "SteamCMD installation failed transiently; retrying once"})
 		}
 	}
+	m.log.Error("SteamCMD game installation failed after retry", "module", "SteamCMD.Install", "app_id", plan.AppID, "error", ErrInstallFailed)
 	return ErrInstallFailed
 }
 

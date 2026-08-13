@@ -35,7 +35,11 @@ func (s *Server) permissionsHandler(w http.ResponseWriter, r *http.Request) {
 	if _, _, ok := s.requireGlobalPermission(w, r, "Roles.View", false); !ok {
 		return
 	}
-	jsonOut(w, http.StatusOK, map[string]any{"permissions": rbac.Catalog})
+	permissions := make([]map[string]any, 0, len(rbac.Catalog))
+	for _, permission := range rbac.Catalog {
+		permissions = append(permissions, map[string]any{"key": permission.Key, "category": permission.Category, "description": permission.Description, "allowed_scopes": rbac.AllowedScopes(permission.Key)})
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"permissions": permissions})
 }
 func (s *Server) rolesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
@@ -193,6 +197,10 @@ func rbacError(w http.ResponseWriter, e error) {
 	}
 	if errors.Is(e, rbac.ErrUnknownPermission) {
 		bad(w, "unknown permission")
+		return
+	}
+	if errors.Is(e, rbac.ErrInvalidScope) {
+		bad(w, "global-only permissions cannot be assigned to a server")
 		return
 	}
 	if errors.Is(e, rbac.ErrDuplicateAssignment) || strings.Contains(strings.ToLower(e.Error()), "constraint") {

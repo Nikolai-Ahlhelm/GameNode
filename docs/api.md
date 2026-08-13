@@ -2,6 +2,8 @@
 
 All endpoints are namespaced below `/api/v1` and return errors as `{ "error": { "code": "...", "message": "..." } }`.
 
+RBAC administration uses `GET /permissions` (the authoritative catalog with allowed scopes), role CRUD at `/roles`, subject assignments at `/users/{id}/roles` and `/groups/{id}/roles`, and `GET /servers/{id}/access` for server-scoped assignment listings. Role mutations require CSRF and `Roles.Manage`; catalog and assignment reads require `Roles.View`.
+
 The API integration suite covers setup/login/logout, server CRUD/lifecycle, WebSocket console authorization and malformed-frame handling, filesystem upload/download and sandboxing, RBAC scope enforcement, settings, diagnostics, audit, ports, and support-bundle authorization/ZIP behavior. The 2026-08-11 native Windows acceptance harness additionally exercised the embedded binary's setup, lifecycle, console, RBAC, and filesystem routes.
 
 | Method | Path | Purpose |
@@ -13,6 +15,7 @@ The API integration suite covers setup/login/logout, server CRUD/lifecycle, WebS
 | GET | `/api/v1/auth/me` | Current user and CSRF token |
 | GET, POST | `/api/v1/users` | List with `Users.View`; create with `Users.Manage` |
 | GET, PATCH, DELETE | `/api/v1/users/{id}` | Read with `Users.View`; update/delete with `Users.Manage` |
+| GET | `/api/v1/users/{id}/groups` | List memberships; requires both `Users.View` and `Groups.View` |
 | POST | `/api/v1/users/{id}/password` | Reset a local user's password with `Users.Manage` |
 | GET, POST | `/api/v1/groups` | List with `Groups.View`; create with `Groups.Manage` |
 | GET, PATCH, DELETE | `/api/v1/groups/{id}` | Read with `Groups.View`; update/delete with `Groups.Manage` |
@@ -127,7 +130,7 @@ An enabled administrator bypasses these checks. `Users.Manage` does not permit s
 
 `GET /api/v1/dashboard` is read-only and returns capability-filtered server, monitoring, port, and (only with global `Audit.View`) recent audit summaries. It never reports hidden servers or performs port scans or mutations.
 
-`GET /api/v1/audit` is a read-only, global audit endpoint. It requires the global-only `Audit.View` permission (a server-scoped assignment does not grant access); administrators retain the normal bypass. It accepts bounded `limit` (default 100, maximum 500) and `offset`, plus `actor_user_id`, `action`, `resource_type`, `resource_id`, `server_id`, and `result` filters. Results are newest first (`timestamp DESC`, `id DESC`) and return `items`, `limit`, and `offset`. Each item contains its persisted actor/resource snapshots, result, direct remote IP, metadata, and sanitized error fields. Deleted resources remain visible through those snapshots. GameNode exposes no audit mutation, clear, or delete endpoint.
+`GET /api/v1/audit` is a read-only, global audit endpoint. It requires the global-only `Audit.View` permission (a server-scoped assignment does not grant access); administrators retain the normal bypass. It accepts bounded `limit` (default 100, maximum 500) and `offset`, plus `actor_user_id`, `action`, `resource_type`, `resource_id`, `server_id`, and `result` filters. The optional bounded `query` filter searches action, actor snapshot, resource type/name/IDs, server ID, and controlled error fields; SQL wildcard characters in user input are treated literally. Results are newest first (`timestamp DESC`, `id DESC`) and return `items`, `limit`, and `offset`. Each item uses lower-snake-case JSON fields such as `timestamp`, `actor_username`, and `resource_id`, and contains its persisted actor/resource snapshots, result, direct remote IP, controlled metadata, and sanitized error fields. Deleted resources remain visible through those snapshots. GameNode exposes no audit mutation, clear, or delete endpoint.
 # Templates API
 
 Templates are global node resources. `Templates.View` and `Templates.Manage` are independent and global-only.

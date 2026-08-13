@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -131,6 +132,24 @@ func (s *Server) recordAudit(r *http.Request, in auditInput) {
 	}
 	if err := s.audit.Record(r.Context(), event); err != nil {
 		s.log.With("module", "Audit.Record").Error("audit write failed", "error", err.Error(), "action", in.action)
+	}
+	attrs := []any{"module", "Action", "action", in.action, "resource_type", in.resourceType, "result", in.result}
+	if in.actor != nil {
+		attrs = append(attrs, "actor_user_id", in.actor.ID)
+	}
+	if in.serverID != nil {
+		attrs = append(attrs, "server_id", *in.serverID)
+	}
+	if in.resourceID != nil {
+		attrs = append(attrs, "resource_id", *in.resourceID)
+	}
+	if in.errorCode != "" {
+		attrs = append(attrs, "error_code", in.errorCode, "error_summary", in.errorSummary)
+	}
+	if in.result == audit.Success {
+		s.log.Info("application action completed", attrs...)
+	} else {
+		s.log.Warn("application action failed", attrs...)
 	}
 }
 
@@ -732,7 +751,61 @@ func internal(w http.ResponseWriter) {
 func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		s.log.Debug("http request", "method", r.Method, "path", strings.Split(r.URL.Path, "?")[0], "duration", time.Since(start).String())
+		tracked := &responseLogWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(tracked, r)
+		args := []any{"module", "HTTP", "method", r.Method, "path", strings.Split(r.URL.Path, "?")[0], "status", tracked.status, "response_bytes", tracked.bytes, "duration", time.Since(start).String()}
+		switch {
+		case tracked.status >= 500:
+			s.log.Error("http request failed", args...)
+		case tracked.status >= 400:
+			s.log.Warn("http request rejected", args...)
+		case strings.HasPrefix(r.URL.Path, "/api/"):
+			s.log.Info("http request completed", args...)
+		default:
+			s.log.Debug("http request completed", args...)
+		}
 	})
 }
+
+type responseLogWriter struct {
+	http.ResponseWriter
+	status      int
+	bytes       int64
+	wroteHeader bool
+}
+
+func (w *responseLogWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.status = status
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(status)
+}
+func (w *responseLogWriter) Write(data []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	n, err := w.ResponseWriter.Write(data)
+	w.bytes += int64(n)
+	return n, err
+}
+func (w *responseLogWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+func (w *responseLogWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+func (w *responseLogWriter) Push(target string, options *http.PushOptions) error {
+	if pusher, ok := w.ResponseWriter.(http.Pusher); ok {
+		return pusher.Push(target, options)
+	}
+	return http.ErrNotSupported
+}
+func (w *responseLogWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

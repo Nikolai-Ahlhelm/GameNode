@@ -50,6 +50,7 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	record, err := s.servers.Get(r.Context(), id)
 	if err != nil {
+		s.log.Error("console connection failed while loading server", "module", "Console.Connection", "server_id", id, "error", err)
 		serverError(w, err, false)
 		return
 	}
@@ -58,19 +59,24 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request, id string) {
 	upgrader.CheckOrigin = s.sameOrigin
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		s.log.Warn("console websocket upgrade failed", "module", "Console.Connection", "server_id", id, "user_id", u.ID, "error", err)
 		return
 	}
+	s.log.Info("console client connected", "module", "Console.Connection", "server_id", id, "user_id", u.ID)
+	defer s.log.Info("console client disconnected", "module", "Console.Connection", "server_id", id, "user_id", u.ID)
 	defer conn.Close()
 	conn.SetReadLimit(console.MaxInputBytes + 1024)
 	manager := s.servers.Console()
 	session, attached := manager.CurrentSession(id)
 	if !attached {
 		if manager.IsDetached(id) {
+			s.log.Info("console client received detached state", "module", "Console.Connection", "server_id", id, "user_id", u.ID)
 			writeConsole(conn, consoleMessage{Type: "console", State: "detached"})
 			return
 		}
 		session, attached = manager.LastClosedSession(id)
 		if !attached {
+			s.log.Info("console client received closed state", "module", "Console.Connection", "server_id", id, "user_id", u.ID)
 			writeConsole(conn, consoleMessage{Type: "console", State: "closed"})
 			return
 		}
@@ -87,6 +93,7 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request, id string) {
 		for {
 			var in consoleClientMessage
 			if err := conn.ReadJSON(&in); err != nil {
+				s.log.Debug("console websocket read ended", "module", "Console.Connection", "server_id", id, "user_id", u.ID, "error", err)
 				return
 			}
 			if in.Type != "input" || in.Data == "" {
@@ -98,6 +105,7 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request, id string) {
 			}
 			canSend, err := s.allowed(r.Context(), u, "Console.Send", rbac.Scope{Type: "server", ID: &id})
 			if err != nil || !canSend {
+				s.log.Warn("console input rejected", "module", "Console.Input", "server_id", id, "user_id", u.ID, "bytes", len([]byte(in.Data)), "error", err)
 				s.recordConsoleInputAudit(r, u, id, audit.Failure, len([]byte(in.Data)), "permission_denied", "console input permission denied")
 				select {
 				case errors <- consoleMessage{Type: "error", State: "permission_denied"}:
@@ -106,6 +114,7 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request, id string) {
 				continue
 			}
 			if err := session.Input(in.Data); err != nil {
+				s.log.Error("console input delivery failed", "module", "Console.Input", "server_id", id, "user_id", u.ID, "bytes", len([]byte(in.Data)), "error", err)
 				s.recordConsoleInputAudit(r, u, id, audit.Failure, len([]byte(in.Data)), "input_unavailable", "console input is unavailable")
 				select {
 				case errors <- consoleMessage{Type: "error", State: "input_unavailable"}:
@@ -114,6 +123,7 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request, id string) {
 				continue
 			}
 			s.recordConsoleInputAudit(r, u, id, audit.Success, len([]byte(in.Data)), "", "")
+			s.log.Info("console input delivered", "module", "Console.Input", "server_id", id, "user_id", u.ID, "bytes", len([]byte(in.Data)))
 		}
 	}()
 	for {

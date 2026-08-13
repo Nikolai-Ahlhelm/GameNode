@@ -4,6 +4,8 @@ package monitoring
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -71,6 +73,7 @@ type tracked struct {
 	samples          []Sample
 	metricsAvailable bool
 	active           bool
+	metricsFailed    bool
 }
 type Service struct {
 	runtime  runtime.Runtime
@@ -78,6 +81,7 @@ type Service struct {
 	limit    int
 	mu       sync.RWMutex
 	tracked  map[string]*tracked
+	log      *slog.Logger
 }
 
 func New(r runtime.Runtime, options Options) *Service {
@@ -87,9 +91,18 @@ func New(r runtime.Runtime, options Options) *Service {
 	if options.HistoryLimit <= 0 {
 		options.HistoryLimit = 300
 	}
-	s := &Service{runtime: r, interval: options.Interval, limit: options.HistoryLimit, tracked: make(map[string]*tracked)}
+	s := &Service{runtime: r, interval: options.Interval, limit: options.HistoryLimit, tracked: make(map[string]*tracked), log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	go s.loop()
 	return s
+}
+
+// SetLogger enables background sampler diagnostics without changing sampling behavior.
+func (s *Service) SetLogger(log *slog.Logger) {
+	if log != nil {
+		s.mu.Lock()
+		s.log = log
+		s.mu.Unlock()
+	}
 }
 func (s *Service) loop() {
 	ticker := time.NewTicker(s.interval)
@@ -111,6 +124,7 @@ func (s *Service) ObserveRunning(server string, identity runtime.Identity, detac
 			samples = current.samples
 		}
 		s.tracked[server] = &tracked{identity: identity, detached: detached, samples: samples, active: true}
+		s.log.Info("process monitoring started", "module", "Monitoring", "server_id", server, "pid", identity.PID, "detached", detached)
 		return
 	}
 	current.detached = detached
@@ -121,6 +135,7 @@ func (s *Service) ObserveExit(server string, identity runtime.Identity) {
 	defer s.mu.Unlock()
 	if current, ok := s.tracked[server]; ok && current.identity == identity {
 		current.active = false
+		s.log.Info("process monitoring stopped", "module", "Monitoring", "server_id", server, "pid", identity.PID)
 	}
 }
 
@@ -149,7 +164,15 @@ func (s *Service) sampleOne(ctx context.Context, server string, identity runtime
 	} // stale sample cannot affect a newer process
 	if err != nil {
 		item.metricsAvailable = false
+		if !item.metricsFailed {
+			item.metricsFailed = true
+			s.log.Warn("process metrics sampling failed", "module", "Monitoring", "server_id", server, "pid", identity.PID, "error", err)
+		}
 		return
+	}
+	if item.metricsFailed {
+		s.log.Info("process metrics sampling recovered", "module", "Monitoring", "server_id", server, "pid", identity.PID)
+		item.metricsFailed = false
 	}
 	cpu := 0.0
 	if !item.previousAt.IsZero() {

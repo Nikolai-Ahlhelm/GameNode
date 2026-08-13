@@ -3,6 +3,7 @@ package database_test
 import (
 	"database/sql"
 	"io/fs"
+	"path/filepath"
 	"testing"
 
 	"gamenode"
@@ -52,6 +53,38 @@ func TestMigrateFreshAndFromPreIdentityState(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBackupIfMigrationPending(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gamenode.db")
+	db, err := database.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	applyMigration(t, db, "001_initial.sql")
+	backup, pending, err := database.BackupIfMigrationPending(db, path, gamenode.MigrationFiles)
+	if err != nil || !pending || backup == "" {
+		t.Fatalf("backup = %q, pending = %v, err = %v", backup, pending, err)
+	}
+	backupDB, err := database.Open(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backupDB.Close()
+	var count int
+	if err = backupDB.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("backup migration count = %d, %v", count, err)
+	}
+	if _, pending, err = database.BackupIfMigrationPending(db, path, gamenode.MigrationFiles); err != nil || !pending {
+		t.Fatalf("pending after backup = %v, %v", pending, err)
+	}
+	if err = database.Migrate(db, gamenode.MigrationFiles); err != nil {
+		t.Fatal(err)
+	}
+	if backup, pending, err = database.BackupIfMigrationPending(db, path, gamenode.MigrationFiles); err != nil || pending || backup != "" {
+		t.Fatalf("unexpected backup after migration: %q, %v, %v", backup, pending, err)
 	}
 }
 
