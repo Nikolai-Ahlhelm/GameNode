@@ -24,7 +24,7 @@ var (
 	ErrDuplicateGroup    = errors.New("a group with this name already exists")
 )
 
-var groupIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+var groupIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_. -]*$`)
 
 type User struct {
 	ID          string     `json:"id"`
@@ -81,11 +81,16 @@ type UpdateGroupInput struct {
 }
 
 type Service struct {
-	db  *sql.DB
-	now func() time.Time
+	db             *sql.DB
+	now            func() time.Time
+	passwordPolicy auth.PasswordPolicyProvider
 }
 
 func New(db *sql.DB) *Service { return &Service{db: db, now: time.Now} }
+
+func (s *Service) SetPasswordPolicyProvider(provider auth.PasswordPolicyProvider) {
+	s.passwordPolicy = provider
+}
 
 // NormalizeUsername accepts ASCII identifiers only. This deliberately rejects
 // Unicode rather than pretending SQLite NOCASE provides Unicode normalization.
@@ -99,7 +104,7 @@ func NormalizeGroupName(value string) (string, error) {
 func normalizeIdentifier(value string, min, max int, label string) (string, error) {
 	value = strings.TrimSpace(value)
 	if len(value) < min || len(value) > max || !groupIdentifier.MatchString(value) {
-		return "", fmt.Errorf("%s must be %d to %d ASCII letters, digits, dots, hyphens, or underscores", label, min, max)
+		return "", fmt.Errorf("%s must be %d to %d ASCII letters, digits, spaces, dots, hyphens, or underscores", label, min, max)
 	}
 	return value, nil
 }
@@ -117,9 +122,17 @@ func normalizeDisplayName(value string) (string, error) {
 	}
 	return value, nil
 }
-func validatePassword(value string) error {
-	if len(value) < 12 || len(value) > 256 {
-		return errors.New("password must be 12 to 256 characters")
+func (s *Service) validatePassword(ctx context.Context, value string) error {
+	minimum, maximum := 8, 256
+	if s.passwordPolicy != nil {
+		var err error
+		minimum, maximum, err = s.passwordPolicy.PasswordPolicy(ctx)
+		if err != nil {
+			return fmt.Errorf("load password policy: %w", err)
+		}
+	}
+	if len(value) < minimum || len(value) > maximum {
+		return fmt.Errorf("password must be %d to %d characters", minimum, maximum)
 	}
 	return nil
 }
@@ -174,7 +187,7 @@ func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (User, err
 	if err != nil {
 		return User{}, err
 	}
-	if err = validatePassword(in.Password); err != nil {
+	if err = s.validatePassword(ctx, in.Password); err != nil {
 		return User{}, err
 	}
 	hash, err := auth.HashPassword(in.Password)
@@ -231,7 +244,7 @@ func (s *Service) UpdateUser(ctx context.Context, actorID, id string, in UpdateU
 	return s.GetUser(ctx, id)
 }
 func (s *Service) ResetPassword(ctx context.Context, id, password string) error {
-	if err := validatePassword(password); err != nil {
+	if err := s.validatePassword(ctx, password); err != nil {
 		return err
 	}
 	hash, err := auth.HashPassword(password)

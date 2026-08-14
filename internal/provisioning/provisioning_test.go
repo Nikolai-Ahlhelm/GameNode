@@ -3,10 +3,12 @@ package provisioning
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -105,6 +107,27 @@ func (portConflictCreator) CreateProvisioned(context.Context, servers.Server, st
 	return servers.Record{}, servers.ErrProvisionedPortConflict
 }
 
+type blockingCreator struct {
+	calls   atomic.Int32
+	started chan struct{}
+	release chan struct{}
+	next    ServerCreator
+}
+
+func (c *blockingCreator) CreateProvisioned(ctx context.Context, server servers.Server, templateID string, variables []servers.ProvisionedVariable, serverPorts []ports.Port, adapters []servers.ProvisionedConfigAdapter) (servers.Record, error) {
+	c.calls.Add(1)
+	select {
+	case c.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-c.release:
+	case <-ctx.Done():
+		return servers.Record{}, ctx.Err()
+	}
+	return c.next.CreateProvisioned(ctx, server, templateID, variables, serverPorts, adapters)
+}
+
 func provisionFixture(t *testing.T) (*sql.DB, string, templates.Template) {
 	t.Helper()
 	db, err := database.Open(":memory:")
@@ -157,6 +180,15 @@ func TestProvisioningSuccessCreatesNormalServerAfterInstall(t *testing.T) {
 	}
 	if installer.plan.AppID != 294420 || installer.plan.BetaBranch != "latest_experimental" {
 		t.Fatalf("plan=%#v", installer.plan)
+	}
+	wantPhases := []string{Preparing, DownloadingSteamCMD, SteamCMDReady, Installing, SteamCMDCompleted, ValidatingInstallation, InstallationValidated, ResolvingLaunch, RegisteringServer, ServerRegistered, Completed}
+	if len(job.Events) != len(wantPhases) {
+		t.Fatalf("event phases=%#v", job.Events)
+	}
+	for index, phase := range wantPhases {
+		if job.Events[index].Phase != phase {
+			t.Fatalf("event %d phase=%q want=%q", index, job.Events[index].Phase, phase)
+		}
 	}
 	eventsMu.Lock()
 	defer eventsMu.Unlock()
@@ -276,22 +308,95 @@ func TestRetryRegistrationReusesSnapshotWithoutRunningInstaller(t *testing.T) {
 	defer db.Close()
 	installer := &fakeInstaller{createExecutable: true}
 	service := NewWithOptions(db, &templateSource{template: template}, installer, &failingCreator{}, data, Options{HostOS: "linux"})
-	defer service.Close()
 	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Seven", DirectoryName: "retry", ActorUserID: "actor"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	job = waitTerminal(t, service, job.ID)
-	service.servers = servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	service.Close()
+	service = NewWithOptions(db, &templateSource{template: template}, installer, servers.NewService(servers.NewStore(db), gameRuntime.NewNative()), data, Options{HostOS: "linux"})
+	defer service.Close()
+	if err = service.Initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	retried, err := service.RetryRegistration(context.Background(), job.ID, "actor")
 	if err != nil || retried.Status != Completed || retried.ServerID == "" {
 		t.Fatalf("retry=%#v err=%v", retried, err)
+	}
+	if retried.FailureCode != "" || retried.FailurePhase != "" || retried.RegistrationRecoverable {
+		t.Fatalf("retry retained failure state: %#v", retried)
 	}
 	if installer.calls.Load() != 1 {
 		t.Fatalf("retry invoked installer %d times", installer.calls.Load())
 	}
 	if _, err = service.RetryRegistration(context.Background(), job.ID, "actor"); !errors.Is(err, ErrRecoveryUnavailable) {
 		t.Fatalf("duplicate retry err=%v", err)
+	}
+}
+
+func TestConcurrentRetryRegistrationCreatesExactlyOneServer(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	installer := &fakeInstaller{createExecutable: true}
+	service := NewWithOptions(db, &templateSource{template: template}, installer, &failingCreator{}, data, Options{HostOS: "linux"})
+	defer service.Close()
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Seven", DirectoryName: "concurrent-retry", ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitTerminal(t, service, job.ID)
+	creator := &blockingCreator{started: make(chan struct{}, 1), release: make(chan struct{}), next: servers.NewService(servers.NewStore(db), gameRuntime.NewNative())}
+	service.servers = creator
+	result := make(chan error, 1)
+	go func() {
+		_, retryErr := service.RetryRegistration(context.Background(), job.ID, "actor")
+		result <- retryErr
+	}()
+	<-creator.started
+	if _, err = service.RetryRegistration(context.Background(), job.ID, "actor"); !errors.Is(err, ErrJobNotActive) {
+		t.Fatalf("concurrent retry error=%v", err)
+	}
+	close(creator.release)
+	if err = <-result; err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err = db.QueryRow(`SELECT COUNT(*) FROM servers`).Scan(&count); err != nil || count != 1 || creator.calls.Load() != 1 {
+		t.Fatalf("servers=%d creator calls=%d err=%v", count, creator.calls.Load(), err)
+	}
+}
+
+func TestRetryRegistrationAcceptsAlreadyCommittedServer(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	installer := &fakeInstaller{createExecutable: true}
+	service := NewWithOptions(db, &templateSource{template: template}, installer, &failingCreator{}, data, Options{HostOS: "linux"})
+	defer service.Close()
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Seven", DirectoryName: "committed-retry", ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitTerminal(t, service, job.ID)
+	snapshotJSON, err := service.store.RegistrationSnapshot(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot registrationSnapshot
+	if err = json.Unmarshal(snapshotJSON, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	creator := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	if _, err = creator.CreateProvisioned(context.Background(), snapshot.Server, snapshot.TemplateID, snapshot.Variables, snapshot.Ports, snapshot.ConfigAdapters); err != nil {
+		t.Fatal(err)
+	}
+	service.servers = creator
+	retried, err := service.RetryRegistration(context.Background(), job.ID, "actor")
+	if err != nil || retried.Status != Completed || retried.ServerID != snapshot.Server.ID {
+		t.Fatalf("retry=%#v err=%v", retried, err)
+	}
+	var count int
+	if err = db.QueryRow(`SELECT COUNT(*) FROM servers`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("servers=%d err=%v", count, err)
 	}
 }
 
@@ -323,6 +428,21 @@ func TestSteamCMDDiskSpaceOutputGetsStableFailureCode(t *testing.T) {
 	job = waitTerminal(t, service, job.ID)
 	if job.FailureCode != "STEAMCMD_INSUFFICIENT_DISK_SPACE" || job.ErrorSummary != "Not enough free disk space to install this server." {
 		t.Fatalf("disk fixture=%#v", job)
+	}
+}
+
+func TestSteamCMDProcessFailureDoesNotCompleteInstallation(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	service := NewWithOptions(db, &templateSource{template: template}, &fakeInstaller{err: steamcmd.ErrInstallFailed}, &failingCreator{}, data, Options{HostOS: "linux"})
+	defer service.Close()
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Seven", DirectoryName: "process-failure", ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitTerminal(t, service, job.ID)
+	if job.FailureCode != "STEAMCMD_PROCESS_FAILED" || job.InstallationCompleted {
+		t.Fatalf("process failure=%#v", job)
 	}
 }
 
@@ -419,18 +539,58 @@ func TestRestartMarksActiveJobsInterrupted(t *testing.T) {
 	defer db.Close()
 	store := NewStore(db)
 	now := time.Now().UTC()
-	job := Job{ID: "job", ActorUserID: "actor", TemplateID: "template", TemplateName: template.Name, ServerName: "Seven", DirectoryName: "seven", InstallerType: "steamcmd", AppID: 294420, Status: Installing, Summary: "Installing", CreatedAt: now, UpdatedAt: now}
-	if err := store.Create(context.Background(), job); err != nil {
-		t.Fatal(err)
+	for _, fixture := range []struct {
+		phase       string
+		installed   bool
+		snapshot    bool
+		recoverable bool
+	}{
+		{Installing, false, false, false},
+		{ValidatingInstallation, true, false, false},
+		{RegisteringServer, true, true, true},
+		{ServerRegistered, true, true, true},
+	} {
+		job := Job{ID: "job-" + fixture.phase, ActorUserID: "actor", TemplateID: "template", TemplateName: template.Name, ServerName: "Seven", DirectoryName: "seven-" + fixture.phase, InstallerType: "steamcmd", AppID: 294420, Status: fixture.phase, CurrentPhase: fixture.phase, Summary: "Active", InstallationCompleted: fixture.installed, CreatedAt: now, UpdatedAt: now}
+		if err := store.Create(context.Background(), job); err != nil {
+			t.Fatal(err)
+		}
+		if fixture.snapshot {
+			if err := store.SaveRegistrationSnapshot(context.Background(), job.ID, []byte(`{"server":{"id":"server"},"template_id":"template"}`)); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	service := NewWithOptions(db, &templateSource{template: template}, &fakeInstaller{}, &failingCreator{}, data, Options{HostOS: "linux"})
 	defer service.Close()
 	if err := service.Initialize(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	job, err := service.Get(context.Background(), "job")
-	if err != nil || job.Status != Failed || !job.FilesMayRemain {
-		t.Fatalf("job=%#v err=%v", job, err)
+	for _, fixture := range []struct {
+		phase       string
+		recoverable bool
+	}{{Installing, false}, {ValidatingInstallation, false}, {RegisteringServer, true}, {ServerRegistered, true}} {
+		job, err := service.Get(context.Background(), "job-"+fixture.phase)
+		if err != nil || job.Status != Failed || job.CurrentPhase != Failed || !job.FilesMayRemain || job.RegistrationRecoverable != fixture.recoverable {
+			t.Fatalf("phase=%s job=%#v err=%v", fixture.phase, job, err)
+		}
+	}
+}
+
+func TestProvisioningEventHistoryIsBoundedAndOrdered(t *testing.T) {
+	db, _, _ := provisionFixture(t)
+	defer db.Close()
+	store := NewStore(db)
+	now := time.Now().UTC()
+	job := Job{ID: "events", ActorUserID: "actor", TemplateID: "template", TemplateName: "Template", ServerName: "Server", DirectoryName: "events", InstallerType: "steamcmd", Status: Pending, CurrentPhase: Pending, Summary: "Queued", CreatedAt: now, UpdatedAt: now}
+	if err := store.Create(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 250; index++ {
+		store.Event(context.Background(), job.ID, Installing, "EVENT", strconv.Itoa(index), now.Add(time.Duration(index)*time.Millisecond))
+	}
+	events, err := store.Events(context.Background(), job.ID)
+	if err != nil || len(events) != 200 || events[0].Summary != "0" || events[199].Summary != "199" {
+		t.Fatalf("events=%d first=%#v last=%#v err=%v", len(events), events[0], events[len(events)-1], err)
 	}
 }
 

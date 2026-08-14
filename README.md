@@ -12,8 +12,9 @@ The current implementation covers the foundation, native runtime, live console, 
 - Browse and manage files under each server's configured working directory: list, open, edit, create, upload, download, rename/move, and delete.
 - Edit bounded UTF-8 text files in Monaco; `txt`, `json`, `yaml`, `yml`, `xml`, `ini`, `cfg`, and `properties` are supported editor formats.
 - Assign allow-only roles to local users and groups at global or server scope.
+- Build scope-neutral roles from the authoritative permission catalog; the UI identifies server-assignable roles and explains global-only or mixed-role incompatibilities.
 - Monitor server process health and history, configure bounded auto-restart policies, and register TCP/UDP ports for collision checks before start.
-- Inspect append-only audit records, safe diagnostics, typed monitoring settings, and a bounded sanitized support bundle.
+- Configure the instance name, subtitle, local PNG/ICO favicon, monitoring, logging, and password policy from typed settings. New passwords default to 8–256 characters, with administrator-configurable bounds.
 - Analyze and persist Pelican/Pterodactyl Eggs as normalized GameNode templates with compatibility reports and native SteamCMD/launch plans.
 - Provision supported templates asynchronously through a managed SteamCMD installation, then create an ordinary native GameNode server.
 - Adopt an existing Minecraft NeoForge installation through the Official read-only template and a conservative launcher resolver.

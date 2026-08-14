@@ -72,8 +72,14 @@ func TestLoggingLevelPersistence(t *testing.T) {
 	defer closeDB()
 	level := "debug"
 	updated, changed, err := s.Update(context.Background(), settings.Patch{Logging: &settings.LoggingPatch{Level: &level}})
-	if err != nil { t.Fatal(err) }
-	if updated.Logging.Level != "debug" || len(changed) != 1 || changed[0] != "logging.level" { t.Fatalf("unexpected logging update: %+v %#v", updated, changed) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Logging.Level != "debug" || len(changed) != 1 || changed[0] != "logging.level" {
+		t.Fatalf("unexpected logging update: %+v %#v", updated, changed)
+	}
 	invalid := "trace"
-	if _, _, err := s.Update(context.Background(), settings.Patch{Logging: &settings.LoggingPatch{Level: &invalid}}); err == nil { t.Fatal("expected validation failure") }
+	if _, _, err := s.Update(context.Background(), settings.Patch{Logging: &settings.LoggingPatch{Level: &invalid}}); err == nil {
+		t.Fatal("expected validation failure")
+	}
 }

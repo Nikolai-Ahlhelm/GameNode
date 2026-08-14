@@ -285,8 +285,8 @@ func TestAutoRestartOnlySchedulesUnexpectedCrash(t *testing.T) {
 		t.Fatalf("intentional stop caused restart: %d", starts)
 	}
 }
-func TestDeleteRejectsRunningServer(t *testing.T) {
-	service, _, _, db := testService(t)
+func TestDeleteTerminatesRunningServerAndPreservesWorkingDirectory(t *testing.T) {
+	service, runtime, _, db := testService(t)
 	defer db.Close()
 	record, err := service.Create(context.Background(), testServer(t))
 	if err != nil {
@@ -295,8 +295,50 @@ func TestDeleteRejectsRunningServer(t *testing.T) {
 	if _, err = service.Start(context.Background(), record.Server.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err = service.Delete(context.Background(), record.Server.ID); err == nil {
-		t.Fatal("running server was deleted")
+	if err = service.Delete(context.Background(), record.Server.ID); err != nil {
+		t.Fatal(err)
+	}
+	runtime.mu.Lock()
+	kills := runtime.kills
+	runtime.mu.Unlock()
+	if kills != 1 {
+		t.Fatalf("delete kills = %d, want 1", kills)
+	}
+	if _, err = service.Get(context.Background(), record.Server.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("deleted server lookup error = %v, want sql.ErrNoRows", err)
+	}
+	if info, statErr := os.Stat(record.Server.WorkingDirectory); statErr != nil || !info.IsDir() {
+		t.Fatalf("working directory was removed: info=%v err=%v", info, statErr)
+	}
+}
+
+func TestDeleteBlocksConcurrentStart(t *testing.T) {
+	service, fake, _, db := testService(t)
+	defer db.Close()
+	record, err := service.Create(context.Background(), testServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Start(context.Background(), record.Server.ID); err != nil {
+		t.Fatal(err)
+	}
+	killStarted := make(chan struct{})
+	releaseKill := make(chan struct{})
+	fake.kill = func() error {
+		close(killStarted)
+		<-releaseKill
+		fake.exit(runtime.ExitResult{ExitCode: 1})
+		return nil
+	}
+	deleted := make(chan error, 1)
+	go func() { deleted <- service.Delete(context.Background(), record.Server.ID) }()
+	<-killStarted
+	if _, err = service.Start(context.Background(), record.Server.ID); err == nil || !strings.Contains(err.Error(), "deletion is in progress") {
+		t.Fatalf("concurrent start error = %v", err)
+	}
+	close(releaseKill)
+	if err = <-deleted; err != nil {
+		t.Fatal(err)
 	}
 }
 

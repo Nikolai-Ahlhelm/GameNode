@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import './settings.css';
-import { SettingsForm, SettingsResponse, settingsForm, settingsPatch, validHistoryLimit, validSampleInterval } from './settings-helpers';
+import { SettingsForm, SettingsResponse, settingsForm, settingsPatch, validBranding, validHistoryLimit, validPasswordLengths, validSampleInterval } from './settings-helpers';
+import { applyBranding } from './branding';
 import { supportFilename } from './support-helpers';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -14,7 +15,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function SettingsPage({ token, canManage, canReadLog, canFlushLog }: { token: string; canManage: boolean; canReadLog: boolean; canFlushLog: boolean }) {
   const [current, setCurrent] = useState<SettingsResponse>();
-  const [form, setForm] = useState<SettingsForm>({ sampleInterval: '', historyLimit: '', logLevel: 'info' });
+  const [form, setForm] = useState<SettingsForm>({ sampleInterval: '', historyLimit: '', logLevel: 'info', passwordMinimumLength: '', passwordMaximumLength: '', brandingName: '', brandingSubtitle: '' });
+	const [favicon, setFavicon] = useState<File>(); const [faviconBusy, setFaviconBusy] = useState(false); const [faviconInputKey, setFaviconInputKey] = useState(0);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(true);
@@ -24,20 +26,35 @@ export function SettingsPage({ token, canManage, canReadLog, canFlushLog }: { to
   };
   useEffect(load, []);
   const patch = current ? settingsPatch(current, form) : undefined;
-  const valid = validSampleInterval(form.sampleInterval) && validHistoryLimit(form.historyLimit);
+  const passwordLengthsValid = validPasswordLengths(form.passwordMinimumLength, form.passwordMaximumLength);
+  const brandingValid = validBranding(form.brandingName, form.brandingSubtitle);
+  const valid = validSampleInterval(form.sampleInterval) && validHistoryLimit(form.historyLimit) && passwordLengthsValid && brandingValid;
   async function save(event: FormEvent) {
     event.preventDefault();
     if (!patch || !valid) return;
     setError(''); setNotice('');
     try {
       const value = await request<SettingsResponse>('/settings', { method: 'PATCH', headers: { 'X-CSRF-Token': token }, body: JSON.stringify(patch) });
-      setCurrent(value); setForm(settingsForm(value)); setNotice('Settings saved. Restart GameNode for changes to take effect.');
+      setCurrent(value); setForm(settingsForm(value)); applyBranding(value.branding, true); window.dispatchEvent(new CustomEvent('gamenode:branding', { detail: value.branding })); setNotice(patch.monitoring ? 'Settings saved. Restart GameNode to apply monitoring changes.' : 'Settings saved and applied immediately.');
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Request failed'); }
   }
+	async function updateFavicon(remove = false) {
+		if (!remove && !favicon) return; setFaviconBusy(true); setError(''); setNotice('');
+		try { const response = await fetch('/api/v1/settings/favicon', { method: remove ? 'DELETE' : 'PUT', credentials: 'same-origin', headers: { 'X-CSRF-Token': token }, body: remove ? undefined : favicon }); if (!response.ok) { const body = await response.json().catch(() => null); throw new Error(body?.error?.message ?? 'Favicon update failed'); } const value = await response.json() as SettingsResponse; setCurrent(value); setForm(settingsForm(value)); setFavicon(undefined); setFaviconInputKey(key => key + 1); applyBranding(value.branding, true); window.dispatchEvent(new CustomEvent('gamenode:branding', { detail: value.branding })); setNotice(remove ? 'Custom favicon removed.' : 'Custom favicon saved.'); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Favicon update failed'); } finally { setFaviconBusy(false); }
+	}
   if (loading) return <section><h1>Settings</h1><p className="muted">Loading settings…</p></section>;
   if (!current) return <section><h1>Settings</h1><section className="panel"><p className="error">{error || 'Settings are unavailable.'}</p><button className="quiet" onClick={load}>Retry</button></section></section>;
   const field = (label: string, description: string, value: string, update: (next: string) => void, min: number, max: number, unit: string, validValue: boolean) => <label className="settings-field">{label}<span className="hint">{description}</span><div className="settings-number"><input id={label.toLowerCase().replaceAll(' ', '-')} type="number" min={min} max={max} step="1" value={value} onChange={event => update(event.target.value)} disabled={!canManage} aria-invalid={!validValue} /><span>{unit}</span></div>{!validValue && <span className="error">Enter a whole number from {min} to {max}.</span>}</label>;
-  return <section className="settings-page"><div className="row"><div><h1>Settings</h1><p className="muted">Configure GameNode platform settings.</p></div></div><section className="panel settings-panel"><div className="row"><div><h2>Monitoring</h2><p className="muted">Configure bounded in-memory monitoring collection for each server.</p></div>{current.restart_required && <span className="status starting">Restart required</span>}</div><div className="settings-restart" role="note">Monitoring changes are saved immediately but take effect after the GameNode process is restarted.</div><form onSubmit={save} className="settings-form">{field('Sample interval', 'How often GameNode samples server monitoring data.', form.sampleInterval, sampleInterval => { setForm({ ...form, sampleInterval }); setNotice(''); }, 1, 300, 'seconds', validSampleInterval(form.sampleInterval))}{field('History limit', 'Maximum number of in-memory monitoring samples retained per server.', form.historyLimit, historyLimit => { setForm({ ...form, historyLimit }); setNotice(''); }, 1, 10000, 'samples', validHistoryLimit(form.historyLimit))}<label className="settings-field">Log level<span className="hint">Controls which entries are saved to data/log and shown in the application console. This applies immediately.</span><select value={form.logLevel} onChange={event=>{setForm({...form,logLevel:event.target.value as SettingsForm['logLevel']});setNotice('')}} disabled={!canManage}><option value="debug">Debug</option><option value="info">Info</option><option value="warn">Warning</option><option value="error">Error</option></select></label>{error && <p className="error">{error}</p>}{notice && <p className="settings-success">{notice}</p>}{canManage && <div className="actions"><button type="submit" disabled={!patch || !valid}>Save changes</button></div>}</form></section>{canReadLog&&<ApplicationLog/>}{canFlushLog&&<LogMaintenance token={token}/>}<DiagnosticsInfo /><SupportInfo token={token} canManage={canManage}/></section>;
+  return <section className="settings-page"><div className="row"><div><h1>Settings</h1><p className="muted">Configure this GameNode instance.</p></div></div><section className="panel settings-panel"><div className="row"><div><h2>Instance settings</h2><p className="muted">Configure branding, authentication, monitoring, and logging.</p></div>{current.restart_required && <span className="status starting">Restart required</span>}</div><div className="settings-restart" role="note">Monitoring changes take effect after a restart. Branding, password, and logging changes apply immediately.</div><form onSubmit={save} className="settings-form">
+    <h3>Branding</h3>
+    <label className="settings-field">Instance name<span className="hint">Shown in the sidebar and used as the browser title.</span><input value={form.brandingName} maxLength={64} disabled={!canManage} aria-invalid={!brandingValid} onChange={event => { setForm({ ...form, brandingName: event.target.value }); setNotice(''); }} /></label>
+    <label className="settings-field">Instance subtitle<span className="hint">Short description shown below the instance name.</span><input value={form.brandingSubtitle} maxLength={128} disabled={!canManage} aria-invalid={!brandingValid} onChange={event => { setForm({ ...form, brandingSubtitle: event.target.value }); setNotice(''); }} /></label>
+    <label className="settings-field settings-favicon">Custom favicon<span className="hint">PNG or ICO, up to 256 KiB. Stored locally; external favicon URLs are not used.</span><input key={faviconInputKey} type="file" accept="image/png,image/x-icon,.ico" disabled={!canManage || faviconBusy} onChange={event => setFavicon(event.target.files?.[0])} /><span className="actions"><button type="button" disabled={!favicon || faviconBusy} onClick={() => void updateFavicon()}>{faviconBusy ? 'Saving…' : 'Upload favicon'}</button>{current.branding.custom_favicon && <button type="button" className="quiet" disabled={faviconBusy} onClick={() => void updateFavicon(true)}>Remove custom favicon</button>}</span></label>
+    {!brandingValid && <p className="error">Instance name is required (maximum 64 characters); subtitle allows up to 128 characters.</p>}
+    <h3>Monitoring</h3>{field('Sample interval', 'How often GameNode samples server monitoring data.', form.sampleInterval, sampleInterval => { setForm({ ...form, sampleInterval }); setNotice(''); }, 1, 300, 'seconds', validSampleInterval(form.sampleInterval))}{field('History limit', 'Maximum number of in-memory monitoring samples retained per server.', form.historyLimit, historyLimit => { setForm({ ...form, historyLimit }); setNotice(''); }, 1, 10000, 'samples', validHistoryLimit(form.historyLimit))}
+    <h3>Password policy</h3>{field('Minimum password length', 'Required for new and reset local account passwords.', form.passwordMinimumLength, passwordMinimumLength => { setForm({ ...form, passwordMinimumLength }); setNotice(''); }, 8, 128, 'characters', passwordLengthsValid)}{field('Maximum password length', 'Upper bound for new and reset local account passwords.', form.passwordMaximumLength, passwordMaximumLength => { setForm({ ...form, passwordMaximumLength }); setNotice(''); }, 8, 256, 'characters', passwordLengthsValid)}{!passwordLengthsValid && <p className="error">The maximum password length must be at least the minimum length.</p>}
+    <h3>Logging</h3><label className="settings-field">Log level<span className="hint">Controls which entries are saved to data/log and shown in the application console. This applies immediately.</span><select value={form.logLevel} onChange={event=>{setForm({...form,logLevel:event.target.value as SettingsForm['logLevel']});setNotice('')}} disabled={!canManage}><option value="debug">Debug</option><option value="info">Info</option><option value="warn">Warning</option><option value="error">Error</option></select></label>{error && <p className="error">{error}</p>}{notice && <p className="settings-success">{notice}</p>}{canManage && <div className="actions"><button type="submit" disabled={!patch || !valid}>Save changes</button></div>}
+  </form></section>{canReadLog&&<ApplicationLog/>}{canFlushLog&&<LogMaintenance token={token}/>}<DiagnosticsInfo /><SupportInfo token={token} canManage={canManage}/></section>;
 }
 
 type ApplicationLogResponse={entries:{level:string;line:string}[];limit:number};

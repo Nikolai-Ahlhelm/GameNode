@@ -26,11 +26,20 @@ type User struct {
 	IsAdmin     bool   `json:"is_admin"`
 }
 type Service struct {
-	db  *sql.DB
-	now func() time.Time
+	db             *sql.DB
+	now            func() time.Time
+	passwordPolicy PasswordPolicyProvider
 }
 
 func New(db *sql.DB) *Service { return &Service{db: db, now: time.Now} }
+
+type PasswordPolicyProvider interface {
+	PasswordPolicy(context.Context) (int, int, error)
+}
+
+func (s *Service) SetPasswordPolicyProvider(provider PasswordPolicyProvider) {
+	s.passwordPolicy = provider
+}
 
 // Database is exposed to the local identity service, which shares the users
 // and sessions schema but owns administration workflows.
@@ -41,15 +50,23 @@ func (s *Service) SetupRequired(ctx context.Context) (bool, error) {
 	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE is_admin=1").Scan(&n)
 	return n == 0, err
 }
-func validate(username, email, password string) error {
+func (s *Service) validate(ctx context.Context, username, email, password string) error {
 	if _, err := NormalizeUsername(username); err != nil {
 		return err
 	}
 	if !strings.Contains(email, "@") || len(email) > 254 {
 		return errors.New("a valid email is required")
 	}
-	if len(password) < 12 || len(password) > 256 {
-		return errors.New("password must be 12 to 256 characters")
+	minimum, maximum := 8, 256
+	if s.passwordPolicy != nil {
+		var err error
+		minimum, maximum, err = s.passwordPolicy.PasswordPolicy(ctx)
+		if err != nil {
+			return fmt.Errorf("load password policy: %w", err)
+		}
+	}
+	if len(password) < minimum || len(password) > maximum {
+		return fmt.Errorf("password must be %d to %d characters", minimum, maximum)
 	}
 	return nil
 }
@@ -65,7 +82,7 @@ func NormalizeUsername(value string) (string, error) {
 	return value, nil
 }
 func (s *Service) CreateInitialAdmin(ctx context.Context, username, email, password string) (User, error) {
-	if err := validate(username, email, password); err != nil {
+	if err := s.validate(ctx, username, email, password); err != nil {
 		return User{}, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)

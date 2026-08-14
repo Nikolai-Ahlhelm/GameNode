@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -119,6 +121,105 @@ func TestSettingsReadWriteAndAudit(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Result != audit.Success || string(events[0].Metadata) != `{"changed_fields":["monitoring.sample_interval_seconds"]}` {
 		t.Fatalf("unexpected settings audit events: %#v", events)
+	}
+}
+
+func TestPasswordPolicyDefaultsAndAppliesImmediately(t *testing.T) {
+	h, _ := newTestServer(t)
+	status := httptest.NewRecorder()
+	h.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/v1/setup/status", nil))
+	if status.Code != http.StatusOK || !bytes.Contains(status.Body.Bytes(), []byte(`"password_minimum_length":8`)) || !bytes.Contains(status.Body.Bytes(), []byte(`"password_maximum_length":256`)) {
+		t.Fatalf("unexpected default password policy: %d %s", status.Code, status.Body.String())
+	}
+
+	setupResponse := httptest.NewRecorder()
+	h.ServeHTTP(setupResponse, httptest.NewRequest(http.MethodPost, "/api/v1/setup", bytes.NewBufferString(`{"username":"admin","email":"admin@example.test","password":"12345678"}`)))
+	if setupResponse.Code != http.StatusOK {
+		t.Fatalf("eight-character default password rejected: %d %s", setupResponse.Code, setupResponse.Body.String())
+	}
+	var session struct {
+		CSRF string `json:"csrf_token"`
+	}
+	if err := json.NewDecoder(setupResponse.Body).Decode(&session); err != nil {
+		t.Fatal(err)
+	}
+	cookie := setupResponse.Result().Cookies()[0]
+
+	patch := httptest.NewRequest(http.MethodPatch, "/api/v1/settings", bytes.NewBufferString(`{"security":{"password_minimum_length":10,"password_maximum_length":24}}`))
+	patch.AddCookie(cookie)
+	patch.Header.Set("X-CSRF-Token", session.CSRF)
+	patchResponse := httptest.NewRecorder()
+	h.ServeHTTP(patchResponse, patch)
+	if patchResponse.Code != http.StatusOK {
+		t.Fatalf("password policy patch: %d %s", patchResponse.Code, patchResponse.Body.String())
+	}
+
+	create := func(username, password string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/users", bytes.NewBufferString(fmt.Sprintf(`{"username":%q,"email":%q,"password":%q}`, username, username+"@example.test", password)))
+		request.AddCookie(cookie)
+		request.Header.Set("X-CSRF-Token", session.CSRF)
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, request)
+		return response
+	}
+	if response := create("short", "12345678"); response.Code != http.StatusBadRequest {
+		t.Fatalf("password below configured minimum accepted: %d %s", response.Code, response.Body.String())
+	}
+	if response := create("valid", "1234567890"); response.Code != http.StatusCreated {
+		t.Fatalf("password matching configured policy rejected: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestInstanceBrandingAndFavicon(t *testing.T) {
+	h, _ := newTestServer(t)
+	setupResponse := httptest.NewRecorder()
+	h.ServeHTTP(setupResponse, httptest.NewRequest(http.MethodPost, "/api/v1/setup", bytes.NewBufferString(`{"username":"admin","email":"admin@example.test","password":"12345678"}`)))
+	if setupResponse.Code != http.StatusOK {
+		t.Fatalf("setup: %d %s", setupResponse.Code, setupResponse.Body.String())
+	}
+	var session struct {
+		CSRF string `json:"csrf_token"`
+	}
+	if err := json.NewDecoder(setupResponse.Body).Decode(&session); err != nil {
+		t.Fatal(err)
+	}
+	cookie := setupResponse.Result().Cookies()[0]
+
+	patch := httptest.NewRequest(http.MethodPatch, "/api/v1/settings", bytes.NewBufferString(`{"branding":{"name":"EU Game Host","subtitle":"Frankfurt instance"}}`))
+	patch.AddCookie(cookie)
+	patch.Header.Set("X-CSRF-Token", session.CSRF)
+	patchResponse := httptest.NewRecorder()
+	h.ServeHTTP(patchResponse, patch)
+	if patchResponse.Code != http.StatusOK || !bytes.Contains(patchResponse.Body.Bytes(), []byte(`"name":"EU Game Host"`)) {
+		t.Fatalf("branding patch: %d %s", patchResponse.Code, patchResponse.Body.String())
+	}
+
+	pngData, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upload := httptest.NewRequest(http.MethodPut, "/api/v1/settings/favicon", bytes.NewReader(pngData))
+	upload.AddCookie(cookie)
+	upload.Header.Set("X-CSRF-Token", session.CSRF)
+	uploadResponse := httptest.NewRecorder()
+	h.ServeHTTP(uploadResponse, upload)
+	if uploadResponse.Code != http.StatusOK || !bytes.Contains(uploadResponse.Body.Bytes(), []byte(`"custom_favicon":true`)) {
+		t.Fatalf("favicon upload: %d %s", uploadResponse.Code, uploadResponse.Body.String())
+	}
+
+	faviconResponse := httptest.NewRecorder()
+	h.ServeHTTP(faviconResponse, httptest.NewRequest(http.MethodGet, "/api/v1/branding/favicon", nil))
+	if faviconResponse.Code != http.StatusOK || faviconResponse.Header().Get("Content-Type") != "image/png" || !bytes.Equal(faviconResponse.Body.Bytes(), pngData) {
+		t.Fatalf("favicon get: %d %s", faviconResponse.Code, faviconResponse.Header().Get("Content-Type"))
+	}
+
+	remove := httptest.NewRequest(http.MethodDelete, "/api/v1/settings/favicon", nil)
+	remove.AddCookie(cookie)
+	remove.Header.Set("X-CSRF-Token", session.CSRF)
+	removeResponse := httptest.NewRecorder()
+	h.ServeHTTP(removeResponse, remove)
+	if removeResponse.Code != http.StatusOK || !bytes.Contains(removeResponse.Body.Bytes(), []byte(`"custom_favicon":false`)) {
+		t.Fatalf("favicon delete: %d %s", removeResponse.Code, removeResponse.Body.String())
 	}
 }
 

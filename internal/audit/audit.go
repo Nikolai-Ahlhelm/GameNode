@@ -76,6 +76,7 @@ const (
 	TemplateImport          = "template.import"
 	TemplateDelete          = "template.delete"
 	ServerProvisionStart    = "server.provision_start"
+	ServerProvisionRetry    = "server.provision_retry"
 	ServerProvisionComplete = "server.provision_complete"
 	ServerProvisionFail     = "server.provision_fail"
 	ServerProvisionCancel   = "server.provision_cancel"

@@ -192,6 +192,7 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	if len(options) > 0 && options[0].Settings != nil {
 		settingService = options[0].Settings
 	}
+	a.SetPasswordPolicyProvider(settingService)
 	diagnosticService := diagnostics.New(a.Database(), settingService, diagnostics.MonitoringEffective{}, time.Now().UTC())
 	if len(options) > 0 && options[0].Diagnostics != nil {
 		diagnosticService = options[0].Diagnostics
@@ -216,7 +217,9 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	if len(options) > 0 {
 		logManager = options[0].Logs
 	}
-	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identity.New(a.Database()), rbac: rbac.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie}
+	identityService := identity.New(a.Database())
+	identityService.SetPasswordPolicyProvider(settingService)
+	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identityService, rbac: rbac.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie}
 	if len(options) > 0 {
 		result.trustLocalProxy = options[0].TrustLocalProxy
 		result.setupConfig = options[0].SetupConfig
@@ -246,6 +249,8 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/dashboard", s.dashboard)
 	mux.HandleFunc("/api/v1/audit", s.auditHandler)
 	mux.HandleFunc("/api/v1/settings", s.settingsHandler)
+	mux.HandleFunc("/api/v1/settings/favicon", s.settingsFaviconHandler)
+	mux.HandleFunc("/api/v1/branding/favicon", s.brandingFaviconHandler)
 	mux.HandleFunc("/api/v1/settings/logs", s.applicationLogsHandler)
 	mux.HandleFunc("/api/v1/settings/logs/clear", s.clearLogsHandler)
 	mux.HandleFunc("/api/v1/diagnostics", s.diagnosticsHandler)
@@ -285,7 +290,12 @@ func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request) {
 		internal(w)
 		return
 	}
-	response := map[string]any{"setup_required": required}
+	values, e := s.settings.Get(r.Context())
+	if e != nil {
+		internal(w)
+		return
+	}
+	response := map[string]any{"setup_required": required, "password_policy": values.Security, "branding": values.Branding}
 	if required && s.setupConfig != nil {
 		data, database := s.setupConfig.Storage()
 		response["storage"] = map[string]string{"data_directory": data, "database_path": database}
@@ -448,7 +458,12 @@ func (s *Server) setSessionAndRespond(ctx context.Context, w http.ResponseWriter
 		internal(w)
 		return
 	}
-	jsonOut(w, http.StatusOK, map[string]any{"user": u, "csrf_token": csrf, "capabilities": capabilities})
+	settingsValues, err := s.settings.Get(ctx)
+	if err != nil {
+		internal(w)
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"user": u, "csrf_token": csrf, "capabilities": capabilities, "password_policy": settingsValues.Security, "branding": settingsValues.Branding})
 }
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
@@ -464,7 +479,12 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		internal(w)
 		return
 	}
-	jsonOut(w, http.StatusOK, map[string]any{"user": u, "csrf_token": csrf, "capabilities": capabilities})
+	settingsValues, err := s.settings.Get(r.Context())
+	if err != nil {
+		internal(w)
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"user": u, "csrf_token": csrf, "capabilities": capabilities, "password_policy": settingsValues.Security, "branding": settingsValues.Branding})
 }
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {

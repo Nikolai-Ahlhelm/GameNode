@@ -110,6 +110,11 @@ func TestIdentityDuplicateErrorsAreControlled(t *testing.T) {
 	if _, err = s.CreateGroup(ctx, CreateGroupInput{Name: "OPERATORS"}); !errors.Is(err, ErrDuplicateGroup) {
 		t.Fatalf("duplicate group: %v", err)
 	}
+	if group, createErr := s.CreateGroup(ctx, CreateGroupInput{Name: "Minecraft Admins"}); createErr != nil {
+		t.Fatalf("create group with display name: %v", createErr)
+	} else if group.Name != "Minecraft Admins" {
+		t.Fatalf("group name = %q", group.Name)
+	}
 }
 
 func TestLastActiveAdminIsProtected(t *testing.T) {

@@ -267,6 +267,60 @@ func TestProvisioningCancelAndSanitizedFailure(t *testing.T) {
 	}
 }
 
+func TestRetryRegistrationRequiresCSRFIsIdempotentAndAudited(t *testing.T) {
+	fixture := newProvisionAPI(t, &apiInstaller{})
+	admin := createAdminSession(t, fixture.handler)
+	startPath := "/api/v1/templates/" + fixture.template.ID + "/provision"
+	response := templateRequest(fixture.handler, http.MethodPost, startPath, provisionBody(fixture.template, "Retry API", "retry-api", "RETRY_SECRET"), &admin, true)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("start=%d %s", response.Code, response.Body.String())
+	}
+	var started map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&started); err != nil {
+		t.Fatal(err)
+	}
+	jobID, _ := started["id"].(string)
+	completed := waitAPIJob(t, fixture, admin, jobID)
+	serverID, _ := completed["server_id"].(string)
+	if serverID == "" {
+		t.Fatalf("completed job=%#v", completed)
+	}
+	if _, err := fixture.db.Exec(`UPDATE provisioning_jobs SET status='failed',current_phase='failed',server_id=NULL,registration_recoverable=1,failure_phase='registering_server',failure_code='INTERRUPTED' WHERE id=?`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	retryPath := "/api/v1/provisioning/jobs/" + jobID + "/retry-registration"
+	if response = templateRequest(fixture.handler, http.MethodPost, retryPath, []byte(`{}`), &admin, false); response.Code != http.StatusForbidden {
+		t.Fatalf("retry without CSRF=%d %s", response.Code, response.Body.String())
+	}
+	response = templateRequest(fixture.handler, http.MethodPost, retryPath, []byte(`{}`), &admin, true)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"server_id":"`+serverID+`"`) {
+		t.Fatalf("retry=%d %s", response.Code, response.Body.String())
+	}
+	if response = templateRequest(fixture.handler, http.MethodPost, retryPath, []byte(`{}`), &admin, true); response.Code != http.StatusConflict {
+		t.Fatalf("duplicate retry=%d %s", response.Code, response.Body.String())
+	}
+	var serversCount, retrySuccess, retryFailure int
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM servers`).Scan(&serversCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE action='server.provision_retry' AND result='success'`).Scan(&retrySuccess); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE action='server.provision_retry' AND result='failure'`).Scan(&retryFailure); err != nil {
+		t.Fatal(err)
+	}
+	if serversCount != 1 || retrySuccess != 1 || retryFailure != 1 {
+		t.Fatalf("servers=%d retry success=%d failure=%d", serversCount, retrySuccess, retryFailure)
+	}
+	var auditText string
+	if err := fixture.db.QueryRow(`SELECT GROUP_CONCAT(COALESCE(metadata_json,'')||COALESCE(error_summary,''),'') FROM audit_log WHERE action='server.provision_retry'`).Scan(&auditText); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(auditText, "RETRY_SECRET") {
+		t.Fatalf("retry secret leaked to audit: %q", auditText)
+	}
+}
+
 func TestProvisioningAPIRejectsUnsafeInputsWithoutLeaks(t *testing.T) {
 	fixture := newProvisionAPI(t, &apiInstaller{})
 	admin := createAdminSession(t, fixture.handler)

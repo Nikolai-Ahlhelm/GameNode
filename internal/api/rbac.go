@@ -200,7 +200,15 @@ func rbacError(w http.ResponseWriter, e error) {
 		return
 	}
 	if errors.Is(e, rbac.ErrInvalidScope) {
-		bad(w, "global-only permissions cannot be assigned to a server")
+		bad(w, "Role contains permissions that cannot be assigned at server scope.")
+		return
+	}
+	if errors.Is(e, rbac.ErrEmptyServerRole) {
+		bad(w, "Role has no permissions and cannot be assigned at server scope.")
+		return
+	}
+	if errors.Is(e, rbac.ErrRoleHasServerAssignments) {
+		bad(w, "Remove the role's server assignments before making the role empty or adding global-only permissions.")
 		return
 	}
 	if errors.Is(e, rbac.ErrDuplicateAssignment) || strings.Contains(strings.ToLower(e.Error()), "constraint") {
@@ -254,7 +262,12 @@ func (s *Server) userRolesHandler(w http.ResponseWriter, r *http.Request, user s
 				metadata["server_id"] = *in.ScopeID
 			}
 			s.recordRoleAudit(r, actor, audit.RoleAssignmentAdd, audit.Success, in.RoleID, roleName, metadata, nil)
-			jsonOut(w, http.StatusCreated, map[string]any{"assignment": x[len(x)-1]})
+			assignment, found := matchingAssignment(x, in.RoleID, rbac.Scope{Type: in.ScopeType, ID: in.ScopeID})
+			if !found {
+				internal(w)
+				return
+			}
+			jsonOut(w, http.StatusCreated, map[string]any{"assignment": assignment})
 		default:
 			method(w)
 		}
@@ -334,7 +347,12 @@ func (s *Server) groupRolesHandler(w http.ResponseWriter, r *http.Request, group
 				metadata["server_id"] = *in.ScopeID
 			}
 			s.recordRoleAudit(r, actor, audit.RoleAssignmentAdd, audit.Success, in.RoleID, roleName, metadata, nil)
-			jsonOut(w, http.StatusCreated, map[string]any{"assignment": x[len(x)-1]})
+			assignment, found := matchingAssignment(x, in.RoleID, rbac.Scope{Type: in.ScopeType, ID: in.ScopeID})
+			if !found {
+				internal(w)
+				return
+			}
+			jsonOut(w, http.StatusCreated, map[string]any{"assignment": assignment})
 		default:
 			method(w)
 		}
@@ -368,4 +386,19 @@ func (s *Server) groupRolesHandler(w http.ResponseWriter, r *http.Request, group
 		return
 	}
 	method(w)
+}
+
+func matchingAssignment(assignments []rbac.Assignment, roleID string, scope rbac.Scope) (rbac.Assignment, bool) {
+	for _, assignment := range assignments {
+		if assignment.RoleID != roleID || assignment.Scope.Type != scope.Type {
+			continue
+		}
+		if scope.ID == nil && assignment.Scope.ID == nil {
+			return assignment, true
+		}
+		if scope.ID != nil && assignment.Scope.ID != nil && *scope.ID == *assignment.Scope.ID {
+			return assignment, true
+		}
+	}
+	return rbac.Assignment{}, false
 }

@@ -38,6 +38,7 @@ const (
 
 var (
 	environmentKey              = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	serverIDPattern             = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$`)
 	ErrProvisionedPortConflict  = errors.New("provisioned port conflicts with another server")
 	ErrInvalidProvisionedPort   = errors.New("invalid provisioned port")
 	ErrProvisionedPortsConflict = errors.New("provisioned ports conflict")
@@ -253,12 +254,16 @@ func (store *Store) CreateProvisioned(ctx context.Context, server Server, templa
 	if err := server.Validate(); err != nil {
 		return Record{}, err
 	}
-	id, err := newID()
-	if err != nil {
-		return Record{}, err
+	if server.ID == "" {
+		id, err := newID()
+		if err != nil {
+			return Record{}, err
+		}
+		server.ID = id
+	} else if !serverIDPattern.MatchString(server.ID) {
+		return Record{}, errors.New("invalid provisioned server id")
 	}
 	now := time.Now().UTC()
-	server.ID = id
 	server.CreatedAt = now
 	server.UpdatedAt = now
 	args, _ := json.Marshal(server.Arguments)
@@ -523,6 +528,7 @@ type Service struct {
 	locks        sync.Map
 	instances    sync.Map
 	restarts     sync.Map
+	deletions    sync.Map
 	autoRestarts sync.Map
 	autoAttempts sync.Map
 	autoMu       sync.Mutex
@@ -656,29 +662,91 @@ func (s *Service) Update(ctx context.Context, id string, server Server) (Record,
 }
 func (s *Service) Delete(ctx context.Context, id string) error {
 	s.log.Info("server deletion started", "module", "Server.Delete", "server_id", id)
+	if _, loaded := s.deletions.LoadOrStore(id, struct{}{}); loaded {
+		return errors.New("server deletion is already in progress")
+	}
+	defer s.deletions.Delete(id)
 	s.cancelAutoRestart(id)
+
+	// Deletion owns the lifecycle until the row is gone. If a native process is
+	// still associated with the server, terminate that exact PID/start identity
+	// and wait for its normal exactly-once finalizer before deleting the row.
+	// The working directory is intentionally not removed: adopted and custom
+	// servers can point at user-owned or shared data.
 	lock := s.lock(id)
 	lock.Lock()
-	defer lock.Unlock()
 	record, err := s.refresh(ctx, id)
 	if err != nil {
+		lock.Unlock()
 		s.log.Error("server deletion failed while loading state", "module", "Server.Delete", "server_id", id, "error", err)
 		return err
 	}
-	if record.Runtime.CurrentState == StateRunning || record.Runtime.CurrentState == StateStarting || record.Runtime.CurrentState == StateStopping {
-		err = errors.New("stop the server before deleting")
-		s.log.Warn("server deletion rejected by lifecycle state", "module", "Server.Delete", "server_id", id, "state", record.Runtime.CurrentState, "error", err)
-		return err
+	identity := runtime.Identity{PID: record.Runtime.PID, StartKey: record.Runtime.processStartKey}
+	instance, attached := s.instances.Load(id)
+	process, attached := instance.(*processInstance)
+	attached = attached && process.identity == identity
+	if identity.PID != 0 && identity.StartKey != "" {
+		record.Runtime.CurrentState = StateStopping
+		if err = s.store.SaveRuntime(ctx, id, record.Runtime); err != nil {
+			lock.Unlock()
+			return err
+		}
+		err = s.runtime.Kill(ctx, identity)
+		if err != nil && !errors.Is(err, runtime.ErrNotRunning) {
+			record.Runtime.CurrentState = StateUnknown
+			record.Runtime.LastError = "deletion could not terminate process"
+			_ = s.store.SaveRuntime(context.Background(), id, record.Runtime)
+			lock.Unlock()
+			s.log.Error("server deletion could not terminate native process", "module", "Server.Delete", "server_id", id, "pid", identity.PID, "error", err)
+			return fmt.Errorf("terminate server before deletion: %w", err)
+		}
+		lock.Unlock()
+
+		if attached {
+			if errors.Is(err, runtime.ErrNotRunning) {
+				s.finalizeInstance(process, runtime.ExitResult{ExitCode: 0})
+			}
+			select {
+			case <-process.done:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		} else {
+			// Rediscovered processes have no in-memory wait/finalizer. Kill has
+			// synchronously accepted termination for this verified identity, so
+			// clear its persisted runtime identity before removing the row.
+			lock.Lock()
+			record.Runtime.PID = 0
+			record.Runtime.processStartKey = ""
+			record.Runtime.ProcessStartAt = nil
+			record.Runtime.CurrentState = StateStopped
+			record.Runtime.ConsoleDetached = false
+			_ = s.store.SaveRuntime(context.Background(), id, record.Runtime)
+			s.monitoring.ObserveExit(id, identity)
+			lock.Unlock()
+		}
+
+		lock.Lock()
+		record, err = s.refresh(ctx, id)
+		if err != nil {
+			lock.Unlock()
+			return err
+		}
 	}
 	if err = s.store.Delete(ctx, id); err != nil {
+		lock.Unlock()
 		s.log.Error("server deletion failed", "module", "Server.Delete", "server_id", id, "error", err)
 		return err
 	}
+	lock.Unlock()
 	s.log.Info("server deleted", "module", "Server.Delete", "server_id", id)
 	return nil
 }
 func (s *Service) Start(ctx context.Context, id string) (Record, error) {
 	s.log.Info("server start requested", "module", "Server.Start", "server_id", id)
+	if _, deleting := s.deletions.Load(id); deleting {
+		return Record{}, errors.New("server deletion is in progress")
+	}
 	s.cancelAutoRestart(id)
 	// A Windows child can terminate while Cmd.Wait is still waiting for a
 	// descendant that inherited its console pipes. Do not let that delayed
@@ -713,6 +781,9 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 		operation = "restart start"
 	}
 	s.log.Info("server process start preparing", "module", "Server.Start", "server_id", id, "operation", operation)
+	if _, deleting := s.deletions.Load(id); deleting {
+		return Record{}, errors.New("server deletion is in progress")
+	}
 	if !restart {
 		if _, active := s.restarts.Load(id); active {
 			err := errors.New("server restart is in progress")
@@ -723,6 +794,9 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 	lock := s.lock(id)
 	lock.Lock()
 	defer lock.Unlock()
+	if _, deleting := s.deletions.Load(id); deleting {
+		return Record{}, errors.New("server deletion is in progress")
+	}
 	record, err := s.refresh(ctx, id)
 	if err != nil {
 		s.log.Error("server process start failed while loading state", "module", "Server.Start", "server_id", id, "error", err)

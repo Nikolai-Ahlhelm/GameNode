@@ -59,7 +59,7 @@ Memory values are bounded integers and `nogui` is boolean; there is no free-form
 
 # Native SteamCMD provisioning threat model
 
-Provisioning requires independent global `Templates.View` and `Server.Create` capabilities; neither `Templates.Manage` nor a server-scoped assignment implies them. Start and cancel are CSRF-protected mutations. Job reads/cancellation are limited to the initiating user except for the existing administrator bypass.
+Provisioning requires independent global `Templates.View` and `Server.Create` capabilities; neither `Templates.Manage` nor a server-scoped assignment implies them. Start, cancel, and registration retry are CSRF-protected mutations. Job reads, cancellation, and retry are limited to the initiating user except for the existing administrator bypass. Registration retry consumes only the bounded persisted normalized snapshot, is serialized per job, and never reruns SteamCMD.
 
 SteamCMD bootstrap uses only compile-time official Valve HTTPS URLs. The downloader applies a timeout, status checks, bounded redirects restricted to the same HTTPS host, and a 128 MiB archive cap. Extraction rejects absolute, drive, UNC, traversal, mixed-separator traversal, symlink/hardlink, special-file, excessive-entry, and excessive-expanded-size inputs. Bootstrap occurs in a sibling temporary directory and is atomically renamed while a manager mutex prevents competing installs.
 

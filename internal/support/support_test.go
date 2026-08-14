@@ -195,20 +195,29 @@ func TestSettingsExportIsWhitelisted(t *testing.T) {
 				SampleIntervalSeconds int `json:"sample_interval_seconds"`
 				HistoryLimit          int `json:"history_limit"`
 			} `json:"monitoring"`
+			Security struct {
+				PasswordMinimumLength int `json:"password_minimum_length"`
+				PasswordMaximumLength int `json:"password_maximum_length"`
+			} `json:"security"`
+			Branding struct {
+				Name          string `json:"name"`
+				Subtitle      string `json:"subtitle"`
+				CustomFavicon bool   `json:"custom_favicon"`
+			} `json:"branding"`
 			RestartRequired       bool     `json:"restart_required"`
 			RestartRequiredFields []string `json:"restart_required_fields"`
 		}
 		if err := json.Unmarshal(data.Bytes(), &value); err != nil {
 			t.Fatal(err)
 		}
-		if value.Monitoring.SampleIntervalSeconds != 5 || value.Monitoring.HistoryLimit != 300 || !value.RestartRequired {
+		if value.Monitoring.SampleIntervalSeconds != 5 || value.Monitoring.HistoryLimit != 300 || value.Security.PasswordMinimumLength != 8 || value.Security.PasswordMaximumLength != 256 || value.Branding.Name != "GameNode" || value.Branding.Subtitle != "Infrastructure manager" || !value.RestartRequired {
 			t.Fatalf("unexpected settings export: %+v", value)
 		}
 		var raw map[string]json.RawMessage
 		if err := json.Unmarshal(data.Bytes(), &raw); err != nil {
 			t.Fatal(err)
 		}
-		if len(raw) != 4 || raw["monitoring"] == nil || raw["logging"] == nil || raw["restart_required"] == nil || raw["restart_required_fields"] == nil {
+		if len(raw) != 6 || raw["monitoring"] == nil || raw["logging"] == nil || raw["security"] == nil || raw["branding"] == nil || raw["restart_required"] == nil || raw["restart_required_fields"] == nil {
 			t.Fatalf("unexpected settings fields: %v", raw)
 		}
 		return
@@ -261,7 +270,7 @@ func TestUnknownAppSettingIsExcluded(t *testing.T) {
 		if err := json.Unmarshal(data.Bytes(), &raw); err != nil {
 			t.Fatal(err)
 		}
-		if len(raw) != 4 || raw["monitoring"] == nil || raw["logging"] == nil || raw["restart_required"] == nil || raw["restart_required_fields"] == nil || strings.Contains(data.String(), secret) {
+		if len(raw) != 6 || raw["monitoring"] == nil || raw["logging"] == nil || raw["security"] == nil || raw["branding"] == nil || raw["restart_required"] == nil || raw["restart_required_fields"] == nil || strings.Contains(data.String(), secret) {
 			t.Fatal("unknown setting leaked into settings export")
 		}
 		return

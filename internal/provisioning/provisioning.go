@@ -190,8 +190,16 @@ func (s *Store) Get(ctx context.Context, id string) (Job, error) {
 }
 func (s *Store) InterruptActive(ctx context.Context) error {
 	now := stamp(time.Now().UTC())
-	_, err := s.db.ExecContext(ctx, `UPDATE provisioning_jobs SET status='failed',summary='Provisioning was interrupted by a GameNode restart',error_summary='GameNode restarted during provisioning; target files may remain',files_may_remain=1,failure_phase=current_phase,failure_code='INTERRUPTED',registration_recoverable=installation_completed,completed_at=?,updated_at=? WHERE status IN ('pending','preparing','downloading_steamcmd','steamcmd_ready','installing','creating_server')`, now, now)
+	_, err := s.db.ExecContext(ctx, `UPDATE provisioning_jobs SET status='failed',summary='Provisioning was interrupted by a GameNode restart',error_summary='GameNode restarted during provisioning; target files may remain',files_may_remain=1,failure_phase=current_phase,failure_code='INTERRUPTED',registration_recoverable=CASE WHEN installation_completed=1 AND registration_snapshot_json<>'' THEN 1 ELSE 0 END,current_phase='failed',completed_at=?,updated_at=? WHERE status IN ('pending','preparing','downloading_steamcmd','steamcmd_ready','installing','steamcmd_completed','validating_installation','installation_validated','resolving_launch','registering_server','server_registered','creating_server')`, now, now)
 	return err
+}
+
+func (s *Store) ServerExists(ctx context.Context, id string) (bool, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM servers WHERE id=?`, id).Scan(&count); err != nil {
+		return false, err
+	}
+	return count == 1, nil
 }
 
 type Service struct {
@@ -276,7 +284,9 @@ func (s *Service) Close() {
 	s.closed = true
 	s.cancel()
 	for _, current := range s.active {
-		current.cancel()
+		if current.cancel != nil {
+			current.cancel()
+		}
 	}
 	s.mu.Unlock()
 	s.wg.Wait()
@@ -536,6 +546,12 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 // RetryRegistration replays only the previously persisted, normalized server
 // registration. It never executes SteamCMD and is serialized per job ID.
 func (s *Service) RetryRegistration(ctx context.Context, id, actorID string) (Job, error) {
+	s.mu.Lock()
+	if _, active := s.active[id]; active {
+		s.mu.Unlock()
+		return Job{}, ErrJobNotActive
+	}
+	s.mu.Unlock()
 	job, err := s.store.Get(ctx, id)
 	if err != nil {
 		return Job{}, err
@@ -565,14 +581,48 @@ func (s *Service) RetryRegistration(ctx context.Context, id, actorID string) (Jo
 	s.mu.Unlock()
 	defer s.release(current)
 	s.log.Info("retrying persisted server registration", "module", "Provisioning.Retry", "job_id", id, "template_id", job.TemplateID, "phase", RegisteringServer)
+	s.reopenRegistration(current)
+	exists, err := s.store.ServerExists(ctx, snapshot.Server.ID)
+	if err != nil {
+		s.fail(current, RegisteringServer, "SERVER_DB_CREATE_FAILED", "Server registration failed", "GameNode could not verify the existing server definition", true)
+		return current.job, fmt.Errorf("%w: server verification failed", ErrRecoveryUnavailable)
+	}
+	if exists {
+		s.phase(current, ServerRegistered, "Server registration was already committed")
+		s.finish(current, Completed, "Server registered successfully", "", false, snapshot.Server.ID)
+		return s.store.Get(ctx, id)
+	}
 	record, err := s.servers.CreateProvisioned(ctx, snapshot.Server, snapshot.TemplateID, snapshot.Variables, snapshot.Ports, snapshot.ConfigAdapters)
 	if err != nil {
 		code, summary := serverCreationFailure(err)
 		s.log.Error("retry server registration failed", "module", "Provisioning.Retry", "job_id", id, "template_id", job.TemplateID, "phase", RegisteringServer, "error_code", code, "error", err.Error())
-		return job, fmt.Errorf("%w: %s", ErrRecoveryUnavailable, summary)
+		s.fail(current, RegisteringServer, code, "Server registration failed", summary, true)
+		return current.job, fmt.Errorf("%w: %s", ErrRecoveryUnavailable, summary)
 	}
+	s.phase(current, ServerRegistered, "Server registered successfully")
 	s.finish(current, Completed, "Server registered successfully", "", false, record.Server.ID)
 	return s.store.Get(ctx, id)
+}
+
+func (s *Service) reopenRegistration(current *run) {
+	s.mu.Lock()
+	now := s.now()
+	current.job.Status = RegisteringServer
+	current.job.CurrentPhase = RegisteringServer
+	current.job.LastSuccessfulPhase = RegisteringServer
+	current.job.FailurePhase = ""
+	current.job.FailureCode = ""
+	current.job.RegistrationRecoverable = false
+	current.job.Summary = "Retrying GameNode server registration"
+	current.job.ErrorSummary = ""
+	current.job.CompletedAt = nil
+	current.job.UpdatedAt = now
+	job := current.job
+	s.mu.Unlock()
+	if err := s.store.Update(context.Background(), job); err != nil {
+		s.log.Error("registration retry phase could not be persisted", "module", "Provisioning.Retry", "job_id", job.ID, "error", err)
+	}
+	s.store.Event(context.Background(), job.ID, RegisteringServer, "REGISTRATION_RETRY", job.Summary, now)
 }
 
 func serverCreationFailure(err error) (string, string) {
@@ -669,7 +719,11 @@ func (s *Service) finish(current *run, status, summary, errorSummary string, fil
 		if status == Cancelled {
 			code = "JOB_CANCELLED"
 		}
-		s.store.Event(context.Background(), job.ID, job.FailurePhase, code, summary, now)
+		eventPhase := job.FailurePhase
+		if eventPhase == "" {
+			eventPhase = status
+		}
+		s.store.Event(context.Background(), job.ID, eventPhase, code, summary, now)
 		if observer != nil {
 			action := map[string]string{Completed: "server.provision_complete", Failed: "server.provision_fail", Cancelled: "server.provision_cancel"}[status]
 			observer(Event{action, job, now.Sub(job.CreatedAt)})
@@ -801,7 +855,11 @@ func buildServer(template templates.Template, launch templates.LaunchDefinition,
 	if stopTimeout == 0 {
 		stopTimeout = 15
 	}
-	server := servers.Server{CreationMode: servers.CreationTemplate, Name: name, Description: template.Description, WorkingDirectory: workingDirectory, Executable: resolvedExecutable, Arguments: arguments, EnvironmentVariables: environment, RuntimeType: "native", RestartPolicy: "never", StopMethod: stopMethod, StopCommand: launch.StopCommand, StopTimeoutSeconds: stopTimeout, AutoRestartMaxAttempts: 3, AutoRestartWindowSeconds: 300, AutoRestartDelaySeconds: 5}
+	serverID, err := newServerID()
+	if err != nil {
+		return servers.Server{}, nil, errors.New("server identity could not be created")
+	}
+	server := servers.Server{ID: serverID, CreationMode: servers.CreationTemplate, Name: name, Description: template.Description, WorkingDirectory: workingDirectory, Executable: resolvedExecutable, Arguments: arguments, EnvironmentVariables: environment, RuntimeType: "native", RestartPolicy: "never", StopMethod: stopMethod, StopCommand: launch.StopCommand, StopTimeoutSeconds: stopTimeout, AutoRestartMaxAttempts: 3, AutoRestartWindowSeconds: 300, AutoRestartDelaySeconds: 5}
 	if err = server.Validate(); err != nil {
 		return servers.Server{}, nil, errors.New("installed server definition is invalid")
 	}
@@ -997,6 +1055,14 @@ func newID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(raw), nil
+}
+func newServerID() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	encoded := hex.EncodeToString(raw)
+	return encoded[0:8] + "-" + encoded[8:12] + "-4" + encoded[13:16] + "-a" + encoded[17:20] + "-" + encoded[20:], nil
 }
 func stamp(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
 func nullable(value string) any {
