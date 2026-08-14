@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -174,7 +175,9 @@ func TestTemplatePermissionsAreIndependentAndGlobalOnly(t *testing.T) {
 			assignment.ID = &id
 		}
 		if err = authorization.AssignUser(ctx, user.ID, role.ID, assignment); err != nil {
-			t.Fatal(err)
+			if scope != "server" || !errors.Is(err, rbac.ErrInvalidScope) {
+				t.Fatal(err)
+			}
 		}
 		return loginSession(t, h, name)
 	}

@@ -61,11 +61,59 @@ func TestUsersAreCaseInsensitiveAndSessionsAreInvalidated(t *testing.T) {
 	if _, _, err = a.Current(ctx, raw); err == nil {
 		t.Fatal("disabled user's existing session remained valid")
 	}
+	enabled := true
+	if _, err = s.UpdateUser(ctx, "admin", u.ID, UpdateUserInput{Enabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+	resetSession, _, err := a.CreateSession(ctx, auth.User{ID: u.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPassword := "a different password long enough"
+	if err = s.ResetPassword(ctx, u.ID, newPassword); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = a.Current(ctx, resetSession); err == nil {
+		t.Fatal("password reset did not invalidate existing session")
+	}
+	if _, _, _, err = a.Login(ctx, "alice", newPassword); err != nil {
+		t.Fatalf("login with reset password: %v", err)
+	}
 	if err = s.DeleteUser(ctx, "admin", u.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err = a.Login(ctx, "alice", password); err == nil {
 		t.Fatal("deleted user logged in")
+	}
+}
+
+func TestIdentityDuplicateErrorsAreControlled(t *testing.T) {
+	s, _ := newService(t)
+	ctx := context.Background()
+	first, err := s.CreateUser(ctx, CreateUserInput{Username: "alice", Email: "alice@example.test", Password: password})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.CreateUser(ctx, CreateUserInput{Username: "ALICE", Email: "other@example.test", Password: password}); !errors.Is(err, ErrDuplicateUsername) {
+		t.Fatalf("duplicate username: %v", err)
+	}
+	if _, err = s.CreateUser(ctx, CreateUserInput{Username: "other", Email: "ALICE@example.test", Password: password}); !errors.Is(err, ErrDuplicateEmail) {
+		t.Fatalf("duplicate email: %v", err)
+	}
+	duplicateEmail := "ALICE@example.test"
+	if _, err = s.UpdateUser(ctx, "admin", first.ID, UpdateUserInput{Email: &duplicateEmail}); err != nil {
+		t.Fatalf("same user's case-only email update: %v", err)
+	}
+	if _, err = s.CreateGroup(ctx, CreateGroupInput{Name: "operators"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.CreateGroup(ctx, CreateGroupInput{Name: "OPERATORS"}); !errors.Is(err, ErrDuplicateGroup) {
+		t.Fatalf("duplicate group: %v", err)
+	}
+	if group, createErr := s.CreateGroup(ctx, CreateGroupInput{Name: "Minecraft Admins"}); createErr != nil {
+		t.Fatalf("create group with display name: %v", createErr)
+	} else if group.Name != "Minecraft Admins" {
+		t.Fatalf("group name = %q", group.Name)
 	}
 }
 
@@ -106,6 +154,29 @@ func TestGroupsAndMembershipCleanup(t *testing.T) {
 	}
 	if err = s.AddMember(ctx, g.ID, u.ID); err != nil {
 		t.Fatal(err)
+	}
+	userGroups, err := s.GroupsForUser(ctx, u.ID)
+	if err != nil || len(userGroups) != 1 || userGroups[0].ID != g.ID {
+		t.Fatalf("groups for user: %v %v", userGroups, err)
+	}
+	userSummaries, err := s.ListUserSummaries(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var groupCount int
+	for _, summary := range userSummaries {
+		if summary.ID == u.ID {
+			if summary.GroupCount != nil {
+				groupCount = *summary.GroupCount
+			}
+		}
+	}
+	if groupCount != 1 {
+		t.Fatalf("group count = %d", groupCount)
+	}
+	groupSummaries, err := s.ListGroupSummaries(ctx)
+	if err != nil || len(groupSummaries) != 1 || groupSummaries[0].MemberCount != 1 {
+		t.Fatalf("group summaries: %v %v", groupSummaries, err)
 	}
 	if err = s.AddMember(ctx, g.ID, u.ID); !errors.Is(err, ErrDuplicateMember) {
 		t.Fatalf("duplicate membership: %v", err)

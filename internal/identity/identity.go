@@ -17,11 +17,14 @@ import (
 )
 
 var (
-	ErrLastActiveAdmin = errors.New("at least one active administrator is required")
-	ErrDuplicateMember = errors.New("user is already a group member")
+	ErrLastActiveAdmin   = errors.New("at least one active administrator is required")
+	ErrDuplicateMember   = errors.New("user is already a group member")
+	ErrDuplicateUsername = errors.New("a user with this username already exists")
+	ErrDuplicateEmail    = errors.New("a user with this email already exists")
+	ErrDuplicateGroup    = errors.New("a group with this name already exists")
 )
 
-var groupIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+var groupIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_. -]*$`)
 
 type User struct {
 	ID          string     `json:"id"`
@@ -41,6 +44,17 @@ type Group struct {
 	Description string    `json:"description"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type UserSummary struct {
+	User
+	GroupCount *int `json:"group_count,omitempty"`
+}
+
+type GroupSummary struct {
+	Group
+	MemberCount     int  `json:"member_count"`
+	AssignmentCount *int `json:"assignment_count,omitempty"`
 }
 
 type CreateUserInput struct {
@@ -67,11 +81,16 @@ type UpdateGroupInput struct {
 }
 
 type Service struct {
-	db  *sql.DB
-	now func() time.Time
+	db             *sql.DB
+	now            func() time.Time
+	passwordPolicy auth.PasswordPolicyProvider
 }
 
 func New(db *sql.DB) *Service { return &Service{db: db, now: time.Now} }
+
+func (s *Service) SetPasswordPolicyProvider(provider auth.PasswordPolicyProvider) {
+	s.passwordPolicy = provider
+}
 
 // NormalizeUsername accepts ASCII identifiers only. This deliberately rejects
 // Unicode rather than pretending SQLite NOCASE provides Unicode normalization.
@@ -85,7 +104,7 @@ func NormalizeGroupName(value string) (string, error) {
 func normalizeIdentifier(value string, min, max int, label string) (string, error) {
 	value = strings.TrimSpace(value)
 	if len(value) < min || len(value) > max || !groupIdentifier.MatchString(value) {
-		return "", fmt.Errorf("%s must be %d to %d ASCII letters, digits, dots, hyphens, or underscores", label, min, max)
+		return "", fmt.Errorf("%s must be %d to %d ASCII letters, digits, spaces, dots, hyphens, or underscores", label, min, max)
 	}
 	return value, nil
 }
@@ -103,9 +122,17 @@ func normalizeDisplayName(value string) (string, error) {
 	}
 	return value, nil
 }
-func validatePassword(value string) error {
-	if len(value) < 12 || len(value) > 256 {
-		return errors.New("password must be 12 to 256 characters")
+func (s *Service) validatePassword(ctx context.Context, value string) error {
+	minimum, maximum := 8, 256
+	if s.passwordPolicy != nil {
+		var err error
+		minimum, maximum, err = s.passwordPolicy.PasswordPolicy(ctx)
+		if err != nil {
+			return fmt.Errorf("load password policy: %w", err)
+		}
+	}
+	if len(value) < minimum || len(value) > maximum {
+		return fmt.Errorf("password must be %d to %d characters", minimum, maximum)
 	}
 	return nil
 }
@@ -120,6 +147,22 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	for rows.Next() {
 		var u User
 		if err := scanUser(rows, &u); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+func (s *Service) ListUserSummaries(ctx context.Context) ([]UserSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT users.id,users.username,users.display_name,users.email,users.is_admin,users.disabled,users.created_at,users.updated_at,users.last_login_at,COUNT(gm.group_id) FROM users LEFT JOIN group_memberships gm ON gm.user_id=users.id GROUP BY users.id ORDER BY users.username COLLATE NOCASE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var users []UserSummary
+	for rows.Next() {
+		var u UserSummary
+		if err := scanUserSummary(rows, &u); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -144,7 +187,7 @@ func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (User, err
 	if err != nil {
 		return User{}, err
 	}
-	if err = validatePassword(in.Password); err != nil {
+	if err = s.validatePassword(ctx, in.Password); err != nil {
 		return User{}, err
 	}
 	hash, err := auth.HashPassword(in.Password)
@@ -154,6 +197,7 @@ func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (User, err
 	now := s.now().UTC()
 	u := User{ID: newID(), Username: username, DisplayName: displayName, Email: email, Enabled: true, IsAdmin: in.IsAdmin, CreatedAt: now, UpdatedAt: now}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO users(id,username,email,password_hash,is_admin,disabled,display_name,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, u.ID, u.Username, u.Email, hash, u.IsAdmin, 0, u.DisplayName, stamp(now), stamp(now))
+	err = classifyConstraint(err)
 	return u, err
 }
 func (s *Service) UpdateUser(ctx context.Context, actorID, id string, in UpdateUserInput) (User, error) {
@@ -187,6 +231,7 @@ func (s *Service) UpdateUser(ctx context.Context, actorID, id string, in UpdateU
 	}
 	u.UpdatedAt = s.now().UTC()
 	_, err = s.db.ExecContext(ctx, `UPDATE users SET username=?,email=?,display_name=?,is_admin=?,disabled=?,updated_at=? WHERE id=?`, u.Username, u.Email, u.DisplayName, u.IsAdmin, !u.Enabled, stamp(u.UpdatedAt), id)
+	err = classifyConstraint(err)
 	if err != nil {
 		return User{}, err
 	}
@@ -199,7 +244,7 @@ func (s *Service) UpdateUser(ctx context.Context, actorID, id string, in UpdateU
 	return s.GetUser(ctx, id)
 }
 func (s *Service) ResetPassword(ctx context.Context, id, password string) error {
-	if err := validatePassword(password); err != nil {
+	if err := s.validatePassword(ctx, password); err != nil {
 		return err
 	}
 	hash, err := auth.HashPassword(password)
@@ -263,6 +308,22 @@ func (s *Service) ListGroups(ctx context.Context) ([]Group, error) {
 	}
 	return groups, rows.Err()
 }
+func (s *Service) ListGroupSummaries(ctx context.Context) ([]GroupSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT groups.id,groups.name,groups.description,groups.created_at,groups.updated_at,COUNT(gm.user_id),(SELECT COUNT(*) FROM group_role_assignments gra WHERE gra.group_id=groups.id) FROM groups LEFT JOIN group_memberships gm ON gm.group_id=groups.id GROUP BY groups.id ORDER BY groups.name COLLATE NOCASE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var groups []GroupSummary
+	for rows.Next() {
+		var g GroupSummary
+		if err := scanGroupSummary(rows, &g); err != nil {
+			return nil, err
+		}
+		groups = append(groups, g)
+	}
+	return groups, rows.Err()
+}
 func (s *Service) GetGroup(ctx context.Context, id string) (Group, error) {
 	var g Group
 	err := scanGroup(s.db.QueryRowContext(ctx, groupSelect+" WHERE id=?", id), &g)
@@ -279,6 +340,7 @@ func (s *Service) CreateGroup(ctx context.Context, in CreateGroupInput) (Group, 
 	now := s.now().UTC()
 	g := Group{ID: newID(), Name: name, Description: strings.TrimSpace(in.Description), CreatedAt: now, UpdatedAt: now}
 	_, err = s.db.ExecContext(ctx, "INSERT INTO groups(id,name,description,created_at,updated_at) VALUES(?,?,?,?,?)", g.ID, g.Name, g.Description, stamp(now), stamp(now))
+	err = classifyConstraint(err)
 	return g, err
 }
 func (s *Service) UpdateGroup(ctx context.Context, id string, in UpdateGroupInput) (Group, error) {
@@ -299,6 +361,7 @@ func (s *Service) UpdateGroup(ctx context.Context, id string, in UpdateGroupInpu
 	}
 	g.UpdatedAt = s.now().UTC()
 	_, err = s.db.ExecContext(ctx, "UPDATE groups SET name=?,description=?,updated_at=? WHERE id=?", g.Name, g.Description, stamp(g.UpdatedAt), id)
+	err = classifyConstraint(err)
 	if err != nil {
 		return Group{}, err
 	}
@@ -336,6 +399,25 @@ func (s *Service) Members(ctx context.Context, groupID string) ([]User, error) {
 		users = append(users, u)
 	}
 	return users, rows.Err()
+}
+func (s *Service) GroupsForUser(ctx context.Context, userID string) ([]Group, error) {
+	if _, err := s.GetUser(ctx, userID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, groupSelect+" JOIN group_memberships gm ON gm.group_id=groups.id WHERE gm.user_id=? ORDER BY name COLLATE NOCASE", userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var groups []Group
+	for rows.Next() {
+		var g Group
+		if err := scanGroup(rows, &g); err != nil {
+			return nil, err
+		}
+		groups = append(groups, g)
+	}
+	return groups, rows.Err()
 }
 func (s *Service) AddMember(ctx context.Context, groupID, userID string) error {
 	_, err := s.db.ExecContext(ctx, "INSERT INTO group_memberships(user_id,group_id) VALUES(?,?)", userID, groupID)
@@ -391,11 +473,55 @@ func scanUser(row scanner, u *User) error {
 	}
 	return nil
 }
+func scanUserSummary(row scanner, u *UserSummary) error {
+	var admin, disabled int
+	var groupCount int
+	var created, updated string
+	var last sql.NullString
+	if err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &admin, &disabled, &created, &updated, &last, &groupCount); err != nil {
+		return err
+	}
+	u.GroupCount = &groupCount
+	u.IsAdmin = admin != 0
+	u.Enabled = disabled == 0
+	var err error
+	u.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return err
+	}
+	u.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
+	if err != nil {
+		return err
+	}
+	if last.Valid {
+		v, e := time.Parse(time.RFC3339Nano, last.String)
+		if e != nil {
+			return e
+		}
+		u.LastLoginAt = &v
+	}
+	return nil
+}
 func scanGroup(row scanner, g *Group) error {
 	var created, updated string
 	if err := row.Scan(&g.ID, &g.Name, &g.Description, &created, &updated); err != nil {
 		return err
 	}
+	var err error
+	g.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return err
+	}
+	g.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
+	return err
+}
+func scanGroupSummary(row scanner, g *GroupSummary) error {
+	var created, updated string
+	var assignmentCount int
+	if err := row.Scan(&g.ID, &g.Name, &g.Description, &created, &updated, &g.MemberCount, &assignmentCount); err != nil {
+		return err
+	}
+	g.AssignmentCount = &assignmentCount
 	var err error
 	g.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
 	if err != nil {
@@ -414,4 +540,20 @@ func newID() string {
 }
 func isConstraint(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "constraint")
+}
+func classifyConstraint(err error) error {
+	if !isConstraint(err) {
+		return err
+	}
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "users.username"):
+		return ErrDuplicateUsername
+	case strings.Contains(message, "users.email"):
+		return ErrDuplicateEmail
+	case strings.Contains(message, "groups.name"):
+		return ErrDuplicateGroup
+	default:
+		return err
+	}
 }

@@ -36,7 +36,7 @@ The current v0.2 direction adds a normalized template model, the Official Game L
 - `internal/provisioning`: persisted asynchronous provisioning jobs and normal-server creation.
 - `internal/gameconfig`: persisted, versioned declarative per-game configuration adapters and safe format-specific edits.
 - `internal/database`: SQLite open/migration runner.
-- `migrations`: ordered embedded SQL migrations. The current highest file is `014_server_config_adapters.sql`.
+- `migrations`: ordered embedded SQL migrations. The current highest file is `018_provisioning_status_phases.sql`.
 - `web`: React/TypeScript/Vite source and Node helper tests. `cmd/gamenode/webassets` is generated production output embedded by Go.
 - `templates`: repository-owned Official Game Library manifest, templates, adapters, fixtures, and contribution rules.
 - `docs`: architecture, security, runtime, API, development, CI, and ADR details.
@@ -157,7 +157,7 @@ See `docs/security.md`, `docs/api.md`, ADR `docs/adr/0005-filesystem-sandbox.md`
 ## 15. Database and Migration Rules
 
 - SQLite via `modernc.org/sqlite` is the only database. Foreign keys and a busy timeout are enabled at open.
-- Migrations are committed SQL, embedded by `migrations_embed.go`, sorted lexically, and applied once inside individual transactions. Inspect `migrations/` before choosing a number; current highest is `014_server_config_adapters.sql`.
+- Migrations are committed SQL, embedded by `migrations_embed.go`, sorted lexically, and applied once inside individual transactions. Inspect `migrations/` before choosing a number; current highest is `018_provisioning_status_phases.sql`.
 - Never edit an already applied migration. Add the next zero-padded migration and update tests/queries/models together.
 - Verify both a fresh database and upgrade from the previous schema. Migration SQL must be deterministic and must not depend on local paths, network, clock-based data decisions, or unordered input.
 - Store/parse timestamps as UTC RFC3339Nano unless an existing schema contract says otherwise.

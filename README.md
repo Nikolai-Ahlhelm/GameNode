@@ -2,7 +2,7 @@
 
 GameNode is a self-contained, single-node game-server management platform for Windows and Linux. It manages existing native applications through a local web interface; it does not require containers, templates, or a central controller.
 
-The current implementation covers the foundation, native runtime, live console, server-root file browser, RBAC, monitoring and health state, auto-restart, port management, audit log, dashboards, typed settings, diagnostics, support bundles, the Official Game Library, safe Egg template import, and native SteamCMD provisioning. Cluster/controller operation, Docker/Podman, a marketplace, automatic server updates, backups, scheduling, and firewall/NAT automation are intentionally out of scope.
+The current implementation covers the foundation, native runtime, live console, server-root file browser, RBAC, monitoring and health state, auto-restart, port management, audit log, dashboards, typed settings, diagnostics, support bundles, the Official Game Library, safe Egg template import, and native SteamCMD provisioning. When an existing database has pending schema migrations, startup creates a consistent `*.pre-migration-*.db` SQLite copy beside it before changing the schema; this is an upgrade safeguard, not a general backup system. Cluster/controller operation, Docker/Podman, a marketplace, automatic server updates, backups, scheduling, and firewall/NAT automation are intentionally out of scope.
 
 ## Capabilities
 
@@ -12,13 +12,16 @@ The current implementation covers the foundation, native runtime, live console, 
 - Browse and manage files under each server's configured working directory: list, open, edit, create, upload, download, rename/move, and delete.
 - Edit bounded UTF-8 text files in Monaco; `txt`, `json`, `yaml`, `yml`, `xml`, `ini`, `cfg`, and `properties` are supported editor formats.
 - Assign allow-only roles to local users and groups at global or server scope.
+- Build scope-neutral roles from the authoritative permission catalog; the UI identifies server-assignable roles and explains global-only or mixed-role incompatibilities.
 - Monitor server process health and history, configure bounded auto-restart policies, and register TCP/UDP ports for collision checks before start.
-- Inspect append-only audit records, safe diagnostics, typed monitoring settings, and a bounded sanitized support bundle.
+- Configure the instance name, subtitle, local PNG/ICO favicon, monitoring, logging, and password policy from typed settings. New passwords default to 8–256 characters, with administrator-configurable bounds.
 - Analyze and persist Pelican/Pterodactyl Eggs as normalized GameNode templates with compatibility reports and native SteamCMD/launch plans.
 - Provision supported templates asynchronously through a managed SteamCMD installation, then create an ordinary native GameNode server.
 - Adopt an existing Minecraft NeoForge installation through the Official read-only template and a conservative launcher resolver.
 
 ## Security model
+
+The dashboard can administer the existing RBAC model: reusable roles draw from the backend permission catalog, then administrators assign roles to users or groups globally or per server. Global-only permissions cannot be saved as server assignments. Grants are explicit: `Manage` never implies `View`.
 
 The backend is the authorization and filesystem security boundary.
 

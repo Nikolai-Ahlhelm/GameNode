@@ -8,9 +8,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -125,6 +127,21 @@ func TestManagedBootstrapIsAtomicAndSingleflight(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(filepath.Join(base, "tools")); len(entries) != 1 {
 		t.Fatalf("unexpected bootstrap artifacts: %d", len(entries))
+	}
+}
+
+func TestBootstrapLogsDownloadLifecycle(t *testing.T) {
+	base := t.TempDir()
+	var logs bytes.Buffer
+	manager := New(filepath.Join(base, "tools", "steamcmd"), Platform{"windows", WindowsURL, "zip", "steamcmd.exe"}, &zipDownloader{}, &captureRunner{})
+	manager.SetLogger(slog.New(slog.NewTextHandler(&logs, nil)))
+	if err := manager.Ensure(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []string{"SteamCMD download starting", "SteamCMD download completed", "SteamCMD bootstrap completed"} {
+		if !strings.Contains(logs.String(), message) {
+			t.Fatalf("missing log %q in %s", message, logs.String())
+		}
 	}
 }
 

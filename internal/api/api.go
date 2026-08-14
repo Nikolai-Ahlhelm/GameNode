@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -132,6 +133,24 @@ func (s *Server) recordAudit(r *http.Request, in auditInput) {
 	if err := s.audit.Record(r.Context(), event); err != nil {
 		s.log.With("module", "Audit.Record").Error("audit write failed", "error", err.Error(), "action", in.action)
 	}
+	attrs := []any{"module", "Action", "action", in.action, "resource_type", in.resourceType, "result", in.result}
+	if in.actor != nil {
+		attrs = append(attrs, "actor_user_id", in.actor.ID)
+	}
+	if in.serverID != nil {
+		attrs = append(attrs, "server_id", *in.serverID)
+	}
+	if in.resourceID != nil {
+		attrs = append(attrs, "resource_id", *in.resourceID)
+	}
+	if in.errorCode != "" {
+		attrs = append(attrs, "error_code", in.errorCode, "error_summary", in.errorSummary)
+	}
+	if in.result == audit.Success {
+		s.log.Info("application action completed", attrs...)
+	} else {
+		s.log.Warn("application action failed", attrs...)
+	}
 }
 
 // auditFailure intentionally exposes only stable, non-sensitive summaries.
@@ -173,6 +192,7 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	if len(options) > 0 && options[0].Settings != nil {
 		settingService = options[0].Settings
 	}
+	a.SetPasswordPolicyProvider(settingService)
 	diagnosticService := diagnostics.New(a.Database(), settingService, diagnostics.MonitoringEffective{}, time.Now().UTC())
 	if len(options) > 0 && options[0].Diagnostics != nil {
 		diagnosticService = options[0].Diagnostics
@@ -197,7 +217,9 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	if len(options) > 0 {
 		logManager = options[0].Logs
 	}
-	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identity.New(a.Database()), rbac: rbac.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie}
+	identityService := identity.New(a.Database())
+	identityService.SetPasswordPolicyProvider(settingService)
+	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identityService, rbac: rbac.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie}
 	if len(options) > 0 {
 		result.trustLocalProxy = options[0].TrustLocalProxy
 		result.setupConfig = options[0].SetupConfig
@@ -227,6 +249,8 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/dashboard", s.dashboard)
 	mux.HandleFunc("/api/v1/audit", s.auditHandler)
 	mux.HandleFunc("/api/v1/settings", s.settingsHandler)
+	mux.HandleFunc("/api/v1/settings/favicon", s.settingsFaviconHandler)
+	mux.HandleFunc("/api/v1/branding/favicon", s.brandingFaviconHandler)
 	mux.HandleFunc("/api/v1/settings/logs", s.applicationLogsHandler)
 	mux.HandleFunc("/api/v1/settings/logs/clear", s.clearLogsHandler)
 	mux.HandleFunc("/api/v1/diagnostics", s.diagnosticsHandler)
@@ -266,7 +290,12 @@ func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request) {
 		internal(w)
 		return
 	}
-	response := map[string]any{"setup_required": required}
+	values, e := s.settings.Get(r.Context())
+	if e != nil {
+		internal(w)
+		return
+	}
+	response := map[string]any{"setup_required": required, "password_policy": values.Security, "branding": values.Branding}
 	if required && s.setupConfig != nil {
 		data, database := s.setupConfig.Storage()
 		response["storage"] = map[string]string{"data_directory": data, "database_path": database}
@@ -429,7 +458,12 @@ func (s *Server) setSessionAndRespond(ctx context.Context, w http.ResponseWriter
 		internal(w)
 		return
 	}
-	jsonOut(w, http.StatusOK, map[string]any{"user": u, "csrf_token": csrf, "capabilities": capabilities})
+	settingsValues, err := s.settings.Get(ctx)
+	if err != nil {
+		internal(w)
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"user": u, "csrf_token": csrf, "capabilities": capabilities, "password_policy": settingsValues.Security, "branding": settingsValues.Branding})
 }
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
@@ -445,7 +479,12 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		internal(w)
 		return
 	}
-	jsonOut(w, http.StatusOK, map[string]any{"user": u, "csrf_token": csrf, "capabilities": capabilities})
+	settingsValues, err := s.settings.Get(r.Context())
+	if err != nil {
+		internal(w)
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"user": u, "csrf_token": csrf, "capabilities": capabilities, "password_policy": settingsValues.Security, "branding": settingsValues.Branding})
 }
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
@@ -732,7 +771,61 @@ func internal(w http.ResponseWriter) {
 func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		s.log.Debug("http request", "method", r.Method, "path", strings.Split(r.URL.Path, "?")[0], "duration", time.Since(start).String())
+		tracked := &responseLogWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(tracked, r)
+		args := []any{"module", "HTTP", "method", r.Method, "path", strings.Split(r.URL.Path, "?")[0], "status", tracked.status, "response_bytes", tracked.bytes, "duration", time.Since(start).String()}
+		switch {
+		case tracked.status >= 500:
+			s.log.Error("http request failed", args...)
+		case tracked.status >= 400:
+			s.log.Warn("http request rejected", args...)
+		case strings.HasPrefix(r.URL.Path, "/api/"):
+			s.log.Info("http request completed", args...)
+		default:
+			s.log.Debug("http request completed", args...)
+		}
 	})
 }
+
+type responseLogWriter struct {
+	http.ResponseWriter
+	status      int
+	bytes       int64
+	wroteHeader bool
+}
+
+func (w *responseLogWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.status = status
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(status)
+}
+func (w *responseLogWriter) Write(data []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	n, err := w.ResponseWriter.Write(data)
+	w.bytes += int64(n)
+	return n, err
+}
+func (w *responseLogWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+func (w *responseLogWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+func (w *responseLogWriter) Push(target string, options *http.PushOptions) error {
+	if pusher, ok := w.ResponseWriter.(http.Pusher); ok {
+		return pusher.Push(target, options)
+	}
+	return http.ErrNotSupported
+}
+func (w *responseLogWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

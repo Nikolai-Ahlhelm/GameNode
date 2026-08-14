@@ -1,8 +1,11 @@
 package monitoring
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -70,5 +73,26 @@ func TestStaleIdentityCannotOverwriteNewerProcess(t *testing.T) {
 	service.Sample(context.Background())
 	if got := service.Current(input(newer, "running")); got.Health != HealthHealthy || got.PID != 2 {
 		t.Fatalf("new process was overwritten: %#v", got)
+	}
+}
+
+func TestMetricsFailureAndRecoveryAreLoggedOncePerTransition(t *testing.T) {
+	fake := &fakeRuntime{err: errors.New("metrics unavailable")}
+	service := New(fake, Options{Interval: time.Hour, HistoryLimit: 2})
+	var logs bytes.Buffer
+	service.SetLogger(slog.New(slog.NewTextHandler(&logs, nil)))
+	identity := runtime.Identity{PID: 7, StartKey: "one"}
+	service.ObserveRunning("server", identity, false)
+	service.Sample(context.Background())
+	service.Sample(context.Background())
+	if got := strings.Count(logs.String(), "process metrics sampling failed"); got != 1 {
+		t.Fatalf("failure logs=%d: %s", got, logs.String())
+	}
+	fake.mu.Lock()
+	fake.err = nil
+	fake.mu.Unlock()
+	service.Sample(context.Background())
+	if !strings.Contains(logs.String(), "process metrics sampling recovered") {
+		t.Fatalf("missing recovery log: %s", logs.String())
 	}
 }

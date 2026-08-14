@@ -132,7 +132,7 @@ func (s *Server) provisioningJobHandler(w http.ResponseWriter, r *http.Request) 
 		method(w)
 		return
 	}
-	if !cancel && r.Method != http.MethodGet {
+	if !cancel && !retryRegistration && r.Method != http.MethodGet {
 		method(w)
 		return
 	}
@@ -164,9 +164,14 @@ func (s *Server) provisioningJobHandler(w http.ResponseWriter, r *http.Request) 
 		}
 		job, err = s.provisioning.RetryRegistration(r.Context(), parts[0], owner)
 		if err != nil {
+			metadata, _ := json.Marshal(map[string]any{"template_id": job.TemplateID, "job_id": parts[0]})
+			s.recordAudit(r, auditInput{action: audit.ServerProvisionRetry, resourceType: audit.Server, resourceName: job.ServerName, result: audit.Failure, metadata: metadata, errorCode: "registration_retry_unavailable", errorSummary: "server registration retry was unavailable", actor: &actor})
 			errorOut(w, http.StatusConflict, "registration_retry_unavailable", "server registration cannot be retried for this provisioning job")
 			return
 		}
+		serverID := job.ServerID
+		metadata, _ := json.Marshal(map[string]any{"template_id": job.TemplateID, "job_id": job.ID})
+		s.recordAudit(r, auditInput{action: audit.ServerProvisionRetry, resourceType: audit.Server, resourceID: &serverID, resourceName: job.ServerName, serverID: &serverID, result: audit.Success, metadata: metadata, actor: &actor})
 		jsonOut(w, http.StatusOK, job)
 		return
 	}
@@ -183,7 +188,7 @@ func (s *Server) provisioningJobHandler(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) recordProvisioningCompletion(event provisioning.Event) {
-	metadata, _ := json.Marshal(map[string]any{"template_id": event.Job.TemplateID, "job_id": event.Job.ID, "installer_type": event.Job.InstallerType, "app_id": event.Job.AppID, "duration_seconds": int64(event.Duration / time.Second)})
+	metadata, _ := json.Marshal(map[string]any{"template_id": event.Job.TemplateID, "job_id": event.Job.ID, "installer_type": event.Job.InstallerType, "app_id": event.Job.AppID, "duration_seconds": int64(event.Duration / time.Second), "failure_phase": event.Job.FailurePhase, "failure_code": event.Job.FailureCode, "files_may_remain": event.Job.FilesMayRemain})
 	var resourceID *string
 	var serverID *string
 	if event.Job.ServerID != "" {

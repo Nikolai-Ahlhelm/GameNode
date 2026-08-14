@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Activity, ArrowRight, CircleAlert, CircleStop, Network, Play, RefreshCw, RotateCcw, Server, ShieldCheck } from 'lucide-react';
-import { auditActionLabel, auditActor } from './audit';
+import { auditActionLabel, auditActor } from './audit-helpers';
 import { EmptyState, LoadingState, MetricCard, PageHeader, SectionHeader } from './ui';
 import './dashboard.css';
 
-type Recent = { id: string; timestamp: string; actor_username?: string; action: string; resource_type: string; resource_name?: string; result: string };
+type Recent = { id: string; timestamp: string; actor_username?: string; actor_user_id?: string; action: string; resource_type: string; resource_name?: string; result: string };
 type Data = { servers?: Record<string, number>; monitoring?: Record<string, number>; ports?: Record<string, number>; audit?: { available?: boolean; recent?: Recent[] } };
 const num = (value: Record<string, number> | undefined, key: string) => Number.isFinite(value?.[key]) ? value![key] : 0;
 
@@ -30,6 +30,6 @@ export function DashboardOverview({ canCreate, canAudit, onAudit, onServers }: {
       <SectionHeader title="Network inventory" description="Configured port assignments across visible servers" />
       <div className="dashboard-network"><MetricCard label="Configured ports" value={num(ports, 'total')} icon={Network} /><MetricCard label="TCP assignments" value={num(ports, 'tcp')} hint="Connection-oriented" /><MetricCard label="UDP assignments" value={num(ports, 'udp')} hint="Datagram traffic" /></div>
     </>}
-    {data?.audit?.available && <section className="panel dashboard-audit"><SectionHeader title="Recent activity" description="Latest security and administrative events" actions={canAudit ? <button type="button" className="quiet" onClick={onAudit}>Open audit log <ArrowRight /></button> : undefined} />{recent.length === 0 ? <EmptyState compact title="No recent activity" description="New administrative actions will appear here." icon={Activity} /> : <div className="activity-list">{recent.map(event => <article key={event.id}><span className={`activity-marker activity-marker--${event.result}`} /><div><strong>{auditActionLabel(event.action)}</strong><p>{auditActor(event.actor_username)} · {event.resource_type} {event.resource_name || ''}</p></div><div className="activity-meta"><span className={`status ${event.result === 'failure' ? 'crashed' : 'running'}`}>{event.result}</span><time>{new Date(event.timestamp).toLocaleString()}</time></div></article>)}</div>}</section>}
+    {data?.audit?.available && <section className="panel dashboard-audit"><SectionHeader title="Recent activity" description="Latest security and administrative events" actions={canAudit ? <button type="button" className="quiet" onClick={onAudit}>Open audit log <ArrowRight /></button> : undefined} />{recent.length === 0 ? <EmptyState compact title="No recent activity" description="New administrative actions will appear here." icon={Activity} /> : <div className="activity-list">{recent.map(event => <article key={event.id}><span className={`activity-marker activity-marker--${event.result}`} /><div><strong>{auditActionLabel(event.action)}</strong><p>{auditActor(event.actor_username, event.actor_user_id)} · {event.resource_type} {event.resource_name || ''}</p></div><div className="activity-meta"><span className={`status ${event.result === 'failure' ? 'crashed' : 'running'}`}>{event.result}</span><time>{new Date(event.timestamp).toLocaleString()}</time></div></article>)}</div>}</section>}
   </section>;
 }

@@ -205,14 +205,17 @@ func (s *Server) templateHandler(w http.ResponseWriter, r *http.Request) {
 		if path == "analyze/egg" {
 			template, err := s.templates.Analyze(data)
 			if err != nil {
+				s.log.Warn("Egg analysis rejected", "module", "Templates.Analyze", "actor_user_id", actor.ID, "error", err)
 				errorOut(w, http.StatusUnprocessableEntity, "invalid_egg", "egg could not be safely normalized")
 				return
 			}
+			s.log.Info("Egg analysis completed", "module", "Templates.Analyze", "actor_user_id", actor.ID, "template_id", template.ID, "compatibility", template.Compatibility.Status)
 			jsonOut(w, http.StatusOK, template)
 			return
 		}
 		template, err := s.templates.Import(r.Context(), data)
 		if err != nil {
+			s.log.Error("template import failed", "module", "Templates.Import", "actor_user_id", actor.ID, "error", err)
 			s.recordTemplateAudit(r, actor, audit.TemplateImport, audit.Failure, templates.Template{}, err)
 			if errors.Is(err, templates.ErrInvalidEgg) {
 				errorOut(w, http.StatusUnprocessableEntity, "invalid_egg", "egg could not be safely imported")
@@ -222,6 +225,7 @@ func (s *Server) templateHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.recordTemplateAudit(r, actor, audit.TemplateImport, audit.Success, template, nil)
+		s.log.Info("template imported", "module", "Templates.Import", "actor_user_id", actor.ID, "template_id", template.ID)
 		jsonOut(w, http.StatusCreated, template)
 		return
 	}
@@ -259,6 +263,7 @@ func (s *Server) templateHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err = s.templates.Delete(r.Context(), path); err != nil {
+			s.log.Error("template deletion failed", "module", "Templates.Delete", "actor_user_id", actor.ID, "template_id", path, "error", err)
 			s.recordTemplateAudit(r, actor, audit.TemplateDelete, audit.Failure, template, err)
 			if errors.Is(err, templates.ErrBuiltinReadOnly) {
 				errorOut(w, http.StatusConflict, "read_only_template", "official and built-in templates cannot be deleted")
@@ -268,6 +273,7 @@ func (s *Server) templateHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.recordTemplateAudit(r, actor, audit.TemplateDelete, audit.Success, template, nil)
+		s.log.Info("template deleted", "module", "Templates.Delete", "actor_user_id", actor.ID, "template_id", path)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		method(w)

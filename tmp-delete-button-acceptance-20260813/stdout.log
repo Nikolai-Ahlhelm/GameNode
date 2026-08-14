@@ -1,0 +1,74 @@
+[2026-08-13T22:18:01.3221756+02:00] [INFO] [Application] application initialization started version="dev" platform="windows"
+[2026-08-13T22:18:01.3492315+02:00] [INFO] [Database] opening database
+[2026-08-13T22:18:01.350232+02:00] [INFO] [Database] database opened
+[2026-08-13T22:18:01.350232+02:00] [INFO] [Database.Migration] checking database migrations
+[2026-08-13T22:18:01.4057642+02:00] [INFO] [Database.Migration] database migrations completed
+[2026-08-13T22:18:01.4062654+02:00] [INFO] [Settings] persisted settings loaded monitoring_interval_seconds=5 monitoring_history_limit=300 logging_level="info"
+[2026-08-13T22:18:01.4067635+02:00] [INFO] [Server.Rediscovery] server process rediscovery started
+[2026-08-13T22:18:01.4067635+02:00] [INFO] [Server.Rediscovery] server process rediscovery completed servers=0 running=0
+[2026-08-13T22:18:01.4072642+02:00] [INFO] [Templates.Catalog] official game catalog initialized source="none" templates=0
+[2026-08-13T22:18:01.4072642+02:00] [INFO] [Provisioning.Recovery] provisioning recovery started
+[2026-08-13T22:18:01.4077621+02:00] [INFO] [Provisioning.Recovery] provisioning recovery completed
+[2026-08-13T22:18:01.4077621+02:00] [INFO] [Provisioning.Recovery] provisioning recovery completed
+[2026-08-13T22:18:01.408762+02:00] [INFO] [App] GameNode starting listen="127.0.0.1:28443" tls=false trust_local_proxy=false
+[2026-08-13T22:18:02.0913427+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/setup/status" status=200 response_bytes=195 duration="0s"
+[2026-08-13T22:18:16.0488193+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/setup/status" status=200 response_bytes=195 duration="0s"
+[2026-08-13T22:18:23.4093664+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/setup/status" status=200 response_bytes=195 duration="0s"
+[2026-08-13T22:18:23.4105986+02:00] [33m[WARN][0m [HTTP] http request rejected method="GET" path="/api/v1/auth/me" status=401 response_bytes=78 duration="1.2322ms"
+[2026-08-13T22:18:36.548682+02:00] [INFO] [Auth.Setup] initial administrator created user_id="OGHYeCnN4QY3dJYYfiJPoQ"
+[2026-08-13T22:18:36.5513983+02:00] [INFO] [Auth.Login] user logged in user_id="OGHYeCnN4QY3dJYYfiJPoQ"
+[2026-08-13T22:18:36.552421+02:00] [INFO] [HTTP] http request completed method="POST" path="/api/v1/setup" status=200 response_bytes=655 duration="36.9897ms"
+[2026-08-13T22:18:36.6168189+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/dashboard" status=200 response_bytes=202 duration="1.0194ms"
+[2026-08-13T22:18:56.6172885+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers" status=200 response_bytes=15 duration="0s"
+[2026-08-13T22:19:03.6089331+02:00] [INFO] [Server.Create] server registered server_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6" creation_mode="custom"
+[2026-08-13T22:19:03.6120443+02:00] [INFO] [Action] application action completed action="server.create" resource_type="server" result="success" actor_user_id="OGHYeCnN4QY3dJYYfiJPoQ" server_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6" resource_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6"
+[2026-08-13T22:19:03.6126283+02:00] [INFO] [Server.Create] server created server_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6" mode="custom"
+[2026-08-13T22:19:03.6131612+02:00] [INFO] [HTTP] http request completed method="POST" path="/api/v1/servers" status=201 response_bytes=782 duration="8.2322ms"
+[2026-08-13T22:19:03.6155714+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6" status=200 response_bytes=1067 duration="1.0217ms"
+[2026-08-13T22:19:03.6184184+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers" status=200 response_bytes=1081 duration="1.5965ms"
+[2026-08-13T22:19:03.6354891+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring" status=200 response_bytes=239 duration="1.0208ms"
+[2026-08-13T22:19:03.6361191+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring/history" status=200 response_bytes=15 duration="630µs"
+[2026-08-13T22:19:03.6371281+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6" status=200 response_bytes=1067 duration="1.639ms"
+[2026-08-13T22:19:03.6400353+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring" status=200 response_bytes=239 duration="1.0188ms"
+[2026-08-13T22:19:03.6400353+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring/history" status=200 response_bytes=15 duration="1.0188ms"
+[2026-08-13T22:19:05.6374158+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6" status=200 response_bytes=1067 duration="2.0531ms"
+[2026-08-13T22:19:05.6394448+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring" status=200 response_bytes=239 duration="0s"
+[2026-08-13T22:19:05.6404638+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring/history" status=200 response_bytes=15 duration="1.019ms"
+[2026-08-13T22:19:07.637571+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6" status=200 response_bytes=1067 duration="1.5833ms"
+[2026-08-13T22:19:07.6398857+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring" status=200 response_bytes=239 duration="0s"
+[2026-08-13T22:19:07.6409063+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring/history" status=200 response_bytes=15 duration="1.0206ms"
+[2026-08-13T22:19:09.6374804+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6" status=200 response_bytes=1067 duration="2.3539ms"
+[2026-08-13T22:19:09.6401542+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring" status=200 response_bytes=239 duration="1.0396ms"
+[2026-08-13T22:19:09.6401542+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring/history" status=200 response_bytes=15 duration="1.0396ms"
+[2026-08-13T22:19:10.3551028+02:00] [INFO] [Server.Start] server start requested server_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6"
+[2026-08-13T22:19:10.3558389+02:00] [INFO] [Server.Start] server process start preparing server_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6" operation="start"
+[2026-08-13T22:19:10.3634386+02:00] [INFO] [Monitoring] process monitoring started server_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6" pid=45684 detached=false
+[2026-08-13T22:19:10.365437+02:00] [INFO] [Server.Start] native server process started server_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6" pid=45684 restart=false
+[2026-08-13T22:19:10.3679374+02:00] [INFO] [Action] application action completed action="server.start" resource_type="server" result="success" actor_user_id="OGHYeCnN4QY3dJYYfiJPoQ" server_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6" resource_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6"
+[2026-08-13T22:19:10.3684364+02:00] [INFO] [Server.Start] server lifecycle action server_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6"
+[2026-08-13T22:19:10.3689382+02:00] [INFO] [HTTP] http request completed method="POST" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/start" status=200 response_bytes=893 duration="13.8354ms"
+[2026-08-13T22:19:10.3719363+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6" status=200 response_bytes=1178 duration="998.5µs"
+[2026-08-13T22:19:10.3744358+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers" status=200 response_bytes=1192 duration="999.9µs"
+[2026-08-13T22:19:10.3769375+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring" status=200 response_bytes=296 duration="500.4µs"
+[2026-08-13T22:19:10.3769375+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring/history" status=200 response_bytes=17 duration="500.4µs"
+[2026-08-13T22:19:11.6375453+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6" status=200 response_bytes=1178 duration="1.0259ms"
+[2026-08-13T22:19:11.6400686+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring" status=200 response_bytes=301 duration="0s"
+[2026-08-13T22:19:11.6400686+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring/history" status=200 response_bytes=98 duration="0s"
+[2026-08-13T22:19:13.6382669+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6" status=200 response_bytes=1178 duration="1.0163ms"
+[2026-08-13T22:19:13.6418062+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring" status=200 response_bytes=301 duration="0s"
+[2026-08-13T22:19:13.6423918+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring/history" status=200 response_bytes=98 duration="585.6µs"
+[2026-08-13T22:20:43.9202784+02:00] [INFO] [Auth.Login] user logged in user_id="OGHYeCnN4QY3dJYYfiJPoQ"
+[2026-08-13T22:20:43.9243263+02:00] [INFO] [Action] application action completed action="auth.login" resource_type="auth" result="success" actor_user_id="OGHYeCnN4QY3dJYYfiJPoQ"
+[2026-08-13T22:20:43.9243263+02:00] [INFO] [HTTP] http request completed method="POST" path="/api/v1/auth/login" status=200 response_bytes=655 duration="38.9822ms"
+[2026-08-13T22:20:43.9352656+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers" status=200 response_bytes=1192 duration="1.04ms"
+[2026-08-13T22:20:43.9514594+02:00] [INFO] [Server.Delete] server deletion started server_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6"
+[2026-08-13T22:20:44.0702453+02:00] [31m[ERROR][0m [Server.Exit] native server process exited with an error server_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6" pid=45684 exit_code=1 error=exit status 1
+[2026-08-13T22:20:44.0742943+02:00] [INFO] [Monitoring] process monitoring stopped server_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6" pid=45684
+[2026-08-13T22:20:44.0767945+02:00] [INFO] [Server.Delete] server deleted server_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6"
+[2026-08-13T22:20:44.0792946+02:00] [INFO] [Action] application action completed action="server.delete" resource_type="server" result="success" actor_user_id="OGHYeCnN4QY3dJYYfiJPoQ" server_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6" resource_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6"
+[2026-08-13T22:20:44.0797947+02:00] [INFO] [Server.Delete] server deleted server_id="77809f57-4e95-45e2-aa9f-3f88a24ecea6"
+[2026-08-13T22:20:44.0797947+02:00] [INFO] [HTTP] http request completed method="DELETE" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6" status=204 response_bytes=0 duration="128.8372ms"
+[2026-08-13T22:20:44.0843032+02:00] [INFO] [HTTP] http request completed method="GET" path="/api/v1/servers" status=200 response_bytes=15 duration="0s"
+[2026-08-13T22:20:47.5852169+02:00] [33m[WARN][0m [HTTP] http request rejected method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6" status=404 response_bytes=60 duration="1.0191ms"
+[2026-08-13T22:20:47.6028323+02:00] [33m[WARN][0m [HTTP] http request rejected method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring" status=404 response_bytes=60 duration="1.0306ms"
+[2026-08-13T22:20:47.6028323+02:00] [33m[WARN][0m [HTTP] http request rejected method="GET" path="/api/v1/servers/77809f57-4e95-45e2-aa9f-3f88a24ecea6/monitoring/history" status=404 response_bytes=60 duration="1.0306ms"

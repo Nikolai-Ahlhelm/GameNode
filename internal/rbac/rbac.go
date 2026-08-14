@@ -7,13 +7,18 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"gamenode/internal/identity"
+	"regexp"
 	"strings"
 	"time"
 )
 
 var ErrUnknownPermission = errors.New("unknown permission")
 var ErrDuplicateAssignment = errors.New("duplicate role assignment")
+var ErrInvalidScope = errors.New("role contains permissions that cannot be assigned at server scope")
+var ErrEmptyServerRole = errors.New("role has no permissions and cannot be assigned at server scope")
+var ErrRoleHasServerAssignments = errors.New("role has server-scoped assignments and must remain server-assignable")
+
+var roleNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_. -]*$`)
 
 type Scope struct {
 	Type string  `json:"scope_type"`
@@ -23,11 +28,21 @@ type Role struct {
 	ID                   string    `json:"id"`
 	Name                 string    `json:"name"`
 	Description          string    `json:"description"`
+	Permissions          []string  `json:"permissions,omitempty"`
+	ServerAssignable     bool      `json:"server_assignable"`
 	CreatedAt, UpdatedAt time.Time `json:"-"`
 }
 type Assignment struct {
-	ID, RoleID, RoleName string
-	Scope                Scope
+	ID       string `json:"id"`
+	RoleID   string `json:"role_id"`
+	RoleName string `json:"role_name"`
+	Scope    Scope  `json:"scope"`
+}
+type SubjectAssignment struct {
+	Assignment
+	SubjectType string `json:"subject_type"`
+	SubjectID   string `json:"subject_id"`
+	SubjectName string `json:"subject_name"`
 }
 type Service struct {
 	db  *sql.DB
@@ -45,12 +60,12 @@ func scope(s Scope) error {
 	return errors.New("scope must be global or a specific server")
 }
 func (s *Service) CreateRole(c context.Context, name, description string) (Role, error) {
-	name, e := identity.NormalizeGroupName(name)
+	name, e := normalizeRoleName(name)
 	if e != nil {
 		return Role{}, e
 	}
 	n := s.now().UTC()
-	r := Role{ID: id(), Name: name, Description: strings.TrimSpace(description), CreatedAt: n, UpdatedAt: n}
+	r := Role{ID: id(), Name: name, Description: strings.TrimSpace(description), Permissions: []string{}, ServerAssignable: false, CreatedAt: n, UpdatedAt: n}
 	_, e = s.db.ExecContext(c, "INSERT INTO roles(id,name,description,created_at,updated_at) VALUES(?,?,?,?,?)", r.ID, r.Name, r.Description, ts(n), ts(n))
 	return r, e
 }
@@ -59,7 +74,6 @@ func (s *Service) ListRoles(c context.Context) ([]Role, error) {
 	if e != nil {
 		return nil, e
 	}
-	defer rows.Close()
 	var out []Role
 	for rows.Next() {
 		var r Role
@@ -71,7 +85,20 @@ func (s *Service) ListRoles(c context.Context) ([]Role, error) {
 		r.UpdatedAt, _ = time.Parse(time.RFC3339Nano, b)
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if e = rows.Err(); e != nil {
+		rows.Close()
+		return nil, e
+	}
+	if e = rows.Close(); e != nil {
+		return nil, e
+	}
+	for index := range out {
+		if out[index].Permissions, e = s.GetRolePermissions(c, out[index].ID); e != nil {
+			return nil, e
+		}
+		out[index].ServerAssignable = ServerAssignable(out[index].Permissions)
+	}
+	return out, nil
 }
 func (s *Service) GetRole(c context.Context, role string) (Role, error) {
 	var r Role
@@ -82,10 +109,15 @@ func (s *Service) GetRole(c context.Context, role string) (Role, error) {
 	}
 	r.CreatedAt, _ = time.Parse(time.RFC3339Nano, a)
 	r.UpdatedAt, _ = time.Parse(time.RFC3339Nano, b)
+	r.Permissions, e = s.getRolePermissions(c, role)
+	if e != nil {
+		return Role{}, e
+	}
+	r.ServerAssignable = ServerAssignable(r.Permissions)
 	return r, nil
 }
 func (s *Service) UpdateRole(c context.Context, role, name, description string) (Role, error) {
-	name, e := identity.NormalizeGroupName(name)
+	name, e := normalizeRoleName(name)
 	if e != nil {
 		return Role{}, e
 	}
@@ -94,6 +126,14 @@ func (s *Service) UpdateRole(c context.Context, role, name, description string) 
 		return Role{}, e
 	}
 	return s.GetRole(c, role)
+}
+
+func normalizeRoleName(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if len(value) < 2 || len(value) > 64 || !roleNamePattern.MatchString(value) {
+		return "", errors.New("role name must be 2 to 64 ASCII letters, digits, spaces, dots, hyphens, or underscores")
+	}
+	return value, nil
 }
 func (s *Service) DeleteRole(c context.Context, role string) error {
 	r, e := s.db.ExecContext(c, "DELETE FROM roles WHERE id=?", role)
@@ -110,9 +150,17 @@ func (s *Service) DeleteRole(c context.Context, role string) error {
 	return nil
 }
 func (s *Service) GetRolePermissions(c context.Context, role string) ([]string, error) {
-	if _, e := s.GetRole(c, role); e != nil {
+	var exists int
+	if e := s.db.QueryRowContext(c, "SELECT COUNT(*) FROM roles WHERE id=?", role).Scan(&exists); e != nil {
 		return nil, e
 	}
+	if exists == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return s.getRolePermissions(c, role)
+}
+
+func (s *Service) getRolePermissions(c context.Context, role string) ([]string, error) {
 	rows, e := s.db.QueryContext(c, "SELECT permission_key FROM role_permissions WHERE role_id=? ORDER BY permission_key", role)
 	if e != nil {
 		return nil, e
@@ -143,6 +191,18 @@ func (s *Service) ReplacePermissions(c context.Context, role string, keys []stri
 	if e = tx.QueryRowContext(c, "SELECT COUNT(*) FROM roles WHERE id=?", role).Scan(&n); e != nil || n == 0 {
 		return sql.ErrNoRows
 	}
+	if !ServerAssignable(keys) {
+		if e = tx.QueryRowContext(c, `SELECT EXISTS(
+			SELECT 1 FROM user_role_assignments WHERE role_id=? AND scope_type='server'
+			UNION ALL
+			SELECT 1 FROM group_role_assignments WHERE role_id=? AND scope_type='server'
+		)`, role, role).Scan(&n); e != nil {
+			return e
+		}
+		if n != 0 {
+			return ErrRoleHasServerAssignments
+		}
+	}
 	if _, e = tx.ExecContext(c, "DELETE FROM role_permissions WHERE role_id=?", role); e != nil {
 		return e
 	}
@@ -171,6 +231,18 @@ func (s *Service) assign(c context.Context, table, col, subject, role string, sc
 		return sql.ErrNoRows
 	}
 	if sc.Type == "server" {
+		permissions, e := s.GetRolePermissions(c, role)
+		if e != nil {
+			return e
+		}
+		if len(permissions) == 0 {
+			return ErrEmptyServerRole
+		}
+		if !ServerAssignable(permissions) {
+			return ErrInvalidScope
+		}
+	}
+	if sc.Type == "server" {
 		if e := s.db.QueryRowContext(c, "SELECT COUNT(*) FROM servers WHERE id=?", *sc.ID).Scan(&n); e != nil || n == 0 {
 			return sql.ErrNoRows
 		}
@@ -180,6 +252,28 @@ func (s *Service) assign(c context.Context, table, col, subject, role string, sc
 		return ErrDuplicateAssignment
 	}
 	return e
+}
+
+// ListServerAssignments exposes the existing assignment tables in a server
+// context; it does not compute or persist effective permissions.
+func (s *Service) ListServerAssignments(c context.Context, server string) ([]SubjectAssignment, error) {
+	const q = `SELECT a.id,a.role_id,r.name,a.scope_type,a.scope_id,'user',u.id,u.username FROM user_role_assignments a JOIN roles r ON r.id=a.role_id JOIN users u ON u.id=a.user_id WHERE a.scope_type='server' AND a.scope_id=? UNION ALL SELECT a.id,a.role_id,r.name,a.scope_type,a.scope_id,'group',g.id,g.name FROM group_role_assignments a JOIN roles r ON r.id=a.role_id JOIN groups g ON g.id=a.group_id WHERE a.scope_type='server' AND a.scope_id=? ORDER BY 8 COLLATE NOCASE`
+	rows, e := s.db.QueryContext(c, q, server, server)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	var out []SubjectAssignment
+	for rows.Next() {
+		var item SubjectAssignment
+		var scopeID string
+		if e = rows.Scan(&item.ID, &item.RoleID, &item.RoleName, &item.Scope.Type, &scopeID, &item.SubjectType, &item.SubjectID, &item.SubjectName); e != nil {
+			return nil, e
+		}
+		item.Scope.ID = &scopeID
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 func (s *Service) ListUserAssignments(c context.Context, user string) ([]Assignment, error) {
 	return s.list(c, "user_role_assignments", "user_id", user)
@@ -279,6 +373,22 @@ func (s *Service) Allowed(c context.Context, user, permission string, requested 
 		return false, nil
 	}
 	return e == nil, e
+}
+
+// ServerAssignable reports whether a role definition can be used by a
+// server-scoped assignment. Empty roles are deliberately excluded because
+// such an assignment can never grant access. Every selected permission must
+// include server in its catalog-defined allowed scopes.
+func ServerAssignable(permissions []string) bool {
+	if len(permissions) == 0 {
+		return false
+	}
+	for _, permission := range permissions {
+		if GlobalOnly(permission) {
+			return false
+		}
+	}
+	return true
 }
 func id() string {
 	b := make([]byte, 16)

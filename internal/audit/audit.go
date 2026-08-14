@@ -76,30 +76,32 @@ const (
 	TemplateImport          = "template.import"
 	TemplateDelete          = "template.delete"
 	ServerProvisionStart    = "server.provision_start"
+	ServerProvisionRetry    = "server.provision_retry"
 	ServerProvisionComplete = "server.provision_complete"
 	ServerProvisionFail     = "server.provision_fail"
 	ServerProvisionCancel   = "server.provision_cancel"
 )
 
 type Event struct {
-	ID            string
-	Timestamp     time.Time
-	ActorUserID   *string
-	ActorUsername string
-	Action        string
-	ResourceType  string
-	ResourceID    *string
-	ResourceName  string
-	ServerID      *string
-	Result        string
-	RemoteIP      string
-	Metadata      json.RawMessage
-	ErrorCode     string
-	ErrorSummary  string
+	ID            string          `json:"id"`
+	Timestamp     time.Time       `json:"timestamp"`
+	ActorUserID   *string         `json:"actor_user_id,omitempty"`
+	ActorUsername string          `json:"actor_username,omitempty"`
+	Action        string          `json:"action"`
+	ResourceType  string          `json:"resource_type"`
+	ResourceID    *string         `json:"resource_id,omitempty"`
+	ResourceName  string          `json:"resource_name,omitempty"`
+	ServerID      *string         `json:"server_id,omitempty"`
+	Result        string          `json:"result"`
+	RemoteIP      string          `json:"remote_ip,omitempty"`
+	Metadata      json.RawMessage `json:"metadata,omitempty"`
+	ErrorCode     string          `json:"error_code,omitempty"`
+	ErrorSummary  string          `json:"error_summary,omitempty"`
 }
 type Filter struct {
 	ActorUserID          *string
 	Action, ResourceType string
+	Query                string
 	ResourceID, ServerID *string
 	Result               string
 	Limit                int
@@ -128,6 +130,9 @@ func (s *Service) Record(c context.Context, e Event) error {
 	return x
 }
 func (s *Service) List(c context.Context, f Filter) ([]Event, error) {
+	if len(f.Query) > 100 {
+		return nil, errors.New("audit query too long")
+	}
 	if f.Limit <= 0 {
 		f.Limit = DefaultLimit
 	}
@@ -160,6 +165,13 @@ func (s *Service) List(c context.Context, f Filter) ([]Event, error) {
 		q += " AND result=?"
 		a = append(a, f.Result)
 	}
+	if strings.TrimSpace(f.Query) != "" {
+		q += ` AND (action LIKE ? ESCAPE '\' OR actor_username LIKE ? ESCAPE '\' OR resource_type LIKE ? ESCAPE '\' OR resource_name LIKE ? ESCAPE '\' OR COALESCE(resource_id,'') LIKE ? ESCAPE '\' OR COALESCE(server_id,'') LIKE ? ESCAPE '\' OR error_code LIKE ? ESCAPE '\' OR error_summary LIKE ? ESCAPE '\')`
+		pattern := auditSearchPattern(strings.TrimSpace(f.Query))
+		for range 8 {
+			a = append(a, pattern)
+		}
+	}
 	q += " ORDER BY timestamp DESC,id DESC LIMIT ? OFFSET ?"
 	a = append(a, f.Limit, f.Offset)
 	rows, e := s.db.QueryContext(c, q, a...)
@@ -191,6 +203,12 @@ func (s *Service) List(c context.Context, f Filter) ([]Event, error) {
 		out = append(out, x)
 	}
 	return out, rows.Err()
+}
+func auditSearchPattern(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	value = strings.ReplaceAll(value, `_`, `\_`)
+	return "%" + value + "%"
 }
 func nullable(b []byte) any {
 	if len(b) == 0 {

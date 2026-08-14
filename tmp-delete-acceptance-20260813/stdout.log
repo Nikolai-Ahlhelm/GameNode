@@ -1,0 +1,14 @@
+[2026-08-13T22:16:58.9480131+02:00] [INFO] [Application] application initialization started version="dev" platform="windows"
+[2026-08-13T22:16:58.9741477+02:00] [INFO] [Database] opening database
+[2026-08-13T22:16:58.9751477+02:00] [INFO] [Database] database opened
+[2026-08-13T22:16:58.9751477+02:00] [INFO] [Database.Migration] checking database migrations
+[2026-08-13T22:16:59.0274613+02:00] [INFO] [Database.Migration] database migrations completed
+[2026-08-13T22:16:59.027961+02:00] [INFO] [Settings] persisted settings loaded monitoring_interval_seconds=5 monitoring_history_limit=300 logging_level="info"
+[2026-08-13T22:16:59.0284607+02:00] [INFO] [Server.Rediscovery] server process rediscovery started
+[2026-08-13T22:16:59.0284607+02:00] [INFO] [Server.Rediscovery] server process rediscovery completed servers=0 running=0
+[2026-08-13T22:16:59.0289597+02:00] [INFO] [Templates.Catalog] official game catalog initialized source="none" templates=0
+[2026-08-13T22:16:59.0289597+02:00] [INFO] [Provisioning.Recovery] provisioning recovery started
+[2026-08-13T22:16:59.0294601+02:00] [INFO] [Provisioning.Recovery] provisioning recovery completed
+[2026-08-13T22:16:59.0294601+02:00] [INFO] [Provisioning.Recovery] provisioning recovery completed
+[2026-08-13T22:16:59.03046+02:00] [INFO] [App] GameNode starting listen="127.0.0.1:18443" tls=false trust_local_proxy=false
+[2026-08-13T22:16:59.0314599+02:00] [31m[ERROR][0m [App] server stopped error="listen tcp 127.0.0.1:18443: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted."

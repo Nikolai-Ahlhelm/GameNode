@@ -2,6 +2,8 @@
 
 All endpoints are namespaced below `/api/v1` and return errors as `{ "error": { "code": "...", "message": "..." } }`.
 
+RBAC administration uses `GET /permissions` (the authoritative catalog with allowed scopes), role CRUD at `/roles`, subject assignments at `/users/{id}/roles` and `/groups/{id}/roles`, and `GET /servers/{id}/access` for server-scoped assignment listings. Role mutations require CSRF and `Roles.Manage`; catalog and assignment reads require `Roles.View`.
+
 The API integration suite covers setup/login/logout, server CRUD/lifecycle, WebSocket console authorization and malformed-frame handling, filesystem upload/download and sandboxing, RBAC scope enforcement, settings, diagnostics, audit, ports, and support-bundle authorization/ZIP behavior. The 2026-08-11 native Windows acceptance harness additionally exercised the embedded binary's setup, lifecycle, console, RBAC, and filesystem routes.
 
 | Method | Path | Purpose |
@@ -13,6 +15,7 @@ The API integration suite covers setup/login/logout, server CRUD/lifecycle, WebS
 | GET | `/api/v1/auth/me` | Current user and CSRF token |
 | GET, POST | `/api/v1/users` | List with `Users.View`; create with `Users.Manage` |
 | GET, PATCH, DELETE | `/api/v1/users/{id}` | Read with `Users.View`; update/delete with `Users.Manage` |
+| GET | `/api/v1/users/{id}/groups` | List memberships; requires both `Users.View` and `Groups.View` |
 | POST | `/api/v1/users/{id}/password` | Reset a local user's password with `Users.Manage` |
 | GET, POST | `/api/v1/groups` | List with `Groups.View`; create with `Groups.Manage` |
 | GET, PATCH, DELETE | `/api/v1/groups/{id}` | Read with `Groups.View`; update/delete with `Groups.Manage` |
@@ -31,7 +34,7 @@ The API integration suite covers setup/login/logout, server CRUD/lifecycle, WebS
 | POST | `/api/v1/servers` | Creates or adopts a native server definition |
 | GET | `/api/v1/servers/{id}` | Reads one server and runtime state |
 | PATCH | `/api/v1/servers/{id}` | Updates a stopped server definition |
-| DELETE | `/api/v1/servers/{id}` | Deletes a stopped server definition |
+| DELETE | `/api/v1/servers/{id}` | Force-terminates an active process and deletes the server definition; files are retained |
 | POST | `/api/v1/servers/{id}/start` | Starts the native application |
 | POST | `/api/v1/servers/{id}/stop` | Stops it with timeout escalation |
 | POST | `/api/v1/servers/{id}/restart` | Stops then starts it |
@@ -90,6 +93,10 @@ Usernames are 3–32 ASCII characters; group names are 2–64 ASCII characters. 
 
 Roles contain permissions selected from the static `/permissions` catalog. A role can be assigned to a user or group at global scope (`{"scope_type":"global"}`) or at one existing server (`{"scope_type":"server","scope_id":"..."}`). `Roles.View` and `Roles.Manage` control the corresponding read and mutation routes; mutating calls require the normal same-origin and CSRF protections. Role names have no special meaning, and `Roles.Manage` cannot add keys outside the compiled catalog.
 
+Roles themselves have no scope or owner; scope belongs only to an assignment. The permission catalog is authoritative for `allowed_scopes`. `Server.View`, the remaining per-server lifecycle permissions except `Server.Create`, Console, Files, Ports, and `Monitoring.View` allow both `global` and `server`: a global assignment applies to every server, while a server assignment applies only to its named server. `Server.Create`, Users, Groups, Roles, Settings, Logs, Templates, and Audit permissions are global-only. There are currently no server-only catalog permissions.
+
+`server_assignable` is true only when a role has at least one permission and every permission allows server scope. Empty roles, global-only roles, and mixed global-only/server-capable roles are false. Creating a server assignment with any of those roles is rejected with a controlled validation error. A role that already has server assignments must remain server-assignable: it cannot be emptied or changed to include a global-only permission until those assignments are removed. Global assignments accept every current catalog permission because every permission allows global scope.
+
 ## Product authorization
 
 Authenticated enabled administrators retain a full bypass. Other users are evaluated through their direct and group role assignments; global assignments apply everywhere and a server-scoped assignment applies only to that server. Permissions are allow-only and have no implicit inheritance.
@@ -106,7 +113,9 @@ Server create/update payloads accept `auto_restart_enabled`, `auto_restart_max_a
 
 `GET /api/v1/settings` returns the whitelisted application settings and requires the global-only `Settings.View` permission. `PATCH /api/v1/settings` requires global-only `Settings.Manage`, same-origin validation, and `X-CSRF-Token`; the permissions are independent. Server-scoped assignments do not grant either permission.
 
-The current typed surface is `monitoring.sample_interval_seconds` (1–300) and `monitoring.history_limit` (1–10,000), exposed as `{"monitoring":{"sample_interval_seconds":5,"history_limit":300},"restart_required":true,"restart_required_fields":[...]}`. PATCH accepts only the corresponding typed `monitoring` fields and rejects unknown fields. IPv4/IPv6, database, TLS, session, filesystem, executable, environment, and arbitrary YAML values are not settings API fields. A successful mutation records one `settings.update` audit event containing only changed field names.
+The typed surface includes `monitoring.sample_interval_seconds` (1–300), `monitoring.history_limit` (1–10,000), `logging.level`, `branding.name` (1–64 characters), `branding.subtitle` (0–128 characters), and the live password policy fields `security.password_minimum_length` (8–128, default 8) and `security.password_maximum_length` (at least the minimum and at most 256, default 256). Branding and password-policy changes apply immediately; existing passwords are not invalidated. PATCH accepts only whitelisted typed fields and rejects unknown fields. IPv4/IPv6, database, TLS, session, filesystem, executable, environment, and arbitrary YAML values are not settings API fields. A successful mutation records one `settings.update` audit event containing only changed field names.
+
+`PUT /api/v1/settings/favicon` and `DELETE /api/v1/settings/favicon` require global `Settings.Manage` and CSRF. Uploads are bounded to 256 KiB and accept validated PNG images up to 512×512 or structurally bounded ICO files; SVG and remote URLs are not accepted. `GET /api/v1/branding/favicon` is public so browsers can load the current icon, returns only the validated stored bytes with `nosniff`, and returns 404 when no custom favicon exists.
 
 ## Diagnostics
 
@@ -127,7 +136,7 @@ An enabled administrator bypasses these checks. `Users.Manage` does not permit s
 
 `GET /api/v1/dashboard` is read-only and returns capability-filtered server, monitoring, port, and (only with global `Audit.View`) recent audit summaries. It never reports hidden servers or performs port scans or mutations.
 
-`GET /api/v1/audit` is a read-only, global audit endpoint. It requires the global-only `Audit.View` permission (a server-scoped assignment does not grant access); administrators retain the normal bypass. It accepts bounded `limit` (default 100, maximum 500) and `offset`, plus `actor_user_id`, `action`, `resource_type`, `resource_id`, `server_id`, and `result` filters. Results are newest first (`timestamp DESC`, `id DESC`) and return `items`, `limit`, and `offset`. Each item contains its persisted actor/resource snapshots, result, direct remote IP, metadata, and sanitized error fields. Deleted resources remain visible through those snapshots. GameNode exposes no audit mutation, clear, or delete endpoint.
+`GET /api/v1/audit` is a read-only, global audit endpoint. It requires the global-only `Audit.View` permission (a server-scoped assignment does not grant access); administrators retain the normal bypass. It accepts bounded `limit` (default 100, maximum 500) and `offset`, plus `actor_user_id`, `action`, `resource_type`, `resource_id`, `server_id`, and `result` filters. The optional bounded `query` filter searches action, actor snapshot, resource type/name/IDs, server ID, and controlled error fields; SQL wildcard characters in user input are treated literally. Results are newest first (`timestamp DESC`, `id DESC`) and return `items`, `limit`, and `offset`. Each item uses lower-snake-case JSON fields such as `timestamp`, `actor_username`, and `resource_id`, and contains its persisted actor/resource snapshots, result, direct remote IP, controlled metadata, and sanitized error fields. Deleted resources remain visible through those snapshots. GameNode exposes no audit mutation, clear, or delete endpoint.
 # Templates API
 
 Templates are global node resources. `Templates.View` and `Templates.Manage` are independent and global-only.
@@ -158,8 +167,9 @@ Provisioning is intentionally template-specific rather than a generic job execut
 
 | Method | Path | Authorization and behavior |
 | --- | --- | --- |
-| `GET` | `/api/v1/provisioning/jobs/{id}` | Initiating user or admin; return safe persisted status |
+| `GET` | `/api/v1/provisioning/jobs/{id}` | Initiating user or admin; return safe persisted status and bounded chronological events |
 | `POST` | `/api/v1/provisioning/jobs/{id}/cancel` | Initiating user or admin + CSRF; cancel an active installer |
+| `POST` | `/api/v1/provisioning/jobs/{id}/retry-registration` | Initiating user or admin + CSRF; retry only a recoverable persisted registration snapshot without running SteamCMD again |
 
 The start body is bounded to 128 KiB and has the form `{"server_name":"...","directory_name":"...","variables":{"KEY":"value"}}`. `directory_name` is a relative storage name, not a path; the target is always resolved below `<data>/servers`. Unknown/non-editable variables, invalid normalized values, unsupported platform plans, populated targets, and unsafe SteamCMD options are rejected with controlled errors.
 
@@ -172,7 +182,7 @@ For Official SteamCMD templates, `GET /templates/{id}/provisionability` addition
 
 The update body is `{"adapter_id":"...","values":{"FIELD":"value"}}`. Unknown adapters/fields, invalid typed values, unsafe XML/INI, missing or duplicate properties, and unsafe targets are rejected. Each adapter reports `ready` and an optional `status_message`; a post-start adapter returns its typed field shape with `ready:false` until the game creates the target, and PUT returns the normal unavailable/not-found response. Secret values are accepted only in the mutation body, are never returned, and are omitted from audit metadata. An empty secret omitted from `values` leaves the current value unchanged. Responses report `restart_required`; they never restart the server automatically.
 
-Start returns `202` with a job. Statuses are `pending`, `preparing`, `downloading_steamcmd`, `steamcmd_ready`, `installing`, `creating_server`, `completed`, `failed`, or `cancelled`. Responses contain phase summaries and `files_may_remain`, but never target absolute paths, raw SteamCMD output, variable values, credentials, or command lines. A completed job contains the normal `server_id`.
+Start returns `202` with a job. Statuses are `pending`, `preparing`, `downloading_steamcmd`, `steamcmd_ready`, `installing`, `steamcmd_completed`, `validating_installation`, `installation_validated`, `resolving_launch`, `registering_server`, `server_registered`, `completed`, `failed`, or `cancelled` (`creating_server` remains accepted for persisted compatibility). Responses contain phase summaries, failure classification, `installation_completed`, `registration_recoverable`, `files_may_remain`, and at most 200 safe chronological events, but never the registration snapshot, target absolute paths, raw SteamCMD output after restart, variable values, credentials, or command lines. A completed job contains the normal `server_id`. Registration retry is serialized and idempotent: it reuses the persisted normalized snapshot, recognizes an already committed server, and never invokes SteamCMD.
 
 Supported source fields include `meta.version`, `exported_at`, `name`, `description`, `author`, `uuid`, `startup`, `variables`, `docker_images` (metadata only), `scripts.installation` (analysis only), `config`, `features`, and tags. Unknown top-level fields become informational findings. Config parser bodies, file rewrite rules, Docker semantics, arbitrary installation hooks, and unknown config structures are not executed and may produce compatibility findings.
 

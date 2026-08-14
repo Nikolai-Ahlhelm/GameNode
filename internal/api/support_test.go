@@ -188,8 +188,20 @@ func TestSupportBundleAuthenticationAndRBAC(t *testing.T) {
 				if test.scope == "server" {
 					id := createSupportServer(t, serverService)
 					scope = rbac.Scope{Type: "server", ID: &id}
+					service := rbac.New(db)
+					role, err := service.CreateRole(context.Background(), "support-server-scoped-"+session.user.ID[:6], "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err = service.ReplacePermissions(context.Background(), role.ID, []string{test.permission}); err != nil {
+						t.Fatal(err)
+					}
+					if err = service.AssignUser(context.Background(), session.user.ID, role.ID, scope); !errors.Is(err, rbac.ErrInvalidScope) {
+						t.Fatalf("server-scoped global-only assignment error = %v", err)
+					}
+				} else {
+					grantSupportPermission(t, db, session.user.ID, test.permission, scope)
 				}
-				grantSupportPermission(t, db, session.user.ID, test.permission, scope)
 			}
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, supportRequest(&session, session.csrf))

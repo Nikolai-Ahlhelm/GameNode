@@ -120,6 +120,22 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[0]
+	if len(parts) == 2 && parts[1] == "access" {
+		if r.Method != http.MethodGet {
+			method(w)
+			return
+		}
+		if _, _, ok := s.requireGlobalPermission(w, r, "Roles.View", false); !ok {
+			return
+		}
+		assignments, err := s.rbac.ListServerAssignments(r.Context(), id)
+		if err != nil {
+			internal(w)
+			return
+		}
+		jsonOut(w, http.StatusOK, map[string]any{"assignments": assignments})
+		return
+	}
 	if len(parts) == 2 && parts[1] == "files" {
 		s.filesHandler(w, r, id)
 		return
@@ -276,7 +292,11 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		action := map[string]string{"start": audit.ServerStart, "stop": audit.ServerStop, "restart": audit.ServerRestart, "kill": audit.ServerKill}[parts[1]]
-		s.recordServerAudit(r, u, action, audit.Failure, id, "", err)
+		name := ""
+		if current, getErr := s.servers.Get(r.Context(), id); getErr == nil {
+			name = current.Server.Name
+		}
+		s.recordServerAudit(r, u, action, audit.Failure, id, name, err)
 		serverError(w, err, true)
 		return
 	}
