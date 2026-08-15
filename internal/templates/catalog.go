@@ -454,8 +454,10 @@ func validateOfficial(template Template) error {
 		if template.Launch == nil || len(template.PlatformLaunches) != 0 {
 			return validationError(CodeInvalidPlatformLaunch, "legacy template launch shape is invalid")
 		}
-		if err := validateOfficialLaunch(*template.Launch, known); err != nil {
-			return err
+		for _, platform := range template.Platforms {
+			if err := validateOfficialLaunch(*template.Launch, known, platform); err != nil {
+				return err
+			}
 		}
 		if err := validateLaunchSensitive(*template.Launch, definitions); err != nil {
 			return err
@@ -468,8 +470,10 @@ func validateOfficial(template Template) error {
 			return validationError(CodeUnsupportedInstaller, "existing-files installer launch shape is invalid")
 		}
 		if template.Launch != nil {
-			if err := validateOfficialLaunch(*template.Launch, known); err != nil {
-				return err
+			for _, platform := range template.Platforms {
+				if err := validateOfficialLaunch(*template.Launch, known, platform); err != nil {
+					return err
+				}
 			}
 			if template.Launch.Resolver != "neoforge" && template.Launch.Resolver != "java" {
 				return validationError(CodeInvalidPlatformLaunch, "existing-files resolver launch is invalid")
@@ -483,7 +487,7 @@ func validateOfficial(template Template) error {
 				if !ok || launch.Resolver != "" {
 					return validationError(CodeInvalidPlatformLaunch, "existing-files platform launch is invalid")
 				}
-				if err := validateOfficialLaunch(launch, known); err != nil {
+				if err := validateOfficialLaunch(launch, known, platform); err != nil {
 					return err
 				}
 				if err := validateLaunchSensitive(launch, definitions); err != nil {
@@ -508,7 +512,7 @@ func validateOfficial(template Template) error {
 			if !ok || declared[platform] {
 				return validationError(CodeInvalidPlatformLaunch, "SteamCMD platform launch is missing or duplicated")
 			}
-			if err := validateOfficialLaunch(launch, known); err != nil {
+			if err := validateOfficialLaunch(launch, known, platform); err != nil {
 				return err
 			}
 			if err := validateLaunchSensitive(launch, definitions); err != nil {
@@ -799,7 +803,7 @@ func validateRelativeConfigTarget(value string) error {
 	return nil
 }
 
-func validateOfficialLaunch(launch LaunchDefinition, known map[string]bool) error {
+func validateOfficialLaunch(launch LaunchDefinition, known map[string]bool, platform string) error {
 	if launch.WorkingRoot != "server_root" || strings.TrimSpace(launch.Executable) == "" || absoluteExecutable(launch.Executable) || forbiddenExecutables[strings.ToLower(filepath.Base(launch.Executable))] || len(launch.Arguments) > 128 {
 		if forbiddenExecutables[strings.ToLower(filepath.Base(launch.Executable))] {
 			return validationError(CodeShellSemanticsForbidden, "shell and command interpreters are forbidden")
@@ -827,6 +831,9 @@ func validateOfficialLaunch(launch LaunchDefinition, known map[string]bool) erro
 	}
 	if launch.StopMethod == "console_interrupt" && launch.StopCommand != "" {
 		return validationError(CodeUnsupportedStopMethod, "console_interrupt templates cannot declare a stop command")
+	}
+	if launch.StopMethod == "console_interrupt" && platform != "windows" {
+		return validationError(CodeUnsupportedStopMethod, "console_interrupt is supported only for Windows launches")
 	}
 	if launch.StopMethod != "stdin_command" && launch.StopMethod != "console_interrupt" && launch.StopCommand != "" {
 		return errors.New("official template stop command requires stdin")

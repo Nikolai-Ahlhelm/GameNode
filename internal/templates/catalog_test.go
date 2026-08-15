@@ -202,6 +202,18 @@ func TestOfficialLaunchRejectsConsoleInterruptWithStopCommand(t *testing.T) {
 	}
 }
 
+func TestOfficialLaunchRejectsConsoleInterruptForLinux(t *testing.T) {
+	template := officialSteamFixture()
+	launch := template.PlatformLaunches["linux"]
+	launch.StopMethod = "console_interrupt"
+	launch.StopCommand = ""
+	template.PlatformLaunches["linux"] = launch
+	err := validateOfficial(template)
+	if ValidationCode(err) != CodeUnsupportedStopMethod {
+		t.Fatalf("Linux console_interrupt should be rejected with %s, got %v", CodeUnsupportedStopMethod, err)
+	}
+}
+
 func TestOfficialLaunchRejectsUnknownStopMethod(t *testing.T) {
 	for _, method := range []string{"sigterm", "SIGKILL", "ctrl_c", ""} {
 		if method == "" {
@@ -230,14 +242,14 @@ func TestOfficialLaunchAllowsWindowsJavaClasspathAsOneArgument(t *testing.T) {
 		StopCommand: "quit",
 		StopTimeout: 60,
 	}
-	if err := validateOfficialLaunch(launch, map[string]bool{}); err != nil {
+	if err := validateOfficialLaunch(launch, map[string]bool{}, "windows"); err != nil {
 		t.Fatalf("structured Java classpath was rejected: %v", err)
 	}
 	if len(launch.Arguments) != 3 || launch.Arguments[1] != "java/.;java/projectzomboid.jar" {
 		t.Fatalf("classpath must remain one argv element: %#v", launch.Arguments)
 	}
 	launch.Arguments[1] = `java/.;C:\host\evil.jar`
-	if err := validateOfficialLaunch(launch, map[string]bool{}); err == nil {
+	if err := validateOfficialLaunch(launch, map[string]bool{}, "windows"); err == nil {
 		t.Fatal("absolute Java classpath entry was accepted")
 	}
 }

@@ -43,13 +43,16 @@ const consoleInterruptHelperEnv = "GAMENODE_CONSOLE_INTERRUPT_HELPER_MODE"
 // override is test-only; production code always uses the unmodified
 // implementation defined in native_windows.go.
 func init() {
-	newConsoleSignalHelperCmd = func(ctx context.Context, pid int) (*exec.Cmd, error) {
+	newConsoleSignalHelperCmd = func(ctx context.Context, identity Identity) (*exec.Cmd, error) {
 		exe, err := os.Executable()
 		if err != nil {
 			return nil, err
 		}
 		cmd := exec.CommandContext(ctx, exe, "-test.run=TestConsoleSignalHelperEntry", "--")
-		cmd.Env = []string{consoleSignalEnv + "=" + strconv.Itoa(pid)}
+		cmd.Env = []string{
+			consoleSignalEnv + "=" + strconv.Itoa(identity.PID),
+			consoleSignalStartKeyEnv + "=" + identity.StartKey,
+		}
 		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 		return cmd, nil
 	}
@@ -335,8 +338,17 @@ func TestConsoleSignalHelperDispatch(t *testing.T) {
 		t.Fatalf("expected no dispatch without the env var, got code=%d ok=%v", code, ok)
 	}
 	t.Setenv(consoleSignalEnv, "not-a-number")
+	t.Setenv(consoleSignalStartKeyEnv, "key")
 	if code, ok := RunConsoleSignalHelper(); !ok || code != consoleSignalExitBadRequest {
 		t.Fatalf("expected a bad-request exit code, got code=%d ok=%v", code, ok)
+	}
+	// A PID without an accompanying StartKey must never be dispatched: a bare
+	// PID is not a safe identity anywhere else in this codebase (Identity,
+	// verifyWindows), and it is not one here either.
+	t.Setenv(consoleSignalEnv, "1")
+	t.Setenv(consoleSignalStartKeyEnv, "")
+	if code, ok := RunConsoleSignalHelper(); !ok || code != consoleSignalExitBadRequest {
+		t.Fatalf("expected a bad-request exit code for a missing start key, got code=%d ok=%v", code, ok)
 	}
 	// PID 1 is never a real, attachable console owner on Windows (well-known
 	// low PIDs belong to the System Idle Process/System and have no
@@ -344,8 +356,41 @@ func TestConsoleSignalHelperDispatch(t *testing.T) {
 	// "delivery attempted but unsupported" outcome without depending on any
 	// other process happening to be present.
 	t.Setenv(consoleSignalEnv, "1")
+	t.Setenv(consoleSignalStartKeyEnv, "key")
 	if code, ok := RunConsoleSignalHelper(); !ok || code != consoleSignalExitUnsupported {
 		t.Fatalf("expected an unsupported exit code for an unattachable target, got code=%d ok=%v", code, ok)
+	}
+}
+
+// TestConsoleSignalHelperRejectsMismatchedStartKey is the regression test for
+// the PID-reuse race the helper's re-verification closes: a genuinely alive,
+// attachable target must still be refused if the StartKey it is handed does
+// not match that live process, exactly as if the PID had been silently
+// reused since Interrupt's own first check. Before this re-verification
+// existed, only the bare PID was trusted here and this request would have
+// been signaled.
+func TestConsoleSignalHelperRejectsMismatchedStartKey(t *testing.T) {
+	r := NewNative()
+	identity, exits, _ := startInterruptHelper(t, r, "ignore")
+	defer func() { _ = r.Kill(context.Background(), identity) }()
+
+	t.Setenv(consoleSignalEnv, strconv.Itoa(identity.PID))
+	t.Setenv(consoleSignalStartKeyEnv, identity.StartKey+"-stale")
+	if code, ok := RunConsoleSignalHelper(); !ok || code != consoleSignalExitUnsupported {
+		t.Fatalf("expected an unsupported exit code for a mismatched start key, got code=%d ok=%v", code, ok)
+	}
+	select {
+	case <-exits:
+		t.Fatal("helper exited despite a rejected mismatched start key")
+	default:
+	}
+
+	// The correct StartKey for the same, still-live PID must still work,
+	// proving the rejection above was identity-specific and not a general
+	// helper malfunction.
+	t.Setenv(consoleSignalStartKeyEnv, identity.StartKey)
+	if code, ok := RunConsoleSignalHelper(); !ok || code != consoleSignalExitDelivered {
+		t.Fatalf("expected delivery with the correct start key, got code=%d ok=%v", code, ok)
 	}
 }
 

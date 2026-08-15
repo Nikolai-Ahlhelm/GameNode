@@ -107,11 +107,18 @@ func (nativeRuntime) Stop(ctx context.Context, identity Identity, timeout time.D
 	})
 }
 
-// consoleSignalEnv names the environment variable that switches this exact
-// compiled GameNode binary into a disposable, single-purpose console-signal
-// helper process. It is set only by Interrupt on the child it launches; no
-// other GameNode code path reads or writes it. See RunConsoleSignalHelper.
-const consoleSignalEnv = "GAMENODE_CONSOLE_SIGNAL_TARGET_PID"
+// consoleSignalEnv and consoleSignalStartKeyEnv name the environment
+// variables that switch this exact compiled GameNode binary into a
+// disposable, single-purpose console-signal helper process. Both are set
+// only by Interrupt on the child it launches; no other GameNode code path
+// reads or writes them. The helper re-verifies PID and StartKey together
+// immediately before it attaches to anything (see RunConsoleSignalHelper),
+// exactly like every other lifecycle path verifies process identity — a PID
+// alone is not a safe identity across process/time boundaries.
+const (
+	consoleSignalEnv         = "GAMENODE_CONSOLE_SIGNAL_TARGET_PID"
+	consoleSignalStartKeyEnv = "GAMENODE_CONSOLE_SIGNAL_TARGET_START_KEY"
+)
 
 // Helper process exit codes. 0 means the event was delivered; every other
 // value is a stable, non-sensitive outcome classification and never encodes
@@ -125,17 +132,23 @@ const (
 
 // newConsoleSignalHelperCmd builds the command used to invoke this exact
 // compiled binary as the disposable console-signal helper described on
-// Interrupt. It is a variable only so the Windows test suite can point it at
-// this test binary's own single dedicated entry point instead of relaunching
-// every test in the package recursively; production code never overrides it,
-// and every non-test build only ever gets this one implementation.
-var newConsoleSignalHelperCmd = func(ctx context.Context, pid int) (*exec.Cmd, error) {
+// Interrupt. It carries the full identity (PID and StartKey), never PID
+// alone, so the helper can re-verify it was handed a genuine, still-current
+// request rather than trusting a bare PID that could have been reused. It is
+// a variable only so the Windows test suite can point it at this test
+// binary's own single dedicated entry point instead of relaunching every
+// test in the package recursively; production code never overrides it, and
+// every non-test build only ever gets this one implementation.
+var newConsoleSignalHelperCmd = func(ctx context.Context, identity Identity) (*exec.Cmd, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
 	cmd := exec.CommandContext(ctx, exe)
-	cmd.Env = []string{consoleSignalEnv + "=" + strconv.Itoa(pid)}
+	cmd.Env = []string{
+		consoleSignalEnv + "=" + strconv.Itoa(identity.PID),
+		consoleSignalStartKeyEnv + "=" + identity.StartKey,
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 	return cmd, nil
 }
@@ -155,7 +168,7 @@ func (nativeRuntime) Interrupt(ctx context.Context, identity Identity) error {
 	if err := verifyWindows(identity); err != nil {
 		return err
 	}
-	cmd, err := newConsoleSignalHelperCmd(ctx, identity.PID)
+	cmd, err := newConsoleSignalHelperCmd(ctx, identity)
 	if err != nil {
 		return ErrConsoleInterruptUnsupported
 	}
@@ -178,20 +191,51 @@ func (nativeRuntime) Interrupt(ctx context.Context, identity Identity) error {
 
 // RunConsoleSignalHelper must be the first call in main(). If this process
 // invocation is the disposable console-signal helper described on Interrupt
-// (identified solely by consoleSignalEnv, never by an argv flag), it
-// attaches to the requested process's console, generates a scoped
-// CTRL_BREAK_EVENT for that process's own group, detaches again, and returns
-// a stable exit code with ok=true. main must os.Exit(code) immediately
-// without performing any normal GameNode startup. ok is false for every
-// normal GameNode invocation.
+// (identified solely by consoleSignalEnv/consoleSignalStartKeyEnv, never by
+// an argv flag), it re-verifies the requested process identity, attaches to
+// its console, generates a scoped CTRL_BREAK_EVENT for that process's own
+// group, detaches again, and returns a stable exit code with ok=true. main
+// must os.Exit(code) immediately without performing any normal GameNode
+// startup. ok is false for every normal GameNode invocation.
+//
+// Interrupt already verifies PID+StartKey once before spawning this helper,
+// but that check happens in a different, shorter-lived process; there is a
+// real window between it and this helper actually reaching
+// GenerateConsoleCtrlEvent (process creation, binary load, testing/runtime
+// init) during which the original PID could exit and be reused by an
+// unrelated process. A PID alone is never a safe process identity anywhere
+// else in this codebase (see Identity, verifyWindows), and it is not one
+// here either: this helper re-verifies PID+StartKey together against a
+// freshly opened handle, and keeps that exact handle open across the entire
+// attach/signal sequence below so the OS cannot recycle the PID out from
+// under it mid-delivery — a still-open handle keeps the process object (and
+// therefore its PID) alive even if the process has otherwise exited.
 func RunConsoleSignalHelper() (int, bool) {
-	raw, present := os.LookupEnv(consoleSignalEnv)
+	rawPID, present := os.LookupEnv(consoleSignalEnv)
 	if !present {
 		return 0, false
 	}
-	pid, err := strconv.ParseUint(raw, 10, 32)
+	startKey, present := os.LookupEnv(consoleSignalStartKeyEnv)
+	if !present || startKey == "" {
+		return consoleSignalExitBadRequest, true
+	}
+	pid, err := strconv.ParseUint(rawPID, 10, 32)
 	if err != nil || pid == 0 {
 		return consoleSignalExitBadRequest, true
+	}
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return consoleSignalExitUnsupported, true
+	}
+	defer windows.CloseHandle(handle)
+	currentKey, err := startKeyFromHandle(handle)
+	if err != nil || currentKey != startKey {
+		// Either the process is already gone, or the live PID no longer
+		// belongs to the identity Interrupt actually verified (reused PID,
+		// or a forged/stale request). Refuse rather than signal an unrelated
+		// process; this is the same identity contract as every other
+		// lifecycle path, just enforced here instead of trusted from afar.
+		return consoleSignalExitUnsupported, true
 	}
 	// A process must free any console of its own before attaching to a
 	// different one. This helper is spawned fresh for exactly this purpose
@@ -208,6 +252,9 @@ func RunConsoleSignalHelper() (int, bool) {
 	// the target's process group and this helper is not a member of it, so
 	// this is defense in depth, not the primary isolation mechanism.
 	ignoreOwnConsoleCtrl()
+	// The identity-verified handle opened above is still open here (closed
+	// only when this function returns), holding the PID stable through this
+	// final delivery step too.
 	if err := windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(pid)); err != nil {
 		return consoleSignalExitFailed, true
 	}
@@ -306,6 +353,14 @@ func windowsStartKey(pid int) (string, error) {
 		return "", err
 	}
 	defer windows.CloseHandle(handle)
+	return startKeyFromHandle(handle)
+}
+
+// startKeyFromHandle computes the same identity key as windowsStartKey but
+// from an already-open handle, so a caller that must keep that handle open
+// across a later privileged operation (see RunConsoleSignalHelper) verifies
+// identity without a second, separately racy OpenProcess/CloseHandle pair.
+func startKeyFromHandle(handle windows.Handle) (string, error) {
 	var created, exited, kernel, user windows.Filetime
 	if err := windows.GetProcessTimes(handle, &created, &exited, &kernel, &user); err != nil {
 		return "", err

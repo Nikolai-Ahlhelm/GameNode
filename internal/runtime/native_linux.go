@@ -22,6 +22,18 @@ type nativeRuntime struct{}
 func NewNative() Runtime { return nativeRuntime{} }
 
 func (nativeRuntime) Start(_ context.Context, options StartOptions) (Identity, <-chan ExitResult, error) {
+	if options.ConsoleInterruptCapable {
+		// console_interrupt is a compiled, Windows-only stop primitive (see
+		// native_windows.go); there is no Linux console-control-event
+		// concept to honor it with. Refuse the start defensively instead of
+		// silently ignoring the flag and starting a server that could never
+		// receive a real graceful interrupt through this mechanism — the
+		// caller would otherwise only discover the gap much later, at stop
+		// time. Official templates already reject console_interrupt for any
+		// non-Windows platform launch at validation time; this is the
+		// runtime-side backstop for that same invariant.
+		return Identity{}, nil, ErrConsoleInterruptUnsupported
+	}
 	cmd := exec.Command(options.Executable, options.Arguments...)
 	cmd.Dir = options.WorkingDirectory
 	cmd.Env = environment(options.Environment)
