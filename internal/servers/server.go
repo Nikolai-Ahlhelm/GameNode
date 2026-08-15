@@ -245,6 +245,16 @@ type ProvisionedConfigAdapter struct {
 	TemplateID      string
 	TemplateVersion string
 	DefinitionJSON  []byte
+	Values          []ProvisionedConfigValue
+}
+
+// ProvisionedConfigValue is an initial managed configuration value. Values are
+// persisted in the same transaction as the server so a failed registration
+// cannot leave a partially configured server behind.
+type ProvisionedConfigValue struct {
+	Key       string
+	Value     string
+	Sensitive bool
 }
 
 // CreateProvisioned atomically publishes a fully installed native server and
@@ -331,11 +341,21 @@ func (store *Store) CreateProvisioned(ctx context.Context, server Server, templa
 		}
 	}
 	for _, adapter := range configAdapters {
-		if !environmentKey.MatchString(strings.ReplaceAll(adapter.ID, "-", "_")) || adapter.SchemaVersion != 1 || adapter.Version == "" || adapter.TemplateID != templateID || len(adapter.DefinitionJSON) == 0 || len(adapter.DefinitionJSON) > 128<<10 || !json.Valid(adapter.DefinitionJSON) {
+		if !environmentKey.MatchString(strings.ReplaceAll(adapter.ID, "-", "_")) || (adapter.SchemaVersion != 1 && adapter.SchemaVersion != 2) || adapter.Version == "" || adapter.TemplateID != templateID || len(adapter.DefinitionJSON) == 0 || len(adapter.DefinitionJSON) > 128<<10 || !json.Valid(adapter.DefinitionJSON) {
 			return Record{}, ErrProvisionedConfigAdapter
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO server_config_adapters(server_id,adapter_id,adapter_schema_version,adapter_version,template_id,template_version,definition_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, server.ID, adapter.ID, adapter.SchemaVersion, adapter.Version, adapter.TemplateID, adapter.TemplateVersion, string(adapter.DefinitionJSON), stamp(now), stamp(now)); err != nil {
 			return Record{}, fmt.Errorf("%w: %v", ErrProvisionedConfigAdapter, err)
+		}
+		seenValues := map[string]bool{}
+		for _, value := range adapter.Values {
+			if !environmentKey.MatchString(value.Key) || seenValues[value.Key] || len(value.Value) > 16<<10 || strings.ContainsRune(value.Value, 0) {
+				return Record{}, ErrProvisionedConfigAdapter
+			}
+			seenValues[value.Key] = true
+			if _, err = tx.ExecContext(ctx, `INSERT INTO server_config_values(server_id,adapter_id,field_key,value,sensitive,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, server.ID, adapter.ID, value.Key, value.Value, value.Sensitive, stamp(now), stamp(now)); err != nil {
+				return Record{}, fmt.Errorf("%w: %v", ErrProvisionedConfigAdapter, err)
+			}
 		}
 	}
 	if err = tx.Commit(); err != nil {
@@ -533,7 +553,22 @@ type Service struct {
 	autoAttempts sync.Map
 	autoMu       sync.Mutex
 	log          *slog.Logger
+	launch       LaunchResolver
 }
+
+// LaunchResolver expands the persisted base launch with reviewed managed
+// configuration immediately before the process starts. It is optional; a nil
+// resolver leaves the persisted executable, arguments, and environment
+// untouched. Implementations must return a complete argv/environment pair and
+// must never be given the opportunity to persist secret values.
+type LaunchResolver interface {
+	ResolveLaunch(ctx context.Context, serverID string, arguments []string, environment map[string]string) ([]string, map[string]string, error)
+}
+
+// SetLaunchResolver installs the managed configuration resolver. The
+// composition root owns this wiring so internal/servers keeps no dependency on
+// the configuration package.
+func (s *Service) SetLaunchResolver(resolver LaunchResolver) { s.launch = resolver }
 
 // processInstance binds one native process identity to the console session
 // created for it. Its finalizer is the sole owner of exit cleanup.
@@ -823,6 +858,21 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 		s.log.Error("server port preflight failed", "module", "Server.Start", "server_id", id, "error", preflight)
 		return Record{}, preflight
 	}
+	// Managed configuration is expanded after preflight but before any state
+	// mutation, console session, or process start, so an incomplete or invalid
+	// configuration fails like a preflight error rather than a crash. The
+	// resolved values stay in memory and are never persisted.
+	arguments, environment := record.Server.Arguments, record.Server.EnvironmentVariables
+	if s.launch != nil {
+		arguments, environment, err = s.launch.ResolveLaunch(ctx, id, arguments, environment)
+		if err != nil {
+			resolution := fmt.Errorf("managed configuration: %w", err)
+			record.Runtime.LastError = resolution.Error()
+			_ = s.store.SaveRuntime(context.Background(), id, record.Runtime)
+			s.log.Error("managed game configuration could not be resolved", "module", "Server.Start", "server_id", id, "error", resolution)
+			return Record{}, resolution
+		}
+	}
 	now := time.Now().UTC()
 	record.Runtime.CurrentState = StateStarting
 	record.Runtime.LastError = ""
@@ -845,9 +895,9 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 	}
 	identity, exits, err := s.runtime.Start(ctx, runtime.StartOptions{
 		Executable:       record.Server.ResolvedExecutable(),
-		Arguments:        record.Server.Arguments,
+		Arguments:        arguments,
 		WorkingDirectory: record.Server.WorkingDirectory,
-		Environment:      record.Server.EnvironmentVariables,
+		Environment:      environment,
 		IO: runtime.StartIO{
 			Stdout: session.Output("stdout"),
 			Stderr: session.Output("stderr"),

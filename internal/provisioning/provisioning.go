@@ -231,6 +231,11 @@ type run struct {
 	// finalizing closes cancellation before the transactional server insert.
 	finalizing bool
 	recovering bool
+	// managedSecrets records that this registration carries managed secret
+	// values. They are deliberately never written to job state, so a retry
+	// could only create a server with silently missing configuration. Such a
+	// registration is therefore not recoverable.
+	managedSecrets bool
 }
 type registrationSnapshot struct {
 	Server         servers.Server                     `json:"server"`
@@ -496,6 +501,7 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 	s.phase(current, InstallationValidated, "Game installation validated")
 	s.phase(current, ResolvingLaunch, "Applying validated game configuration")
 	configSnapshots := make([]servers.ProvisionedConfigAdapter, 0, len(template.ResolvedAdapters))
+	managedKeys := map[string]bool{}
 	for _, adapter := range template.ResolvedAdapters {
 		adapterValues := map[string]string{}
 		for _, field := range adapter.Fields {
@@ -503,7 +509,25 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 				adapterValues[field.Key] = value
 			}
 		}
-		if !adapter.PostStartOnly {
+		var managedValues []servers.ProvisionedConfigValue
+		if gameconfig.ManagedLaunch(adapter) {
+			// A managed-launch adapter owns no file. Its initial values are
+			// persisted with the server and applied to argv/environment at
+			// start, so they must not also become process environment entries.
+			initial, valueErr := gameconfig.InitialValues(adapter, adapterValues)
+			if valueErr != nil {
+				s.log.With("module", "Provisioning.GameConfig").Error("managed launch configuration is invalid", "job_id", current.job.ID, "template_id", template.ID, "adapter_id", adapter.ID, "error", valueErr)
+				code, summary := gameConfigFailure(valueErr)
+				s.fail(current, ResolvingLaunch, code, "Game configuration failed", summary, true)
+				return
+			}
+			for _, value := range initial {
+				managedValues = append(managedValues, servers.ProvisionedConfigValue{Key: value.Key, Value: value.Value, Sensitive: value.Sensitive})
+			}
+			for _, field := range adapter.Fields {
+				managedKeys[field.Key] = true
+			}
+		} else if !adapter.PostStartOnly {
 			if err = gameconfig.Apply(current.root, adapter, adapterValues); err != nil {
 				s.log.With("module", "Provisioning.GameConfig").Error("game configuration could not be written", "job_id", current.job.ID, "template_id", template.ID, "adapter_id", adapter.ID, "error", err)
 				code, summary := gameConfigFailure(err)
@@ -517,7 +541,7 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 			s.fail(current, ResolvingLaunch, "LAUNCH_RESOLUTION_FAILED", "Game configuration failed", "Configuration snapshot could not be created", true)
 			return
 		}
-		configSnapshots = append(configSnapshots, servers.ProvisionedConfigAdapter{ID: adapter.ID, SchemaVersion: adapter.SchemaVersion, Version: adapter.Version, TemplateID: template.ID, TemplateVersion: template.Version, DefinitionJSON: definitionJSON})
+		configSnapshots = append(configSnapshots, servers.ProvisionedConfigAdapter{ID: adapter.ID, SchemaVersion: adapter.SchemaVersion, Version: adapter.Version, TemplateID: template.ID, TemplateVersion: template.Version, DefinitionJSON: definitionJSON, Values: managedValues})
 	}
 	resolvedLaunch, err := templates.ResolveLaunch(template, s.hostOS, values, current.root)
 	if err != nil {
@@ -525,21 +549,33 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 		s.fail(current, ResolvingLaunch, templates.ValidationCode(err), "Launch resolution failed", "Game files and configuration were validated, but GameNode could not resolve the native server launch", true)
 		return
 	}
-	server, metadata, err := buildServer(template, resolvedLaunch, current.job.ServerName, values, sensitive)
+	server, metadata, err := buildServer(template, resolvedLaunch, current.job.ServerName, values, sensitive, managedKeys)
 	if err != nil {
 		s.log.With("module", "Provisioning.ServerConfig").Error("server configuration could not be built", "job_id", current.job.ID, "template_id", template.ID, "error", err)
 		s.fail(current, ResolvingLaunch, "LAUNCH_RESOLUTION_FAILED", "Launch resolution failed", "Game files were installed successfully, but GameNode could not resolve the native server launch", true)
 		return
 	}
-	snapshot, marshalErr := json.Marshal(registrationSnapshot{Server: server, TemplateID: template.ID, Variables: metadata, Ports: provisionedPorts, ConfigAdapters: configSnapshots})
-	snapshotErr := marshalErr
-	if snapshotErr == nil {
-		snapshotErr = s.store.SaveRegistrationSnapshot(context.Background(), current.job.ID, snapshot)
-	}
-	if snapshotErr != nil {
-		s.log.Error("registration snapshot could not be persisted", "module", "Provisioning.Registration", "job_id", current.job.ID, "phase", RegisteringServer, "error_code", "SERVER_RELATED_DATA_FAILED", "error", snapshotErr)
-		s.fail(current, RegisteringServer, "SERVER_RELATED_DATA_FAILED", "Server registration failed", "Game files were installed successfully, but GameNode could not prepare the server registration", true)
-		return
+	safeAdapters, managedSecrets := redactedAdapters(configSnapshots)
+	if managedSecrets {
+		// Managed secrets must never be written to job state, so this
+		// registration cannot be replayed from a snapshot. Persisting a
+		// redacted snapshot would let a retry create a server whose managed
+		// secrets are silently missing, so no snapshot is written at all and
+		// the job is reported as not recoverable.
+		s.mu.Lock()
+		current.managedSecrets = true
+		s.mu.Unlock()
+	} else {
+		snapshot, marshalErr := json.Marshal(registrationSnapshot{Server: server, TemplateID: template.ID, Variables: metadata, Ports: provisionedPorts, ConfigAdapters: safeAdapters})
+		snapshotErr := marshalErr
+		if snapshotErr == nil {
+			snapshotErr = s.store.SaveRegistrationSnapshot(context.Background(), current.job.ID, snapshot)
+		}
+		if snapshotErr != nil {
+			s.log.Error("registration snapshot could not be persisted", "module", "Provisioning.Registration", "job_id", current.job.ID, "phase", RegisteringServer, "error_code", "SERVER_RELATED_DATA_FAILED", "error", snapshotErr)
+			s.fail(current, RegisteringServer, "SERVER_RELATED_DATA_FAILED", "Server registration failed", "Game files were installed successfully, but GameNode could not prepare the server registration", true)
+			return
+		}
 	}
 	s.phase(current, RegisteringServer, "Registering the GameNode server")
 	s.mu.Lock()
@@ -553,6 +589,9 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 	record, err := s.servers.CreateProvisioned(ctx, server, template.ID, metadata, provisionedPorts, configSnapshots)
 	if err != nil {
 		failure, summary := serverCreationFailure(err)
+		if managedSecrets {
+			summary = "Game files were installed successfully, but the server definition could not be saved. This template has managed secret settings, which GameNode never stores in provisioning job data, so this registration cannot be retried; provision the server again."
+		}
 		s.log.With("module", "Server.Create").Error("provisioned server could not be created", "job_id", current.job.ID, "template_id", template.ID, "failure", failure, "error", err)
 		s.fail(current, RegisteringServer, failure, "Server registration failed", summary, true)
 		return
@@ -721,7 +760,9 @@ func (s *Service) fail(current *run, phase, code, summary, errorSummary string, 
 	s.mu.Lock()
 	current.job.FailurePhase = phase
 	current.job.FailureCode = code
-	current.job.RegistrationRecoverable = current.job.InstallationCompleted && phase == RegisteringServer
+	// A registration carrying managed secrets has no persisted snapshot, so it
+	// must never advertise a retry that would drop those values.
+	current.job.RegistrationRecoverable = current.job.InstallationCompleted && phase == RegisteringServer && !current.managedSecrets
 	s.mu.Unlock()
 	s.finish(current, Failed, summary, errorSummary, files, "")
 }
@@ -834,10 +875,40 @@ func CheckProvisionable(template templates.Template, values map[string]string, h
 	return plan, nil
 }
 
-func buildServer(template templates.Template, launch templates.ResolvedLaunch, name string, values map[string]string, sensitive map[string]bool) (servers.Server, []servers.ProvisionedVariable, error) {
+// redactedAdapters strips managed secret values from the persisted job
+// registration snapshot and reports whether anything was removed. Secrets must
+// never enter job state, so a registration that carries them cannot be replayed
+// from a snapshot; the caller marks it non-recoverable instead of creating a
+// server whose managed secrets would be silently missing.
+func redactedAdapters(adapters []servers.ProvisionedConfigAdapter) ([]servers.ProvisionedConfigAdapter, bool) {
+	result := make([]servers.ProvisionedConfigAdapter, 0, len(adapters))
+	redacted := false
+	for _, adapter := range adapters {
+		safe := adapter
+		safe.Values = nil
+		for _, value := range adapter.Values {
+			if value.Sensitive {
+				redacted = true
+				continue
+			}
+			safe.Values = append(safe.Values, value)
+		}
+		result = append(result, safe)
+	}
+	return result, redacted
+}
+
+// buildServer creates the normal native server definition. Keys owned by a
+// managed-launch adapter are deliberately excluded from the process
+// environment and from template-variable metadata: the adapter snapshot and
+// server_config_values are their single source of truth.
+func buildServer(template templates.Template, launch templates.ResolvedLaunch, name string, values map[string]string, sensitive map[string]bool, managed map[string]bool) (servers.Server, []servers.ProvisionedVariable, error) {
 	metadata := make([]servers.ProvisionedVariable, 0, len(values))
 	environment := map[string]string{}
 	for key, value := range values {
+		if managed[key] {
+			continue
+		}
 		environment[key] = value
 		metadata = append(metadata, servers.ProvisionedVariable{Key: key, Sensitive: sensitive[key], Source: template.SourceType, Version: template.Version})
 	}

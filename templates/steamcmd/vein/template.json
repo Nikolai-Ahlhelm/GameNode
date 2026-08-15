@@ -1,0 +1,211 @@
+{
+  "schema_version": 2,
+  "id": "vein",
+  "name": "Vein Dedicated Server",
+  "description": "Install the official Vein dedicated server through SteamCMD and launch its native Windows server executable directly without a shell.",
+  "version": "1.0.0",
+  "category": "steamcmd",
+  "minimum_gamenode_version": "0.2.0",
+  "known_limitations": [
+    "Console commands and a documented graceful shutdown procedure are marked \"to be determined\" in the upstream wiki. This template uses terminate as a bounded fallback and does not claim graceful-save semantics.",
+    "No dedicated configuration file is documented upstream. Server name, admin/whitelist management, and save handling are not exposed as GameNode variables.",
+    "The upstream server requires the Visual C++ 2012/2013/2015-2022 redistributables and DirectX End-User Runtimes on the host; GameNode does not install these prerequisites.",
+    "Upstream references an optional TCP RCON listener on the game port without documenting how to enable or authenticate it; this template does not configure or use RCON.",
+    "SteamCMD is used for initial installation only; automatic updates are not enabled.",
+    "Only the documented 64-bit Windows build is advertised; Linux is not offered upstream."
+  ],
+  "icon": "steamcmd",
+  "source_type": "official",
+  "source_identifier": "vein",
+  "source_format_version": "2",
+  "tags": ["vein", "steam", "steamcmd", "survival"],
+  "source_metadata": {
+    "author": "GameNode",
+    "tags": ["vein", "steam", "steamcmd", "survival"]
+  },
+  "installer": {
+    "type": "steamcmd",
+    "steamcmd": {
+      "app_id": 2131400,
+      "validate": true,
+      "login_mode": "anonymous",
+      "platform": "native",
+      "install_target": "server_root"
+    }
+  },
+  "platform_launches": {
+    "windows": {
+      "executable": "Vein/Binaries/Win64/VeinServer-Win64-Test.exe",
+      "arguments": [
+        "-log",
+        "-port={{SERVER_PORT}}",
+        "-QueryPort={{QUERY_PORT}}",
+        "-MaxPlayers={{MAX_PLAYERS}}"
+      ],
+      "working_root": "server_root",
+      "stop_method": "terminate",
+      "stop_timeout_seconds": 60
+    }
+  },
+  "variables": [
+    {
+      "name": "Server port",
+      "description": "Primary UDP game port players connect to.",
+      "key": "SERVER_PORT",
+      "default_value": "7777",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1024,
+        "max": 65534
+      },
+      "group": "Network"
+    },
+    {
+      "name": "Query port",
+      "description": "UDP port used for the Steam server browser query. Cannot be set between 27020 and 27050; Steam reserves that range for local use.",
+      "key": "QUERY_PORT",
+      "default_value": "7778",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1024,
+        "max": 65534
+      },
+      "group": "Network"
+    },
+    {
+      "name": "Maximum players",
+      "description": "Player cap passed on the command line. Upstream's own default is 64.",
+      "key": "MAX_PLAYERS",
+      "default_value": "64",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1,
+        "max": 128
+      },
+      "group": "Server"
+    }
+  ],
+  "ports": [
+    {
+      "name": "Game UDP",
+      "protocol": "udp",
+      "variable": "SERVER_PORT",
+      "required": true,
+      "purpose": "Primary Vein game traffic"
+    },
+    {
+      "name": "Game RCON TCP",
+      "protocol": "tcp",
+      "variable": "SERVER_PORT",
+      "required": false,
+      "purpose": "Optional remote console access documented on the same port number as the game port; GameNode does not configure or use it"
+    },
+    {
+      "name": "Query UDP",
+      "protocol": "udp",
+      "variable": "QUERY_PORT",
+      "required": true,
+      "purpose": "Steam server browser query traffic"
+    }
+  ],
+  "expected_files": [
+    {
+      "path": "Vein/Binaries/Win64/VeinServer-Win64-Test.exe",
+      "type": "file",
+      "required": true,
+      "executable": true,
+      "platform": "windows"
+    }
+  ],
+  "requirements": [
+    {
+      "type": "os",
+      "level": "hard",
+      "value": "windows",
+      "description": "The dedicated server is documented for 64-bit Windows only; no Linux build is currently offered upstream."
+    },
+    {
+      "type": "steamcmd",
+      "level": "hard",
+      "value": "anonymous",
+      "description": "Managed SteamCMD with anonymous login is required for installation."
+    },
+    {
+      "type": "architecture",
+      "level": "hard",
+      "value": "amd64",
+      "description": "VeinServer-Win64-Test.exe is a 64-bit executable and will not run on a 32-bit host."
+    },
+    {
+      "type": "disk",
+      "level": "informational",
+      "description": "Reserve at least 5 GB for server files plus additional space for saves and future updates, per upstream documentation."
+    },
+    {
+      "type": "note",
+      "level": "informational",
+      "value": "redist-required",
+      "description": "The host must have the Visual C++ 2012/2013/2015-2022 redistributables and DirectX End-User Runtimes installed; GameNode does not install these."
+    },
+    {
+      "type": "note",
+      "level": "informational",
+      "value": "memory",
+      "description": "Upstream documents at least 8 GB of RAM for an empty server; usage grows with connected players, mods, and settings."
+    }
+  ],
+  "help": {
+    "summary": "GameNode installs Steam App 2131400 anonymously and launches VeinServer-Win64-Test.exe directly without a batch file or shell. Game port, query port, and max players are edited in the server's Configuration tab.",
+    "notes": [
+      "Upstream documents at least 8 GB of RAM as the minimum for an empty server; usage grows with connected players, mods, and settings.",
+      "The query port cannot fall between 27020 and 27050 because Steam reserves that range for local use.",
+      "Console commands and a documented graceful shutdown path are marked \"to be determined\" in the official wiki, so this template uses terminate as a bounded fallback.",
+      "Only a 64-bit Windows build is published upstream; Linux is not advertised by this template."
+    ]
+  },
+  "compatibility": {
+    "status": "partially_compatible",
+    "findings": [
+      {
+        "severity": "warning",
+        "component": "stop",
+        "code": "VEIN_GRACEFUL_STOP_UNDOCUMENTED",
+        "summary": "Upstream does not document a console command, RCON command, or signal for graceful shutdown, so GameNode's native terminate lifecycle is used without a save guarantee."
+      },
+      {
+        "severity": "info",
+        "component": "configuration",
+        "code": "VEIN_NO_CONFIG_FILE_DOCUMENTED",
+        "summary": "No dedicated server configuration file is documented upstream; all managed settings are passed as process arguments."
+      },
+      {
+        "severity": "info",
+        "component": "network",
+        "code": "VEIN_RCON_UNDOCUMENTED",
+        "summary": "Upstream references an optional TCP RCON listener on the game port without documenting how to enable or authenticate it; this template does not configure RCON."
+      }
+    ]
+  },
+  "read_only": true,
+  "platforms": ["windows"],
+  "prerequisites": [
+    "Network access to Steam content servers",
+    "64-bit Windows host with the Visual C++ 2012/2013/2015-2022 redistributables and DirectX End-User Runtimes installed",
+    "At least 8 GB RAM and 5 GB of free disk space"
+  ]
+}

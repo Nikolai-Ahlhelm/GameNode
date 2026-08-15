@@ -36,7 +36,7 @@ The current v0.2 direction adds a normalized template model, the Official Game L
 - `internal/provisioning`: persisted asynchronous provisioning jobs and normal-server creation.
 - `internal/gameconfig`: persisted, versioned declarative per-game configuration adapters and safe format-specific edits.
 - `internal/database`: SQLite open/migration runner.
-- `migrations`: ordered embedded SQL migrations. The current highest file is `018_provisioning_status_phases.sql`.
+- `migrations`: ordered embedded SQL migrations. The current highest file is `019_server_config_values.sql`.
 - `web`: React/TypeScript/Vite source and Node helper tests. `cmd/gamenode/webassets` is generated production output embedded by Go.
 - `templates`: repository-owned Official Game Library manifest, templates, adapters, fixtures, and contribution rules.
 - `docs`: architecture, security, runtime, API, development, CI, and ADR details.
@@ -51,6 +51,7 @@ The current v0.2 direction adds a normalized template model, the Official Game L
 - `servers.Service` is the authority for ordinary server lifecycle. Do not launch managed game processes directly from an API or provisioning handler.
 - Templates and provisioning must end by creating an ordinary `servers.Server` with runtime type `native`. Do not create a second "Egg runtime" or template-specific lifecycle.
 - Preserve direct `Executable` plus `Arguments[]` launching. A compatibility request is not permission to regress to shell-by-default.
+- Managed game configuration may extend the launch only through `servers.Service`'s optional `LaunchResolver`, called immediately before `Runtime.Start`. Bindings are a closed compiled whitelist; never add an expression language, an index-based argument edit, or a user-supplied argument name, and never persist a resolved launch.
 
 ## 5. Runtime Invariants
 
@@ -151,8 +152,9 @@ See `docs/security.md`, `docs/api.md`, ADR `docs/adr/0005-filesystem-sandbox.md`
 - `templates/catalog.json` is manifest schema v1 and lists relative JSON files below `templates/`. The fixed source is `https://raw.githubusercontent.com/Nikolai-Ahlhelm/GameNode/main/templates/`; there is no configurable source, GitHub API discovery, token, hash, or signature in v1.
 - The catalog, each template, and same-directory adapter are independently bounded and validated. Relative files cannot be URLs, absolute/drive/UNC paths, traversal, or unlisted paths.
 - `<data>/templates/cache` is a sanitized last-good cache. It loads during catalog construction. Remote refresh is on library use/manual refresh, not a startup dependency; refresh failure preserves cached official entries and imported/built-in availability, marks offline state, and must not break GameNode startup.
-- Current repository catalog entries are Minecraft NeoForge 2.0.0 (adopt existing, Windows/Linux), 7 Days to Die 2.0.0 (SteamCMD, Windows/Linux), Project Zomboid 2.0.0 (SteamCMD, Windows only), Palworld 1.1.0 (SteamCMD, Windows only), Satisfactory 1.0.0 (SteamCMD, Windows only), and Eco 1.0.0 (SteamCMD, Windows/Linux).
+- Current repository catalog entries are Minecraft NeoForge 2.0.0 (adopt existing, Windows/Linux), 7 Days to Die 2.0.0 (SteamCMD, Windows/Linux), Project Zomboid 2.0.0 (SteamCMD, Windows only), Palworld 1.1.0 (SteamCMD, Windows only), Satisfactory 1.0.0 (SteamCMD, Windows only), Eco 1.0.0 (SteamCMD, Windows/Linux), and Valheim 1.1.0 (SteamCMD, Windows only, schema-v2 `managed-launch` adapter).
 - To add/update an official template: follow `templates/README.md`; add/update reviewed JSON under the correct game directory; keep IDs stable; bump template version for behavior/default/port changes; update `catalog.json` in the same change; validate backend and frontend helpers; use an opt-in real provision/start/stop smoke when practical.
+- Configuration adapter schema v1 (file formats) and v2 (adds `managed-launch` bindings) are both supported; v1 adapters must keep working unchanged. A `managed-launch` field key must match a declared template variable and must not also appear as a base-launch placeholder, so a setting has exactly one source of truth.
 - Catalog schema v1 and Official Template schema v2 must match the code constants; Template schema v1 remains readable for cached/backward-compatible data. `minimum_gamenode_version` is validated and enforced as an unsupported compatibility finding for older release builds; development versions are intentionally treated as current enough.
 
 ## 14. Frontend Rules
@@ -167,7 +169,7 @@ See `docs/security.md`, `docs/api.md`, ADR `docs/adr/0005-filesystem-sandbox.md`
 ## 15. Database and Migration Rules
 
 - SQLite via `modernc.org/sqlite` is the only database. Foreign keys and a busy timeout are enabled at open.
-- Migrations are committed SQL, embedded by `migrations_embed.go`, sorted lexically, and applied once inside individual transactions. Inspect `migrations/` before choosing a number; current highest is `018_provisioning_status_phases.sql`.
+- Migrations are committed SQL, embedded by `migrations_embed.go`, sorted lexically, and applied once inside individual transactions. Inspect `migrations/` before choosing a number; current highest is `019_server_config_values.sql`.
 - Never edit an already applied migration. Add the next zero-padded migration and update tests/queries/models together.
 - Verify both a fresh database and upgrade from the previous schema. Migration SQL must be deterministic and must not depend on local paths, network, clock-based data decisions, or unordered input.
 - Store/parse timestamps as UTC RFC3339Nano unless an existing schema contract says otherwise.
@@ -257,6 +259,9 @@ Code and tests are the final implementation truth. Keep docs synchronized when b
 ## 22. Current Project Status
 
 - Repository history contains tags `v0.1.0` and `v0.2.0`; the current checked-out commit is tagged `v0.2.0`. v0.1 delivered the single-node native-management foundation.
+- Managed launch/environment configuration bindings (adapter schema v2) are implemented with Valheim as the reference game. A `launch-secret` value is inserted into the child argv only at start; it is excluded from APIs, audit, logs, diagnostics, support bundles, job state, and the persisted registration snapshot. Local OS process inspection of arguments remains an unavoidable game-imposed limitation.
+- A provisioning job carrying managed secret values persists no registration snapshot and is not registration-recoverable. Do not "fix" this by storing secrets in job state or by retrying from a redacted snapshot; that would create a server with silently missing configuration.
+- The launch resolver reads only the per-server `server_config_adapters` snapshot and `server_config_values`. `internal/gameconfig` has no catalog dependency; never let runtime resolution consult the live Official catalog.
 - The current repository/worktree implements the v0.2 Egg import foundation, normalized template persistence, global template RBAC/audit/UI, managed fixed-source anonymous SteamCMD provisioning, persisted cancellable jobs, the remote/cache-backed Official Game Library, NeoForge adoption, official 7 Days to Die and Project Zomboid templates, template provenance, and versioned declarative game-configuration adapters.
 - Some of the latest catalog/adapter/provisioning work is present as uncommitted working-tree changes. Treat it as active current code for edits and reviews, but do not call it part of a published tag without checking the committed/tagged tree.
 - Known boundaries: no generic Egg scripts or containers; no credentialed Steam login/Steam Guard; no automatic server updates; no resume after interrupted provisioning; no encrypted-at-rest environment secrets; no community/configurable catalog or catalog signatures; no automatic NeoForge/Minecraft install or EULA mutation; Project Zomboid official provisioning is Windows-only; rediscovered consoles stay detached; port probes are best effort with a bind-time race.

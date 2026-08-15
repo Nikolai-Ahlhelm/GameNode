@@ -132,6 +132,9 @@ func main() {
 	steamManager.SetLogger(log)
 	provisioner := provisioning.NewWithOptions(db, templateService, steamManager, serverService, cfg.Data.Directory, provisioning.Options{Log: log})
 	gameConfigService := gameconfig.New(db, serverService)
+	// The server service stays the lifecycle authority; it only asks the
+	// configuration service to expand the persisted base launch before start.
+	serverService.SetLaunchResolver(gameConfigService)
 	defer provisioner.Close()
 	if err = provisioner.Initialize(context.Background()); err != nil {
 		log.Error("provisioning recovery failed", "error", err.Error())

@@ -1,0 +1,253 @@
+{
+  "schema_version": 2,
+  "id": "valheim",
+  "name": "Valheim Dedicated Server",
+  "description": "Install the official Valheim dedicated server through SteamCMD and run the native Windows server executable directly. Server name, world, password, visibility, crossplay, and save interval are managed GameNode configuration settings.",
+  "version": "1.1.0",
+  "category": "steamcmd",
+  "minimum_gamenode_version": "0.2.0",
+  "known_limitations": [
+    "Valheim accepts its server password only as a process argument. GameNode stores the password outside its API, audit, logs, diagnostics, and support bundles and inserts it into the child process argument list at start, but a sufficiently privileged local operating-system user can still inspect process arguments. This limit comes from the game and cannot be removed by GameNode.",
+    "Valheim refuses to advertise a public server without a password. Leave the password empty only for a private server that players join directly.",
+    "Valheim documents CTRL+C as the proper shutdown method. GameNode does not model console control events, so this template uses terminate as a bounded fallback and does not claim graceful-save semantics.",
+    "The upstream dedicated server also supports Linux, but this template advertises Windows only until the direct Linux executable, required environment, and shutdown behavior are independently acceptance-tested without invoking start_server.sh.",
+    "SteamCMD is used for initial installation only; automatic updates are not enabled."
+  ],
+  "icon": "steamcmd",
+  "source_type": "official",
+  "source_identifier": "valheim",
+  "source_format_version": "2",
+  "tags": ["valheim", "steam", "steamcmd", "survival", "vikings"],
+  "source_metadata": {
+    "author": "GameNode",
+    "tags": ["valheim", "steam", "steamcmd", "survival", "vikings"]
+  },
+  "installer": {
+    "type": "steamcmd",
+    "steamcmd": {
+      "app_id": 896660,
+      "validate": true,
+      "login_mode": "anonymous",
+      "platform": "native",
+      "install_target": "server_root"
+    }
+  },
+  "platform_launches": {
+    "windows": {
+      "executable": "valheim_server.exe",
+      "arguments": [
+        "-nographics",
+        "-batchmode",
+        "-port",
+        "{{SERVER_PORT}}",
+        "-savedir",
+        "data"
+      ],
+      "environment": {
+        "STEAMAPPID": "892970"
+      },
+      "working_root": "server_root",
+      "stop_method": "terminate",
+      "stop_timeout_seconds": 60
+    }
+  },
+  "variables": [
+    {
+      "name": "Server name",
+      "description": "Name shown in the Valheim server list.",
+      "key": "SERVER_NAME",
+      "default_value": "GameNode Valheim",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min_length": 1,
+        "max_length": 64
+      },
+      "group": "General"
+    },
+    {
+      "name": "World",
+      "description": "World to create or load inside the managed save directory.",
+      "key": "WORLD_NAME",
+      "default_value": "Dedicated",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min_length": 1,
+        "max_length": 64
+      },
+      "group": "General"
+    },
+    {
+      "name": "Server password",
+      "description": "Password required to join. Required for a public server.",
+      "key": "SERVER_PASSWORD",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "secret",
+      "sensitive": true,
+      "required": false,
+      "nullable": true,
+      "validation": {
+        "max_length": 64
+      },
+      "group": "Security"
+    },
+    {
+      "name": "Public server",
+      "description": "List the server in the public browser.",
+      "key": "PUBLIC_VISIBILITY",
+      "default_value": "0",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Networking"
+    },
+    {
+      "name": "Crossplay",
+      "description": "Run the server on the PlayFab crossplay backend instead of the Steam backend.",
+      "key": "CROSSPLAY",
+      "default_value": "0",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Networking"
+    },
+    {
+      "name": "Save interval",
+      "description": "How often the world is saved, in seconds.",
+      "key": "SAVE_INTERVAL_SECONDS",
+      "default_value": "1800",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 60,
+        "max": 86400
+      },
+      "group": "Gameplay"
+    },
+    {
+      "name": "Server port",
+      "description": "Base UDP port. Valheim also uses the next UDP port.",
+      "key": "SERVER_PORT",
+      "default_value": "2456",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1024,
+        "max": 65534
+      },
+      "group": "Networking"
+    }
+  ],
+  "ports": [
+    {
+      "name": "Game UDP",
+      "protocol": "udp",
+      "variable": "SERVER_PORT",
+      "required": true,
+      "purpose": "Primary Valheim game traffic"
+    },
+    {
+      "name": "Game UDP +1",
+      "protocol": "udp",
+      "variable": "SERVER_PORT",
+      "offset": 1,
+      "required": true,
+      "purpose": "Secondary Valheim game traffic"
+    }
+  ],
+  "expected_files": [
+    {
+      "path": "valheim_server.exe",
+      "type": "file",
+      "required": true,
+      "executable": true,
+      "platform": "windows"
+    }
+  ],
+  "config_files": [
+    {
+      "path": "data/adminlist.txt",
+      "format": "text",
+      "description": "Valheim administrator allow-list generated/used in the configured save directory. This is documentation metadata only."
+    },
+    {
+      "path": "data/bannedlist.txt",
+      "format": "text",
+      "description": "Valheim ban list in the configured save directory. This is documentation metadata only."
+    },
+    {
+      "path": "data/permittedlist.txt",
+      "format": "text",
+      "description": "Valheim permitted-player list in the configured save directory. This is documentation metadata only."
+    }
+  ],
+  "requirements": [
+    {
+      "type": "os",
+      "level": "hard",
+      "value": "windows",
+      "description": "This reviewed template currently declares the direct Windows launch only."
+    },
+    {
+      "type": "steamcmd",
+      "level": "hard",
+      "value": "anonymous",
+      "description": "Managed SteamCMD with anonymous login is required for installation."
+    },
+    {
+      "type": "note",
+      "level": "informational",
+      "value": "password-process-argument",
+      "description": "Valheim reads its server password from a process argument. GameNode keeps the value out of its own APIs, audit, logs, and support bundles, but local operating-system process inspection remains possible."
+    }
+  ],
+  "configuration": {
+    "adapters": [
+      {
+        "id": "valheim-settings",
+        "schema_version": 2,
+        "file": "valheim-settings.adapter.json"
+      }
+    ]
+  },
+  "help": {
+    "summary": "GameNode installs Steam App 896660 and launches valheim_server.exe directly without executing the shipped batch file. Server name, world, password, visibility, crossplay, and save interval are edited in the server's Configuration tab.",
+    "notes": [
+      "The save directory is fixed to the server-root-relative path data so worlds and permission lists stay within the managed server root.",
+      "Valheim uses the selected UDP base port and base port + 1.",
+      "Changing a managed setting requires a server restart before it takes effect."
+    ]
+  },
+  "compatibility": {
+    "status": "compatible",
+    "findings": []
+  },
+  "read_only": true,
+  "platforms": ["windows"]
+}

@@ -407,7 +407,7 @@ func TestRepositoryOfficialCatalog(t *testing.T) {
 		installer string
 		platforms int
 		resolver  string
-	}{"7-days-to-die": {InstallerSteamCMD, 2, ""}, "project-zomboid": {InstallerSteamCMD, 1, ""}, "minecraft-neoforge": {InstallerExistingFiles, 2, "neoforge"}, "palworld": {InstallerSteamCMD, 1, ""}, "satisfactory": {InstallerSteamCMD, 1, ""}, "eco": {InstallerSteamCMD, 2, ""}}
+	}{"7-days-to-die": {InstallerSteamCMD, 2, ""}, "project-zomboid": {InstallerSteamCMD, 1, ""}, "minecraft-neoforge": {InstallerExistingFiles, 2, "neoforge"}, "palworld": {InstallerSteamCMD, 1, ""}, "satisfactory": {InstallerSteamCMD, 1, ""}, "eco": {InstallerSteamCMD, 2, ""}, "valheim": {InstallerSteamCMD, 1, ""}, "vein": {InstallerSteamCMD, 1, ""}}
 	for _, entry := range manifest.Templates {
 		expected, ok := wanted[entry.ID]
 		if !ok || entry.Installer != expected.installer || len(entry.Platforms) != expected.platforms {

@@ -84,6 +84,42 @@
       "tags": ["eco", "steam", "steamcmd", "simulation", "survival"],
       "icon": "steamcmd",
       "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "valheim",
+      "name": "Valheim Dedicated Server",
+      "description": "Install the official Valheim dedicated server through SteamCMD and run the native Windows server executable directly. Server name, world, password, visibility, crossplay, and save interval are managed GameNode configuration settings.",
+      "category": "steamcmd",
+      "version": "1.1.0",
+      "template_schema_version": 2,
+      "platforms": [
+        "windows"
+      ],
+      "installer": "steamcmd",
+      "file": "steamcmd/valheim/template.json",
+      "tags": [
+        "valheim",
+        "steam",
+        "steamcmd",
+        "survival",
+        "vikings"
+      ],
+      "icon": "steamcmd",
+      "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "vein",
+      "name": "Vein Dedicated Server",
+      "description": "Install the official Vein dedicated server through SteamCMD and launch its native Windows server executable directly without a shell.",
+      "category": "steamcmd",
+      "version": "1.0.0",
+      "template_schema_version": 2,
+      "platforms": ["windows"],
+      "installer": "steamcmd",
+      "file": "steamcmd/vein/template.json",
+      "tags": ["vein", "steam", "steamcmd", "survival"],
+      "icon": "steamcmd",
+      "minimum_gamenode_version": "0.2.0"
     }
   ]
 }

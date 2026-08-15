@@ -29,6 +29,24 @@ const (
 	MaxFindings              = 128
 	MaxStringBytes           = 16 << 10
 	MaxNestingDepth          = 32
+
+	// Adapter formats. The first three edit a game-owned file in place; the
+	// fourth stores typed values in GameNode and binds them to the native
+	// launch. Adapter schema v2 is required for ManagedLaunch.
+	FormatXMLProperties = "xml-properties"
+	FormatINIKeyValues  = "ini-key-values"
+	FormatSectionTuple  = "section-tuple-key-values"
+	FormatManagedLaunch = "managed-launch"
+
+	// Binding types are a closed whitelist. There is deliberately no
+	// expression, template, or index-based argument manipulation.
+	BindingLaunchValue       = "launch-value"
+	BindingLaunchFlag        = "launch-flag"
+	BindingLaunchSecret      = "launch-secret"
+	BindingEnvironmentValue  = "environment-value"
+	BindingEnvironmentSecret = "environment-secret"
+
+	AdapterSchemaVersion = 2
 )
 
 type Template struct {
@@ -96,17 +114,43 @@ type ConfigAdapterInitialization struct {
 	Source string `json:"source"`
 }
 
+// ConfigAdapterField describes one semantic game setting. Property names the
+// technical record inside a game-owned file; Binding instead names a reviewed
+// launch or environment representation. Exactly one of them is populated.
 type ConfigAdapterField struct {
-	Key         string     `json:"key"`
-	Label       string     `json:"label"`
-	Description string     `json:"description,omitempty"`
-	Section     string     `json:"section,omitempty"`
-	Type        string     `json:"type"`
-	Property    string     `json:"property"`
-	Required    bool       `json:"required"`
-	Nullable    bool       `json:"nullable"`
-	Sensitive   bool       `json:"sensitive"`
-	Validation  Validation `json:"validation"`
+	Key         string                `json:"key"`
+	Label       string                `json:"label"`
+	Description string                `json:"description,omitempty"`
+	Section     string                `json:"section,omitempty"`
+	Type        string                `json:"type"`
+	Property    string                `json:"property,omitempty"`
+	Binding     *ConfigAdapterBinding `json:"binding,omitempty"`
+	Required    bool                  `json:"required"`
+	Nullable    bool                  `json:"nullable"`
+	Sensitive   bool                  `json:"sensitive"`
+	Validation  Validation            `json:"validation"`
+}
+
+// ConfigAdapterBinding is reviewed Official data, never user input. Argument
+// and Name are fixed by the adapter author; a user only supplies the value.
+type ConfigAdapterBinding struct {
+	Type       string `json:"type"`
+	Argument   string `json:"argument,omitempty"`
+	Name       string `json:"name,omitempty"`
+	TrueValue  string `json:"true_value,omitempty"`
+	FalseValue string `json:"false_value,omitempty"`
+}
+
+// LaunchBinding reports whether the binding contributes argv elements rather
+// than environment entries.
+func (b ConfigAdapterBinding) LaunchBinding() bool {
+	return b.Type == BindingLaunchValue || b.Type == BindingLaunchFlag || b.Type == BindingLaunchSecret
+}
+
+// SecretBinding reports whether the binding carries a value that must never be
+// persisted into a resolved launch snapshot, API response, audit record, or log.
+func (b ConfigAdapterBinding) SecretBinding() bool {
+	return b.Type == BindingLaunchSecret || b.Type == BindingEnvironmentSecret
 }
 
 // ExpandRelativePath is the only expansion helper intended for future file

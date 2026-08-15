@@ -174,3 +174,50 @@ func applyMigration(t *testing.T, db *sql.DB, name string) {
 		t.Fatal(err)
 	}
 }
+
+// TestMigration019AddsManagedConfigurationValuesOnUpgrade applies every earlier
+// migration first, so the new managed configuration store is verified on an
+// upgraded database rather than only on a fresh one.
+func TestMigration019AddsManagedConfigurationValuesOnUpgrade(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := fs.ReadDir(gamenode.MigrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == "019_server_config_values.sql" {
+			break
+		}
+		applyMigration(t, db, entry.Name())
+	}
+	if _, err = db.Exec(`INSERT INTO servers(id,creation_mode,name,working_directory,executable,created_at,updated_at) VALUES('server','template','Existing','/tmp/existing','game.exe','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`SELECT 1 FROM server_config_values`); err == nil {
+		t.Fatal("server_config_values must not exist before migration 019")
+	}
+	if err = database.Migrate(db, gamenode.MigrationFiles); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`INSERT INTO server_config_values(server_id,adapter_id,field_key,value,sensitive,created_at,updated_at) VALUES('server','valheim-settings','SERVER_NAME','My Valheim',0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("managed value insert failed after upgrade: %v", err)
+	}
+	if _, err = db.Exec(`INSERT INTO server_config_values(server_id,adapter_id,field_key,value,sensitive,created_at,updated_at) VALUES('server','valheim-settings','SERVER_NAME','Duplicate',0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err == nil {
+		t.Fatal("the primary key must reject a duplicate field")
+	}
+	if _, err = db.Exec(`DELETE FROM servers WHERE id='server'`); err != nil {
+		t.Fatal(err)
+	}
+	var remaining int
+	if err = db.QueryRow(`SELECT COUNT(*) FROM server_config_values`).Scan(&remaining); err != nil || remaining != 0 {
+		t.Fatalf("managed values must cascade with the server: %d %v", remaining, err)
+	}
+}

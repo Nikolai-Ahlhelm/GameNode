@@ -581,7 +581,7 @@ func validateConfigurationReferences(configuration *ConfigurationDefinition) err
 	}
 	seen := map[string]bool{}
 	for _, reference := range configuration.Adapters {
-		if !identifierPattern.MatchString(reference.ID) || reference.SchemaVersion != 1 || seen[reference.ID] || path.Base(reference.File) != reference.File || validateRelativeFile(reference.File) != nil {
+		if !identifierPattern.MatchString(reference.ID) || (reference.SchemaVersion != 1 && reference.SchemaVersion != AdapterSchemaVersion) || seen[reference.ID] || path.Base(reference.File) != reference.File || validateRelativeFile(reference.File) != nil {
 			return errors.New("official template configuration reference is invalid")
 		}
 		seen[reference.ID] = true
@@ -599,14 +599,23 @@ func decodeConfigAdapter(data []byte, reference ConfigAdapterReference, template
 	if err := decoder.Decode(&adapter); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
 		return ConfigAdapterDefinition{}, errors.New("configuration adapter JSON is invalid")
 	}
-	if adapter.SchemaVersion != 1 || adapter.SchemaVersion != reference.SchemaVersion || adapter.ID != reference.ID || !versionPattern.MatchString(adapter.Version) || len(adapter.Fields) == 0 || len(adapter.Fields) > 128 {
+	if (adapter.SchemaVersion != 1 && adapter.SchemaVersion != AdapterSchemaVersion) || adapter.SchemaVersion != reference.SchemaVersion || adapter.ID != reference.ID || !versionPattern.MatchString(adapter.Version) || len(adapter.Fields) == 0 || len(adapter.Fields) > 128 {
 		return ConfigAdapterDefinition{}, errors.New("configuration adapter metadata is invalid")
 	}
-	extension := strings.ToLower(path.Ext(adapter.Target))
-	standardFormat := adapter.Format == "xml-properties" || adapter.Format == "ini-key-values"
-	tupleFormat := adapter.Format == "section-tuple-key-values"
-	if (!standardFormat && !tupleFormat) || (adapter.Format == "xml-properties" && extension != ".xml") || ((adapter.Format == "ini-key-values" || tupleFormat) && extension != ".ini") || validateRelativeConfigTarget(adapter.Target) != nil {
-		return ConfigAdapterDefinition{}, errors.New("configuration adapter target is unsafe")
+	tupleFormat := adapter.Format == FormatSectionTuple
+	managedLaunch := adapter.Format == FormatManagedLaunch
+	if managedLaunch {
+		// A managed-launch adapter owns no file. It must not declare a target,
+		// a seeded initialization, or the post-start file lifecycle.
+		if adapter.SchemaVersion < AdapterSchemaVersion || adapter.Target != "" || adapter.PostStartOnly || adapter.Initialization != nil {
+			return ConfigAdapterDefinition{}, errors.New("configuration adapter launch shape is invalid")
+		}
+	} else {
+		extension := strings.ToLower(path.Ext(adapter.Target))
+		standardFormat := adapter.Format == FormatXMLProperties || adapter.Format == FormatINIKeyValues
+		if (!standardFormat && !tupleFormat) || (adapter.Format == FormatXMLProperties && extension != ".xml") || ((adapter.Format == FormatINIKeyValues || tupleFormat) && extension != ".ini") || validateRelativeConfigTarget(adapter.Target) != nil {
+			return ConfigAdapterDefinition{}, errors.New("configuration adapter target is unsafe")
+		}
 	}
 	propertyPattern := regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
 	sectionPattern := regexp.MustCompile(`^[A-Za-z0-9_./-]{1,160}$`)
@@ -622,17 +631,30 @@ func decodeConfigAdapter(data []byte, reference ConfigAdapterReference, template
 			return ConfigAdapterDefinition{}, errors.New("configuration adapter initialization is invalid")
 		}
 	}
-	if adapter.PostStartOnly && adapter.Format != "ini-key-values" {
+	if adapter.PostStartOnly && adapter.Format != FormatINIKeyValues {
 		return ConfigAdapterDefinition{}, errors.New("configuration adapter lifecycle is invalid")
 	}
 	variables := map[string]TemplateVariable{}
 	for _, variable := range template.Variables {
 		variables[variable.Key] = variable
 	}
-	properties, keys := map[string]bool{}, map[string]bool{}
+	properties, keys, targets := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, field := range adapter.Fields {
 		variable, ok := variables[field.Key]
-		if keys[field.Key] || properties[field.Property] || !officialVariablePattern.MatchString(field.Key) || !propertyPattern.MatchString(field.Property) || strings.TrimSpace(field.Label) == "" || len(field.Label) > 80 || len(field.Section) > 80 || validateAdapterField(field) != nil {
+		if keys[field.Key] || !officialVariablePattern.MatchString(field.Key) || strings.TrimSpace(field.Label) == "" || len(field.Label) > 80 || len(field.Section) > 80 || validateAdapterField(field) != nil {
+			return ConfigAdapterDefinition{}, errors.New("configuration adapter field is invalid")
+		}
+		if managedLaunch {
+			if field.Property != "" || ValidateAdapterBinding(field) != nil {
+				return ConfigAdapterDefinition{}, errors.New("configuration adapter binding is invalid")
+			}
+			// Reject a second field claiming the same argument or environment
+			// name, and reject a setting that the base launch already supplies.
+			if targets[bindingTarget(*field.Binding)] || launchReferencesKey(template, field.Key) {
+				return ConfigAdapterDefinition{}, errors.New("configuration adapter binding is ambiguous")
+			}
+			targets[bindingTarget(*field.Binding)] = true
+		} else if field.Binding != nil || properties[field.Property] || !propertyPattern.MatchString(field.Property) {
 			return ConfigAdapterDefinition{}, errors.New("configuration adapter field is invalid")
 		}
 		if ok {
@@ -645,6 +667,86 @@ func decodeConfigAdapter(data []byte, reference ConfigAdapterReference, template
 		keys[field.Key], properties[field.Property] = true, true
 	}
 	return adapter, nil
+}
+
+var launchArgumentPattern = regexp.MustCompile(`^-{1,2}[A-Za-z][A-Za-z0-9-]{0,31}$`)
+
+// BindingTarget identifies the technical slot a binding writes to. Two fields
+// must never claim the same argument or environment name, whatever their
+// binding types are.
+func BindingTarget(binding ConfigAdapterBinding) string { return bindingTarget(binding) }
+
+func bindingTarget(binding ConfigAdapterBinding) string {
+	if binding.LaunchBinding() {
+		return "argument " + binding.Argument
+	}
+	return "environment " + binding.Name
+}
+
+// ValidateAdapterBinding enforces the closed binding whitelist. Argument and
+// environment names come only from reviewed adapter data, and each binding type
+// is restricted to the field types it can represent safely. Both the catalog
+// decoder and the persisted per-server snapshot are checked with this function.
+func ValidateAdapterBinding(field ConfigAdapterField) error {
+	binding := field.Binding
+	if binding == nil {
+		return errors.New("configuration adapter field has no binding")
+	}
+	switch binding.Type {
+	case BindingLaunchValue, BindingLaunchFlag, BindingLaunchSecret:
+		if !launchArgumentPattern.MatchString(binding.Argument) || binding.Name != "" {
+			return errors.New("launch binding argument is invalid")
+		}
+	case BindingEnvironmentValue, BindingEnvironmentSecret:
+		if !officialVariablePattern.MatchString(binding.Name) || binding.Argument != "" {
+			return errors.New("environment binding name is invalid")
+		}
+	default:
+		return errors.New("configuration adapter binding type is unsupported")
+	}
+	// A secret may reach argv or the environment only through the explicit
+	// secret binding types, and only from a sensitive secret field.
+	if binding.SecretBinding() != (field.Type == "secret") || binding.SecretBinding() != field.Sensitive {
+		return errors.New("configuration adapter secret binding is invalid")
+	}
+	if binding.Type == BindingLaunchFlag && field.Type != "boolean" {
+		return errors.New("launch flag binding requires a boolean field")
+	}
+	if binding.TrueValue != "" || binding.FalseValue != "" {
+		if binding.Type != BindingLaunchValue || field.Type != "boolean" || binding.TrueValue == "" || binding.FalseValue == "" {
+			return errors.New("boolean value mapping is invalid")
+		}
+		for _, mapped := range []string{binding.TrueValue, binding.FalseValue} {
+			if len(mapped) > 64 || strings.ContainsAny(mapped, "\x00\r\n") {
+				return errors.New("boolean value mapping is unsafe")
+			}
+		}
+	}
+	return nil
+}
+
+// launchReferencesKey reports whether a base launch already expands the given
+// variable. A managed setting must have exactly one source of truth.
+func launchReferencesKey(template Template, key string) bool {
+	launches := make([]LaunchDefinition, 0, len(template.PlatformLaunches)+1)
+	if template.Launch != nil {
+		launches = append(launches, *template.Launch)
+	}
+	for _, launch := range template.PlatformLaunches {
+		launches = append(launches, launch)
+	}
+	for _, launch := range launches {
+		values := append([]string{launch.Executable, launch.WorkingDirectory}, launch.Arguments...)
+		for _, value := range launch.Environment {
+			values = append(values, value)
+		}
+		for _, value := range values {
+			if strings.Contains(value, "{{"+key+"}}") || strings.Contains(value, "${"+key+"}") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func validateAdapterField(field ConfigAdapterField) error {

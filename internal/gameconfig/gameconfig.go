@@ -96,10 +96,22 @@ func (s *Service) Get(ctx context.Context, serverID string) (Result, error) {
 	}
 	result := Result{Available: len(definitions) > 0, Adapters: []AdapterView{}}
 	for _, definition := range definitions {
-		values, err := Read(record.Server.WorkingDirectory, definition)
-		pending := definition.PostStartOnly && errors.Is(err, os.ErrNotExist)
-		if err != nil && !pending {
-			return Result{}, err
+		var values map[string]string
+		var err error
+		pending := false
+		if ManagedLaunch(definition) {
+			// Managed launch settings are owned by GameNode, so they are always
+			// readable and never wait for the game to generate a file.
+			values, err = s.storedValues(ctx, serverID, definition.ID)
+			if err != nil {
+				return Result{}, err
+			}
+		} else {
+			values, err = Read(record.Server.WorkingDirectory, definition)
+			pending = definition.PostStartOnly && errors.Is(err, os.ErrNotExist)
+			if err != nil && !pending {
+				return Result{}, err
+			}
 		}
 		view := AdapterView{ID: definition.ID, Version: definition.Version, Format: definition.Format, Target: definition.Target, RestartRequired: definition.RestartRequired, Ready: !pending, Fields: make([]FieldView, 0, len(definition.Fields))}
 		if pending {
@@ -134,7 +146,11 @@ func (s *Service) Update(ctx context.Context, serverID, adapterID string, values
 		if definition.ID != adapterID {
 			continue
 		}
-		if err = Apply(record.Server.WorkingDirectory, definition, values); err != nil {
+		if ManagedLaunch(definition) {
+			if err = s.applyManagedValues(ctx, serverID, definition, values); err != nil {
+				return Result{}, err
+			}
+		} else if err = Apply(record.Server.WorkingDirectory, definition, values); err != nil {
 			if definition.PostStartOnly && errors.Is(err, os.ErrNotExist) {
 				return Result{}, ErrUnavailable
 			}
@@ -176,13 +192,26 @@ func (s *Service) definitions(ctx context.Context, serverID string) ([]templates
 }
 
 func ValidateDefinition(definition templates.ConfigAdapterDefinition) error {
-	if definition.SchemaVersion != 1 || definition.ID == "" || definition.Version == "" || !safeDefinitionTarget(definition.Format, definition.Target) || len(definition.Fields) == 0 || len(definition.Fields) > 128 {
+	if (definition.SchemaVersion != 1 && definition.SchemaVersion != templates.AdapterSchemaVersion) || definition.ID == "" || definition.Version == "" || len(definition.Fields) == 0 || len(definition.Fields) > 128 {
 		return ErrUnsafeTarget
 	}
-	standardFormat := definition.Format == "xml-properties" || definition.Format == "ini-key-values"
 	tupleFormat := definition.Format == sectionTupleFormat
-	if (!standardFormat && !tupleFormat) || (definition.PostStartOnly && definition.Format != "ini-key-values") {
-		return ErrUnsafeTarget
+	if ManagedLaunch(definition) {
+		// A managed-launch adapter stores its values in GameNode and owns no
+		// game file, so every file-specific descriptor must stay empty.
+		if definition.SchemaVersion < templates.AdapterSchemaVersion || definition.Target != "" || definition.Initialization != nil || definition.PostStartOnly {
+			return ErrUnsafeTarget
+		}
+	} else {
+		standardFormat := definition.Format == templates.FormatXMLProperties || definition.Format == templates.FormatINIKeyValues
+		if !safeDefinitionTarget(definition.Format, definition.Target) || (!standardFormat && !tupleFormat) || (definition.PostStartOnly && definition.Format != templates.FormatINIKeyValues) {
+			return ErrUnsafeTarget
+		}
+		if definition.Initialization != nil {
+			if definition.PostStartOnly || definition.Initialization.Mode != "seed-from-file" || !safeDefinitionPath(definition.Initialization.Source) {
+				return ErrUnsafeTarget
+			}
+		}
 	}
 	if tupleFormat {
 		if !sectionName.MatchString(definition.Section) || !propertyName.MatchString(definition.ContainerProperty) {
@@ -191,14 +220,9 @@ func ValidateDefinition(definition templates.ConfigAdapterDefinition) error {
 	} else if definition.Section != "" || definition.ContainerProperty != "" {
 		return ErrInvalidValue
 	}
-	if definition.Initialization != nil {
-		if definition.PostStartOnly || definition.Initialization.Mode != "seed-from-file" || !safeDefinitionPath(definition.Initialization.Source) {
-			return ErrUnsafeTarget
-		}
-	}
-	keys, properties := map[string]bool{}, map[string]bool{}
+	keys, properties, bindings := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, field := range definition.Fields {
-		if field.Key == "" || keys[field.Key] || properties[field.Property] || !propertyName.MatchString(field.Property) || field.Label == "" {
+		if field.Key == "" || keys[field.Key] || field.Label == "" {
 			return ErrInvalidValue
 		}
 		switch field.Type {
@@ -206,9 +230,27 @@ func ValidateDefinition(definition templates.ConfigAdapterDefinition) error {
 		default:
 			return ErrInvalidValue
 		}
+		if ManagedLaunch(definition) {
+			if field.Property != "" || templates.ValidateAdapterBinding(field) != nil {
+				return ErrInvalidValue
+			}
+			target := templates.BindingTarget(*field.Binding)
+			if bindings[target] {
+				return ErrInvalidValue
+			}
+			bindings[target] = true
+		} else if field.Binding != nil || properties[field.Property] || !propertyName.MatchString(field.Property) {
+			return ErrInvalidValue
+		}
 		keys[field.Key], properties[field.Property] = true, true
 	}
 	return nil
+}
+
+// ManagedLaunch reports whether the adapter binds its values to the native
+// launch instead of editing a game-owned configuration file.
+func ManagedLaunch(definition templates.ConfigAdapterDefinition) bool {
+	return definition.Format == templates.FormatManagedLaunch
 }
 
 func safeDefinitionTarget(format, target string) bool {
