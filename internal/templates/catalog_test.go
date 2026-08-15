@@ -134,11 +134,6 @@ func TestOfficialSteamTemplateValidation(t *testing.T) {
 		},
 		"missing windows launch": func(v *Template) { delete(v.PlatformLaunches, "windows") },
 		"missing linux launch":   func(v *Template) { delete(v.PlatformLaunches, "linux") },
-		"malformed argument": func(v *Template) {
-			launch := v.PlatformLaunches["linux"]
-			launch.Arguments = []string{"--port={{PORT}};whoami"}
-			v.PlatformLaunches["linux"] = launch
-		},
 		"working directory escape": func(v *Template) {
 			launch := v.PlatformLaunches["linux"]
 			launch.WorkingDirectory = "../outside"
@@ -153,6 +148,32 @@ func TestOfficialSteamTemplateValidation(t *testing.T) {
 			mutate(&candidate)
 			if err := validateOfficial(candidate); err == nil {
 				t.Fatal("unsafe SteamCMD template accepted")
+			}
+		})
+	}
+}
+
+func TestStructuredArgumentsDoNotAcquireShellSemantics(t *testing.T) {
+	template := officialSteamFixture()
+	launch := template.PlatformLaunches["linux"]
+	launch.Arguments = []string{"--message=operators & | ; are plain argv data"}
+	template.PlatformLaunches["linux"] = launch
+	if err := validateOfficial(template); err != nil {
+		t.Fatalf("structured argument data was treated as a shell command: %v", err)
+	}
+}
+
+func TestOfficialLaunchRejectsShellInterpreters(t *testing.T) {
+	for _, executable := range []string{"cmd.exe", "powershell.exe", "pwsh.exe", "sh", "sh.exe", "bash", "bash.exe"} {
+		t.Run(executable, func(t *testing.T) {
+			template := officialSteamFixture()
+			launch := template.PlatformLaunches["windows"]
+			launch.Executable = executable
+			launch.Arguments = []string{"-c", "server"}
+			template.PlatformLaunches["windows"] = launch
+			err := validateOfficial(template)
+			if ValidationCode(err) != CodeShellSemanticsForbidden {
+				t.Fatalf("shell interpreter accepted or wrong error: %v", err)
 			}
 		})
 	}
@@ -363,8 +384,162 @@ func TestRepositoryOfficialCatalog(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = decodeOfficial(data, entry, "0.2.0"); err != nil {
-			t.Fatalf("repository template %s: %v", entry.ID, err)
+		template, decodeErr := decodeOfficial(data, entry, "0.2.0")
+		if decodeErr != nil {
+			t.Fatalf("repository template %s: %v", entry.ID, decodeErr)
+		}
+		if template.ID != entry.ID || template.Version != entry.Version || template.SchemaVersion != entry.TemplateSchemaVersion || len(template.ExpectedFiles) == 0 {
+			t.Fatalf("repository template metadata mismatch: %#v", template)
+		}
+		if template.Configuration != nil {
+			for _, reference := range template.Configuration.Adapters {
+				adapterData, readErr := os.ReadFile(filepath.Join("..", "..", "templates", filepath.Dir(filepath.FromSlash(entry.File)), reference.File))
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if _, adapterErr := decodeConfigAdapter(adapterData, reference, template); adapterErr != nil {
+					t.Fatalf("repository adapter %s/%s: %v", entry.ID, reference.ID, adapterErr)
+				}
+			}
+		}
+	}
+	wanted := map[string]struct {
+		installer string
+		platforms int
+		resolver  string
+	}{"7-days-to-die": {InstallerSteamCMD, 2, ""}, "project-zomboid": {InstallerSteamCMD, 1, ""}, "minecraft-neoforge": {InstallerExistingFiles, 2, "neoforge"}, "palworld": {InstallerSteamCMD, 1, ""}, "satisfactory": {InstallerSteamCMD, 1, ""}, "eco": {InstallerSteamCMD, 2, ""}}
+	for _, entry := range manifest.Templates {
+		expected, ok := wanted[entry.ID]
+		if !ok || entry.Installer != expected.installer || len(entry.Platforms) != expected.platforms {
+			t.Fatalf("unexpected golden catalog entry: %#v", entry)
+		}
+		if expected.resolver != "" {
+			data, _ := os.ReadFile(filepath.Join("..", "..", "templates", filepath.FromSlash(entry.File)))
+			template, _ := decodeOfficial(data, entry, "0.2.0")
+			if template.Launch == nil || template.Launch.Resolver != expected.resolver {
+				t.Fatalf("unexpected resolver for %s", entry.ID)
+			}
+		}
+	}
+}
+
+func TestEcoRepositoryGolden(t *testing.T) {
+	templateData, err := os.ReadFile(filepath.Join("..", "..", "templates", "steamcmd", "eco", "template.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := CatalogEntry{ID: "eco", Name: "Eco Dedicated Server", Description: "Install the official Eco dedicated server through SteamCMD and run it natively in offline mode without exposing account credentials.", Category: "steamcmd", Version: "1.0.0", TemplateSchemaVersion: 2, Platforms: []string{"windows", "linux"}, Installer: InstallerSteamCMD, File: "steamcmd/eco/template.json", Tags: []string{"eco", "steam", "steamcmd", "simulation", "survival"}, Icon: "steamcmd", MinimumGameNode: "0.2.0"}
+	template, err := decodeOfficial(templateData, entry, "0.2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	windows := template.PlatformLaunches["windows"]
+	linux := template.PlatformLaunches["linux"]
+	if template.Installer.SteamCMD == nil || template.Installer.SteamCMD.AppID != 739590 || template.Compatibility.Status != PartiallyCompatible || windows.Executable != "EcoServer.exe" || linux.Executable != "EcoServer" || len(windows.Arguments) != 2 || windows.Arguments[0] != "--nogui" || windows.Arguments[1] != "-offline" || len(template.Ports) != 2 || template.Ports[0].Port != 3000 || template.Ports[0].Protocol != "udp" || template.Ports[1].Port != 3001 || template.Ports[1].Protocol != "tcp" {
+		t.Fatalf("unexpected Eco template: %#v windows=%#v linux=%#v", template, windows, linux)
+	}
+}
+
+func TestOfficialV2RequiresValidationObjectEvenForBooleanVariables(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "templates", "steamcmd", "palworld", "template.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err = json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	variables := raw["variables"].([]any)
+	for _, item := range variables {
+		variable := item.(map[string]any)
+		if variable["key"] == "RCON_ENABLED" {
+			delete(variable, "validation")
+			break
+		}
+	}
+	data, _ = json.Marshal(raw)
+	entry := CatalogEntry{ID: "palworld", Name: "Palworld Dedicated Server", Description: "Install the official Palworld dedicated server through SteamCMD and run the Windows native server binary directly.", Category: "steamcmd", Version: "1.1.0", TemplateSchemaVersion: 2, Platforms: []string{"windows"}, Installer: InstallerSteamCMD, File: "steamcmd/palworld/template.json", Tags: []string{"palworld", "steam", "steamcmd", "survival"}, Icon: "steamcmd", MinimumGameNode: "0.2.0"}
+	if _, err = decodeOfficial(data, entry, "0.2.0"); ValidationCode(err) != CodeSchemaInvalid {
+		t.Fatalf("missing validation object accepted: %v", err)
+	}
+}
+
+func TestPalworldRepositoryGolden(t *testing.T) {
+	templateData, err := os.ReadFile(filepath.Join("..", "..", "templates", "steamcmd", "palworld", "template.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := CatalogEntry{ID: "palworld", Name: "Palworld Dedicated Server", Description: "Install the official Palworld dedicated server through SteamCMD and run the Windows native server binary directly.", Category: "steamcmd", Version: "1.1.0", TemplateSchemaVersion: 2, Platforms: []string{"windows"}, Installer: InstallerSteamCMD, File: "steamcmd/palworld/template.json", Tags: []string{"palworld", "steam", "steamcmd", "survival"}, Icon: "steamcmd", MinimumGameNode: "0.2.0"}
+	template, err := decodeOfficial(templateData, entry, "0.2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch := template.PlatformLaunches["windows"]
+	if template.ID != "palworld" || template.SchemaVersion != 2 || template.Installer.SteamCMD == nil || template.Installer.SteamCMD.AppID != 2394010 || len(template.Platforms) != 1 || template.Platforms[0] != "windows" || launch.Executable != "PalServer.exe" || len(launch.Arguments) != 3 || launch.Arguments[0] != "-port={{SERVER_PORT}}" || len(template.Ports) != 3 || len(template.ExpectedFiles) != 3 {
+		t.Fatalf("unexpected Palworld template: %#v launch=%#v", template, launch)
+	}
+	adapterData, err := os.ReadFile(filepath.Join("..", "..", "templates", "steamcmd", "palworld", "palworld-settings.adapter.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := decodeConfigAdapter(adapterData, template.Configuration.Adapters[0], template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.ID != "palworld-settings" || adapter.Format != "section-tuple-key-values" || adapter.Section != "/Script/Pal.PalGameWorldSettings" || adapter.ContainerProperty != "OptionSettings" || adapter.Initialization == nil || adapter.Initialization.Mode != "seed-from-file" || adapter.Initialization.Source != "DefaultPalWorldSettings.ini" || len(adapter.Fields) != 9 {
+		t.Fatalf("unexpected Palworld adapter: %#v", adapter)
+	}
+}
+
+func TestSatisfactoryRepositoryGolden(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "templates", "steamcmd", "satisfactory", "template.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := CatalogEntry{ID: "satisfactory", Name: "Satisfactory Dedicated Server", Description: "Install the official Satisfactory dedicated server through SteamCMD and launch its native Windows server executable without a shell.", Category: "steamcmd", Version: "1.0.0", TemplateSchemaVersion: 2, Platforms: []string{"windows"}, Installer: InstallerSteamCMD, File: "steamcmd/satisfactory/template.json", Tags: []string{"satisfactory", "steam", "steamcmd", "factory", "survival"}, Icon: "steamcmd", MinimumGameNode: "0.2.0"}
+	template, err := decodeOfficial(data, entry, "0.2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	windows, windowsOK := template.PlatformLaunches["windows"]
+	_, linuxOK := template.PlatformLaunches["linux"]
+	if template.Installer.SteamCMD == nil || template.Installer.SteamCMD.AppID != 1690800 || template.Installer.SteamCMD.BetaBranchVariable != "RELEASE_BRANCH" || !windowsOK || linuxOK || windows.Executable != "FactoryServer.exe" || len(template.Ports) != 3 || len(template.ExpectedFiles) != 3 || template.Configuration != nil || template.Compatibility.Status != PartiallyCompatible || len(template.Platforms) != 1 || template.Platforms[0] != "windows" {
+		t.Fatalf("unexpected Satisfactory template: %#v", template)
+	}
+	for _, variable := range template.Variables {
+		if variable.Key == "SERVER_NAME" || variable.Key == "SERVER_PASSWORD" || variable.Key == "ADMIN_PASSWORD" {
+			t.Fatalf("ineffective Satisfactory variable exposed: %s", variable.Key)
+		}
+	}
+}
+
+func TestDocumentationExampleAndJSONSchemas(t *testing.T) {
+	documentation, err := os.ReadFile(filepath.Join("..", "..", "docs", "templates.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := "## Complete SteamCMD example"
+	section := strings.SplitN(string(documentation), marker, 2)
+	if len(section) != 2 {
+		t.Fatal("documentation example section is missing")
+	}
+	blocks := strings.SplitN(section[1], "```json\n", 2)
+	if len(blocks) != 2 {
+		t.Fatal("documentation JSON example is missing")
+	}
+	example := strings.SplitN(blocks[1], "\n```", 2)[0]
+	entry := CatalogEntry{ID: "example-steam-server", Name: "Example Steam Server", Description: "Contributor example for a direct native dedicated server.", Category: "steamcmd", Version: "1.0.0", TemplateSchemaVersion: 2, Platforms: []string{"windows"}, Installer: InstallerSteamCMD, File: "examples/example-steam-server.json", Tags: []string{"example", "steamcmd"}}
+	if _, err = decodeOfficial([]byte(example), entry, "0.2.0"); err != nil {
+		t.Fatalf("documented template does not validate: %v", err)
+	}
+	for _, name := range []string{"template.schema.json", "catalog.schema.json"} {
+		data, readErr := os.ReadFile(filepath.Join("..", "..", "templates", "schema", name))
+		if readErr != nil || !json.Valid(data) {
+			t.Fatalf("invalid JSON schema %s: %v", name, readErr)
+		}
+		var schema map[string]any
+		if json.Unmarshal(data, &schema) != nil || schema["$schema"] == nil || schema["$id"] == nil {
+			t.Fatalf("JSON schema metadata missing: %s", name)
 		}
 	}
 }

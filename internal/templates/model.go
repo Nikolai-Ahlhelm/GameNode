@@ -15,6 +15,7 @@ const (
 	SourceOfficial           = "official"
 	SourcePelicanPterodactyl = "pelican-pterodactyl"
 	InstallerExisting        = "existing"
+	InstallerExistingFiles   = "existing-files"
 	InstallerSteamCMD        = "steamcmd"
 	InstallerUnsupported     = "unsupported"
 	Compatible               = "compatible"
@@ -39,6 +40,7 @@ type Template struct {
 	Category            string                      `json:"category,omitempty"`
 	MinimumGameNode     string                      `json:"minimum_gamenode_version,omitempty"`
 	KnownLimitations    []string                    `json:"known_limitations,omitempty"`
+	Tags                []string                    `json:"tags,omitempty"`
 	Icon                string                      `json:"icon,omitempty"`
 	SourceType          string                      `json:"source_type"`
 	SourceIdentifier    string                      `json:"source_identifier,omitempty"`
@@ -49,6 +51,10 @@ type Template struct {
 	PlatformLaunches    map[string]LaunchDefinition `json:"platform_launches,omitempty"`
 	Variables           []TemplateVariable          `json:"variables"`
 	Ports               []TemplatePort              `json:"ports,omitempty"`
+	ExpectedFiles       []ExpectedFile              `json:"expected_files,omitempty"`
+	ConfigFiles         []ConfigFileMetadata        `json:"config_files,omitempty"`
+	Requirements        []TemplateRequirement       `json:"requirements,omitempty"`
+	Help                *TemplateHelp               `json:"help,omitempty"`
 	Configuration       *ConfigurationDefinition    `json:"configuration,omitempty"`
 	ResolvedAdapters    []ConfigAdapterDefinition   `json:"-"`
 	Compatibility       Compatibility               `json:"compatibility"`
@@ -72,14 +78,22 @@ type ConfigAdapterReference struct {
 // ConfigAdapterDefinition is declarative data. Its Format selects code shipped
 // with GameNode; definitions never provide parsers, expressions, or executable hooks.
 type ConfigAdapterDefinition struct {
-	SchemaVersion   int                  `json:"schema_version"`
-	ID              string               `json:"id"`
-	Version         string               `json:"version"`
-	Format          string               `json:"format"`
-	Target          string               `json:"target"`
-	RestartRequired bool                 `json:"restart_required"`
-	PostStartOnly   bool                 `json:"post_start_only,omitempty"`
-	Fields          []ConfigAdapterField `json:"fields"`
+	SchemaVersion     int                          `json:"schema_version"`
+	ID                string                       `json:"id"`
+	Version           string                       `json:"version"`
+	Format            string                       `json:"format"`
+	Target            string                       `json:"target"`
+	Section           string                       `json:"section,omitempty"`
+	ContainerProperty string                       `json:"container_property,omitempty"`
+	Initialization    *ConfigAdapterInitialization `json:"initialization,omitempty"`
+	RestartRequired   bool                         `json:"restart_required"`
+	PostStartOnly     bool                         `json:"post_start_only,omitempty"`
+	Fields            []ConfigAdapterField         `json:"fields"`
+}
+
+type ConfigAdapterInitialization struct {
+	Mode   string `json:"mode"`
+	Source string `json:"source"`
 }
 
 type ConfigAdapterField struct {
@@ -140,14 +154,15 @@ type SteamCMDPlan struct {
 }
 
 type LaunchDefinition struct {
-	Executable       string   `json:"executable"`
-	Arguments        []string `json:"arguments"`
-	WorkingRoot      string   `json:"working_root"`
-	WorkingDirectory string   `json:"working_directory,omitempty"`
-	StopCommand      string   `json:"stop_command,omitempty"`
-	StopMethod       string   `json:"stop_method,omitempty"`
-	StopTimeout      int      `json:"stop_timeout_seconds,omitempty"`
-	Resolver         string   `json:"resolver,omitempty"`
+	Executable       string            `json:"executable"`
+	Arguments        []string          `json:"arguments"`
+	WorkingRoot      string            `json:"working_root"`
+	WorkingDirectory string            `json:"working_directory,omitempty"`
+	StopCommand      string            `json:"stop_command,omitempty"`
+	StopMethod       string            `json:"stop_method,omitempty"`
+	StopTimeout      int               `json:"stop_timeout_seconds,omitempty"`
+	Resolver         string            `json:"resolver,omitempty"`
+	Environment      map[string]string `json:"environment,omitempty"`
 }
 
 type TemplatePort struct {
@@ -156,6 +171,40 @@ type TemplatePort struct {
 	Port     int    `json:"port,omitempty"`
 	Variable string `json:"variable,omitempty"`
 	Offset   int    `json:"offset,omitempty"`
+	Required bool   `json:"required,omitempty"`
+	Purpose  string `json:"purpose,omitempty"`
+}
+
+// ExpectedFile describes an artifact that must remain below the server root.
+// Platform is optional; an empty value applies to every supported platform.
+type ExpectedFile struct {
+	Path       string `json:"path"`
+	Type       string `json:"type"`
+	Required   bool   `json:"required"`
+	Executable bool   `json:"executable,omitempty"`
+	Platform   string `json:"platform,omitempty"`
+}
+
+// ConfigFileMetadata is documentation-only. It never selects a parser or
+// causes GameNode to edit a file.
+type ConfigFileMetadata struct {
+	Path        string `json:"path"`
+	Format      string `json:"format"`
+	Description string `json:"description,omitempty"`
+}
+
+// TemplateRequirement separates hard host checks from informational hints.
+// Only the small, compiled type catalog is interpreted by GameNode.
+type TemplateRequirement struct {
+	Type        string `json:"type"`
+	Level       string `json:"level"`
+	Value       string `json:"value,omitempty"`
+	Description string `json:"description"`
+}
+
+type TemplateHelp struct {
+	Summary string   `json:"summary,omitempty"`
+	Notes   []string `json:"notes,omitempty"`
 }
 
 // LaunchForPlatform selects an explicit host launch when one is present and
@@ -184,6 +233,9 @@ type TemplateVariable struct {
 	Nullable     bool       `json:"nullable"`
 	Validation   Validation `json:"validation"`
 	RawRules     []string   `json:"raw_rules,omitempty"`
+	Placeholder  string     `json:"placeholder,omitempty"`
+	Advanced     bool       `json:"advanced,omitempty"`
+	Group        string     `json:"group,omitempty"`
 }
 
 type Validation struct {

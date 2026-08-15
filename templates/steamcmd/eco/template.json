@@ -1,0 +1,95 @@
+{
+  "schema_version": 2,
+  "id": "eco",
+  "name": "Eco Dedicated Server",
+  "description": "Install the official Eco dedicated server through SteamCMD and run it natively in offline mode without exposing account credentials.",
+  "version": "1.0.0",
+  "category": "steamcmd",
+  "minimum_gamenode_version": "0.2.0",
+  "known_limitations": [
+    "The server starts with Eco's fixed -offline mode because current online servers require an SLG user token or account credentials in process arguments, which GameNode intentionally does not accept or expose.",
+    "Eco clients must also be offline to join an offline Eco server; public server listing and normal online-client access are unavailable.",
+    "The default game and web ports are registered as fixed ports. GameNode does not yet edit Eco's generated Configs/Network.eco file.",
+    "The first start generates configuration and world data and can take a significant amount of time.",
+    "GameNode uses its bounded native terminate lifecycle; there is no reviewed Eco console shutdown command, and timeout escalation can force-kill the process.",
+    "Automatic updates, mod management, RCON management, and account authentication are outside this template."
+  ],
+  "icon": "steamcmd",
+  "source_type": "official",
+  "source_identifier": "eco",
+  "source_format_version": "2",
+  "tags": ["eco", "steam", "steamcmd", "simulation", "survival"],
+  "source_metadata": {
+    "author": "GameNode",
+    "tags": ["eco", "steam", "steamcmd", "simulation", "survival"]
+  },
+  "installer": {
+    "type": "steamcmd",
+    "steamcmd": {
+      "app_id": 739590,
+      "validate": true,
+      "login_mode": "anonymous",
+      "platform": "native",
+      "install_target": "server_root"
+    }
+  },
+  "platform_launches": {
+    "windows": {
+      "executable": "EcoServer.exe",
+      "arguments": ["--nogui", "-offline"],
+      "working_root": "server_root",
+      "stop_method": "terminate",
+      "stop_timeout_seconds": 60
+    },
+    "linux": {
+      "executable": "EcoServer",
+      "arguments": ["--nogui", "-offline"],
+      "working_root": "server_root",
+      "stop_method": "terminate",
+      "stop_timeout_seconds": 60
+    }
+  },
+  "variables": [],
+  "ports": [
+    {"name": "Game", "protocol": "udp", "port": 3000, "required": true, "purpose": "Default Eco game traffic"},
+    {"name": "Web", "protocol": "tcp", "port": 3001, "required": true, "purpose": "Default Eco web interface traffic"}
+  ],
+  "expected_files": [
+    {"path": "EcoServer.exe", "type": "file", "required": true, "executable": true, "platform": "windows"},
+    {"path": "EcoServer", "type": "file", "required": true, "executable": true, "platform": "linux"}
+  ],
+  "config_files": [
+    {"path": "Configs/Network.eco", "format": "json", "description": "Generated on first start; contains Eco network, listing, access, and remote-administration settings."}
+  ],
+  "requirements": [
+    {"type": "architecture", "level": "hard", "value": "amd64", "description": "The reviewed Windows and Linux dedicated-server builds target 64-bit hosts."},
+    {"type": "steamcmd", "level": "hard", "value": "anonymous", "description": "Managed anonymous SteamCMD installation is required."},
+    {"type": "note", "level": "informational", "value": "libgdiplus", "description": "Linux hosts may need the libgdiplus system library required by the Eco server."},
+    {"type": "disk", "level": "informational", "description": "Ensure sufficient free storage for the server build, generated world, and backups."}
+  ],
+  "help": {
+    "summary": "GameNode installs SteamCMD App ID 739590 and starts EcoServer directly with --nogui and -offline.",
+    "notes": [
+      "The fixed offline launch avoids placing an SLG token, username, or password in process arguments.",
+      "Eco clients must be offline as well; this template is not suitable for a public Internet server.",
+      "GameNode reserves Eco's documented default UDP game port 3000 and TCP web port 3001.",
+      "On Linux, Eco documents SIGTERM as a save-and-shutdown signal; GameNode's bounded native terminate lifecycle may still escalate if the process does not exit."
+    ]
+  },
+  "compatibility": {
+    "status": "partially_compatible",
+    "findings": [
+      {"severity": "warning", "component": "authentication", "code": "ECO_ONLINE_AUTH_UNAVAILABLE", "summary": "GameNode does not place Eco SLG account credentials or user tokens in process arguments, so this template starts in offline mode only."},
+      {"severity": "warning", "component": "configuration", "code": "ECO_CONFIG_ADAPTER_UNAVAILABLE", "summary": "Eco's generated Network.eco file is documented but not modified by a compiled GameNode configuration adapter."},
+      {"severity": "warning", "component": "stop", "code": "ECO_GRACEFUL_STOP_LIMITED", "summary": "GameNode uses bounded native termination and may force-kill Eco if it does not exit before the timeout."}
+    ]
+  },
+  "read_only": true,
+  "platforms": ["windows", "linux"],
+  "prerequisites": [
+    "Network access to Steam content servers during installation",
+    "An amd64 Windows or Linux host",
+    "Offline Eco clients for local play",
+    "libgdiplus on Linux when required by the installed build"
+  ]
+}

@@ -1,9 +1,9 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "project-zomboid",
   "name": "Project Zomboid",
   "description": "Install the official dedicated server through SteamCMD and run its bundled Java runtime without scripts.",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "category": "steamcmd",
   "minimum_gamenode_version": "0.2.0",
   "known_limitations": [
@@ -14,7 +14,8 @@
   "icon": "steamcmd",
   "source_type": "official",
   "source_identifier": "project-zomboid",
-  "source_format_version": "1",
+  "source_format_version": "2",
+  "tags": ["project-zomboid", "steam", "steamcmd", "survival", "zombies", "java"],
   "source_metadata": {
     "author": "GameNode",
     "tags": ["project-zomboid", "steam", "steamcmd", "survival", "zombies", "java"]
@@ -70,13 +71,26 @@
       "sensitive": false,
       "required": true,
       "nullable": false,
-      "validation": {"min": 1024, "max": 65534}
+      "validation": {"min": 1024, "max": 65534},
+      "group": "Network"
     }
   ],
   "ports": [
-    {"name": "Game UDP", "protocol": "udp", "variable": "SERVER_PORT"},
-    {"name": "Direct connection UDP", "protocol": "udp", "variable": "SERVER_PORT", "offset": 1}
+    {"name": "Game UDP", "protocol": "udp", "variable": "SERVER_PORT", "required": true, "purpose": "Primary game traffic"},
+    {"name": "Direct connection UDP", "protocol": "udp", "variable": "SERVER_PORT", "offset": 1, "required": true, "purpose": "Direct client connections"}
   ],
+  "expected_files": [
+    {"path":"jre64/bin/java.exe","type":"file","required":true,"executable":true,"platform":"windows"},
+    {"path":"java/projectzomboid.jar","type":"file","required":true,"platform":"windows"},
+    {"path":"natives","type":"directory","required":true,"platform":"windows"}
+  ],
+  "config_files": [{"path":"Server/gamenode.ini","format":"ini","description":"Generated on first start and then exposed through the reviewed INI adapter."}],
+  "requirements": [
+    {"type":"os","level":"hard","value":"windows","description":"The reviewed direct launch is currently Windows-only."},
+    {"type":"architecture","level":"hard","value":"amd64","description":"The reviewed bundled runtime is 64-bit."},
+    {"type":"steamcmd","level":"hard","value":"anonymous","description":"Managed SteamCMD with anonymous login is required for installation."}
+  ],
+  "help": {"summary":"GameNode bypasses StartServer64.bat and starts the bundled Java runtime with a reviewed argv list.","notes":["Linux remains unavailable until its direct invocation is acceptance-tested."]},
   "configuration": {
     "adapters": [
       {"id": "project-zomboid-server-ini", "schema_version": 1, "file": "server.ini.adapter.json"}

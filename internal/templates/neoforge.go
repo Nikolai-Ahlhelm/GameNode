@@ -23,6 +23,7 @@ type NeoForgeResolution struct {
 	MinecraftVersion string   `json:"minecraft_version,omitempty"`
 	Platform         string   `json:"platform"`
 	JavaFound        bool     `json:"java_found"`
+	EULAAccepted     bool     `json:"eula_accepted"`
 	StopMethod       string   `json:"stop_method"`
 	StopCommand      string   `json:"stop_command"`
 	StopTimeout      int      `json:"stop_timeout_seconds"`
@@ -89,7 +90,7 @@ func ResolveNeoForge(root, platform string, minMemoryMB, maxMemoryMB int, nogui 
 	if minMemoryMB < 256 || maxMemoryMB < minMemoryMB {
 		return NeoForgeResolution{}, errors.New("invalid Java memory range")
 	}
-	java, found := discoverJava()
+	java, found := DiscoverJava()
 	// The generated user_jvm_args.txt is verified as launcher metadata but is
 	// deliberately not passed to Java. Built-in typed memory controls replace
 	// the reference file's empty/comment-only defaults without exposing a
@@ -99,6 +100,14 @@ func ResolveNeoForge(root, platform string, minMemoryMB, maxMemoryMB int, nogui 
 		arguments = append(arguments, "nogui")
 	}
 	result := NeoForgeResolution{Executable: java, Arguments: arguments, WorkingDirectory: root, NeoForgeVersion: match[1], Platform: platform, JavaFound: found, StopMethod: "stdin_command", StopCommand: "stop", StopTimeout: 60}
+	if eula, readErr := readLocal(root, "eula.txt"); readErr == nil {
+		for _, raw := range strings.Split(strings.ReplaceAll(string(eula), "\r\n", "\n"), "\n") {
+			if strings.EqualFold(strings.TrimSpace(raw), "eula=true") {
+				result.EULAAccepted = true
+				break
+			}
+		}
+	}
 	for i, token := range strings.Fields(string(argData)) {
 		if token == "--fml.mcVersion" {
 			fields := strings.Fields(string(argData))
@@ -181,7 +190,9 @@ func readLocal(root, relative string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-func discoverJava() (string, bool) {
+// DiscoverJava resolves only JAVA_HOME/bin/java or the host PATH. Templates
+// cannot select an arbitrary Java binary or request an installation.
+func DiscoverJava() (string, bool) {
 	name := "java"
 	if runtime.GOOS == "windows" {
 		name = "java.exe"

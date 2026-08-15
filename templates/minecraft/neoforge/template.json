@@ -1,24 +1,38 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "minecraft-neoforge",
   "name": "Minecraft NeoForge",
   "description": "Adopt an existing NeoForge server and run its generated Java argument files without a shell.",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "category": "minecraft",
   "minimum_gamenode_version": "0.2.0",
   "known_limitations": ["NeoForge must already be installed in the selected server directory.", "Java must be installed through JAVA_HOME or PATH."],
   "icon": "minecraft",
   "source_type": "official",
   "source_identifier": "minecraft-neoforge",
-  "source_format_version": "1",
+  "source_format_version": "2",
+  "tags": ["minecraft", "java", "mods", "neoforge"],
   "source_metadata": {"author": "GameNode", "tags": ["minecraft", "java", "mods", "neoforge"]},
-  "installer": {"type": "existing"},
+  "installer": {"type": "existing-files"},
   "launch": {"executable": "java", "arguments": [], "working_root": "server_root", "stop_command": "stop", "stop_method": "stdin_command", "stop_timeout_seconds": 60, "resolver": "neoforge"},
   "variables": [
-    {"name":"Minimum memory","description":"Initial Java heap in MiB","key":"MIN_MEMORY_MB","default_value":"1024","user_viewable":true,"user_editable":true,"type":"integer","sensitive":false,"required":true,"nullable":false,"validation":{"min":256,"max":262144}},
-    {"name":"Maximum memory","description":"Maximum Java heap in MiB","key":"MAX_MEMORY_MB","default_value":"4096","user_viewable":true,"user_editable":true,"type":"integer","sensitive":false,"required":true,"nullable":false,"validation":{"min":512,"max":262144}},
-    {"name":"Disable graphical console","description":"Pass nogui to the Minecraft server","key":"NOGUI","default_value":"true","user_viewable":true,"user_editable":true,"type":"boolean","sensitive":false,"required":true,"nullable":false,"validation":{}}
+    {"name":"Minimum memory","description":"Initial Java heap in MiB","key":"MIN_MEMORY_MB","default_value":"1024","user_viewable":true,"user_editable":true,"type":"integer","sensitive":false,"required":true,"nullable":false,"validation":{"min":256,"max":262144},"group":"Java"},
+    {"name":"Maximum memory","description":"Maximum Java heap in MiB","key":"MAX_MEMORY_MB","default_value":"4096","user_viewable":true,"user_editable":true,"type":"integer","sensitive":false,"required":true,"nullable":false,"validation":{"min":512,"max":262144},"group":"Java"},
+    {"name":"Disable graphical console","description":"Pass nogui to the Minecraft server","key":"NOGUI","default_value":"true","user_viewable":true,"user_editable":true,"type":"boolean","sensitive":false,"required":true,"nullable":false,"validation":{},"advanced":true,"group":"Java"}
   ],
+  "expected_files": [
+    {"path":"run.bat","type":"file","required":true,"platform":"windows"},
+    {"path":"run.sh","type":"file","required":true,"platform":"linux"},
+    {"path":"user_jvm_args.txt","type":"file","required":true},
+    {"path":"libraries","type":"directory","required":true},
+    {"path":"eula.txt","type":"file","required":false}
+  ],
+  "config_files": [{"path":"eula.txt","format":"properties","description":"Minecraft EULA state; GameNode never changes or accepts it automatically."},{"path":"server.properties","format":"properties","description":"Minecraft server configuration metadata only."}],
+  "requirements": [
+    {"type":"java","level":"hard","description":"Java must be available through JAVA_HOME or PATH."},
+    {"type":"note","level":"informational","description":"NeoForge must already be installed in the selected server root."}
+  ],
+  "help": {"summary":"The resolver reads the generated launcher and argfiles but never executes run.bat or run.sh.","notes":["The Minecraft EULA must be reviewed and accepted by the operator outside GameNode."]},
   "compatibility": {"status":"compatible","findings":[]},
   "read_only": true,
   "platforms": ["windows","linux"],

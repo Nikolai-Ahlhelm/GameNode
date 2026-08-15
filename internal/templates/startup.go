@@ -6,7 +6,7 @@ import (
 	"unicode"
 )
 
-var forbiddenExecutables = map[string]bool{"sh": true, "bash": true, "cmd": true, "cmd.exe": true, "powershell": true, "powershell.exe": true, "pwsh": true, "eval": true, "exec": true, "source": true, ".": true, "for": true, "while": true, "until": true, "if": true, "case": true, "do": true}
+var forbiddenExecutables = map[string]bool{"sh": true, "sh.exe": true, "bash": true, "bash.exe": true, "cmd": true, "cmd.exe": true, "powershell": true, "powershell.exe": true, "pwsh": true, "pwsh.exe": true, "eval": true, "exec": true, "source": true, ".": true, "for": true, "while": true, "until": true, "if": true, "case": true, "do": true}
 
 func analyzeStartup(startup string, known map[string]bool) (*LaunchDefinition, []Finding) {
 	startup = strings.TrimSpace(startup)

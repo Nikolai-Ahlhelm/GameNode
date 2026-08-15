@@ -23,7 +23,7 @@ import (
 
 const (
 	CatalogSchemaVersion  = 1
-	TemplateSchemaVersion = 1
+	TemplateSchemaVersion = 2
 	MaxCatalogBytes       = 256 << 10
 	MaxOfficialBytes      = 256 << 10
 	MaxAdapterBytes       = 128 << 10
@@ -352,7 +352,7 @@ func decodeCatalog(data []byte) (CatalogManifest, error) {
 	}
 	seen := map[string]bool{}
 	for _, entry := range manifest.Templates {
-		if !identifierPattern.MatchString(entry.ID) || !identifierPattern.MatchString(entry.Category) || strings.TrimSpace(entry.Name) == "" || !versionPattern.MatchString(entry.Version) || (entry.MinimumGameNode != "" && !versionPattern.MatchString(entry.MinimumGameNode)) || entry.TemplateSchemaVersion != TemplateSchemaVersion || validateRelativeFile(entry.File) != nil || seen[entry.ID] || len(entry.Platforms) == 0 {
+		if !identifierPattern.MatchString(entry.ID) || !identifierPattern.MatchString(entry.Category) || strings.TrimSpace(entry.Name) == "" || !versionPattern.MatchString(entry.Version) || (entry.MinimumGameNode != "" && !versionPattern.MatchString(entry.MinimumGameNode)) || !supportedTemplateSchema(entry.TemplateSchemaVersion) || validateRelativeFile(entry.File) != nil || seen[entry.ID] || len(entry.Platforms) == 0 {
 			return CatalogManifest{}, errors.New("catalog entry is invalid")
 		}
 		for _, platform := range entry.Platforms {
@@ -360,7 +360,7 @@ func decodeCatalog(data []byte) (CatalogManifest, error) {
 				return CatalogManifest{}, errors.New("catalog platform is unsupported")
 			}
 		}
-		if entry.Installer != InstallerExisting && entry.Installer != InstallerSteamCMD {
+		if entry.Installer != InstallerExisting && entry.Installer != InstallerExistingFiles && entry.Installer != InstallerSteamCMD {
 			return CatalogManifest{}, errors.New("catalog installer is unsupported")
 		}
 		seen[entry.ID] = true
@@ -376,13 +376,19 @@ func decodeOfficial(data []byte, entry CatalogEntry, currentVersion string) (Tem
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&template); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
-		return Template{}, errors.New("template JSON is invalid")
+		return Template{}, validationError(CodeSchemaInvalid, "template JSON is invalid")
 	}
-	if template.SchemaVersion != TemplateSchemaVersion {
-		return Template{}, ErrUnsupportedSchema
+	if !supportedTemplateSchema(template.SchemaVersion) || template.SchemaVersion != entry.TemplateSchemaVersion {
+		return Template{}, fmt.Errorf("%w: %w", ErrUnsupportedSchema, validationError(CodeUnsupportedVersion, "template schema version is unsupported"))
+	}
+	if template.SchemaVersion >= 2 && !v2VariableShapesComplete(data) {
+		return Template{}, validationError(CodeSchemaInvalid, "template variable schema fields are missing")
 	}
 	if template.ID != entry.ID || template.Name != entry.Name || template.Description != entry.Description || template.Version != entry.Version || template.Category != entry.Category || template.Installer.Type != entry.Installer || template.SourceType != SourceOfficial || !template.ReadOnly {
 		return Template{}, errors.New("template does not match catalog metadata")
+	}
+	if template.SchemaVersion >= 2 && !equalStrings(template.Tags, entry.Tags) {
+		return Template{}, errors.New("template tags do not match catalog metadata")
 	}
 	template.SourceType = SourceOfficial
 	template.SourceIdentifier = entry.ID
@@ -390,16 +396,36 @@ func decodeOfficial(data []byte, entry CatalogEntry, currentVersion string) (Tem
 	template.ReadOnly = true
 	template.Platforms = append([]string(nil), entry.Platforms...)
 	template.SourceMetadata.Tags = append([]string(nil), entry.Tags...)
+	template.Tags = append([]string(nil), entry.Tags...)
 	template.Icon = entry.Icon
 	template.MinimumGameNode = entry.MinimumGameNode
 	if err := validateOfficial(template); err != nil {
-		return Template{}, err
+		var validation *ValidationError
+		if errors.As(err, &validation) {
+			return Template{}, err
+		}
+		return Template{}, fmt.Errorf("%w: %s", validationError(CodeSchemaInvalid, "template semantic validation failed"), err.Error())
 	}
 	if template.MinimumGameNode != "" && !versionAtLeast(currentVersion, template.MinimumGameNode) {
 		template.Compatibility.Status = Unsupported
 		template.Compatibility.Findings = append(template.Compatibility.Findings, Finding{SeverityError, "requirements", "GAMENODE_VERSION_UNSUPPORTED", "This template requires a newer GameNode version."})
 	}
 	return template, nil
+}
+
+func v2VariableShapesComplete(data []byte) bool {
+	var raw struct {
+		Variables []map[string]json.RawMessage `json:"variables"`
+	}
+	if json.Unmarshal(data, &raw) != nil {
+		return false
+	}
+	for _, variable := range raw.Variables {
+		if _, ok := variable["validation"]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func validateOfficial(template Template) error {
@@ -415,23 +441,55 @@ func validateOfficial(template Template) error {
 	known := map[string]bool{}
 	definitions := map[string]TemplateVariable{}
 	for _, variable := range template.Variables {
-		if !officialVariablePattern.MatchString(variable.Key) || known[variable.Key] || validateValue(variable, variable.DefaultValue) != nil {
-			return errors.New("official template variable is invalid")
+		if !officialVariablePattern.MatchString(variable.Key) || known[variable.Key] {
+			return validationError(CodeInvalidVariable, "official template variable is invalid")
 		}
-		switch variable.Type {
-		case "string", "integer", "number", "boolean", "enum", "secret":
-		default:
-			return errors.New("official template variable type is unsupported")
+		if err := validateVariableDefinition(variable); err != nil {
+			return err
 		}
 		known[variable.Key] = true
 		definitions[variable.Key] = variable
 	}
 	if template.Installer.Type == InstallerExisting {
-		if template.Launch == nil || len(template.PlatformLaunches) != 0 || validateOfficialLaunch(*template.Launch, known) != nil {
-			return errors.New("official template launch definition is unsafe")
+		if template.Launch == nil || len(template.PlatformLaunches) != 0 {
+			return validationError(CodeInvalidPlatformLaunch, "legacy template launch shape is invalid")
+		}
+		if err := validateOfficialLaunch(*template.Launch, known); err != nil {
+			return err
+		}
+		if err := validateLaunchSensitive(*template.Launch, definitions); err != nil {
+			return err
 		}
 		if template.Launch.Resolver != "neoforge" || template.Launch.Executable != "java" {
-			return errors.New("existing installer requires the native NeoForge resolver")
+			return errors.New("legacy existing installer requires the native NeoForge resolver")
+		}
+	} else if template.Installer.Type == InstallerExistingFiles {
+		if template.Installer.SteamCMD != nil || (template.Launch == nil) == (len(template.PlatformLaunches) == 0) {
+			return validationError(CodeUnsupportedInstaller, "existing-files installer launch shape is invalid")
+		}
+		if template.Launch != nil {
+			if err := validateOfficialLaunch(*template.Launch, known); err != nil {
+				return err
+			}
+			if template.Launch.Resolver != "neoforge" && template.Launch.Resolver != "java" {
+				return validationError(CodeInvalidPlatformLaunch, "existing-files resolver launch is invalid")
+			}
+			if err := validateLaunchSensitive(*template.Launch, definitions); err != nil {
+				return err
+			}
+		} else {
+			for _, platform := range template.Platforms {
+				launch, ok := template.PlatformLaunches[platform]
+				if !ok || launch.Resolver != "" {
+					return validationError(CodeInvalidPlatformLaunch, "existing-files platform launch is invalid")
+				}
+				if err := validateOfficialLaunch(launch, known); err != nil {
+					return err
+				}
+				if err := validateLaunchSensitive(launch, definitions); err != nil {
+					return err
+				}
+			}
 		}
 	} else if template.Installer.Type == InstallerSteamCMD {
 		plan := template.Installer.SteamCMD
@@ -447,8 +505,14 @@ func validateOfficial(template Template) error {
 		declared := map[string]bool{}
 		for _, platform := range template.Platforms {
 			launch, ok := template.PlatformLaunches[platform]
-			if !ok || declared[platform] || validateOfficialLaunch(launch, known) != nil {
-				return errors.New("SteamCMD platform launch is invalid")
+			if !ok || declared[platform] {
+				return validationError(CodeInvalidPlatformLaunch, "SteamCMD platform launch is missing or duplicated")
+			}
+			if err := validateOfficialLaunch(launch, known); err != nil {
+				return err
+			}
+			if err := validateLaunchSensitive(launch, definitions); err != nil {
+				return err
 			}
 			declared[platform] = true
 		}
@@ -458,7 +522,22 @@ func validateOfficial(template Template) error {
 			}
 		}
 	} else {
-		return errors.New("official installer is unsupported")
+		return validationError(CodeUnsupportedInstaller, "official installer is unsupported")
+	}
+	if template.SchemaVersion >= 2 && len(template.ExpectedFiles) == 0 {
+		return validationError(CodeExpectedFileInvalid, "schema v2 templates must declare expected files")
+	}
+	if err := validateExpectedFiles(template.ExpectedFiles, known, template.Platforms); err != nil {
+		return err
+	}
+	if err := validateConfigFiles(template.ConfigFiles, known); err != nil {
+		return err
+	}
+	if err := validateRequirements(template.Requirements); err != nil {
+		return err
+	}
+	if template.Help != nil && (len(template.Help.Summary) > 1024 || len(template.Help.Notes) > 32) {
+		return validationError(CodeSchemaInvalid, "template help metadata is invalid")
 	}
 	if err := validateOfficialPorts(template.Ports, definitions); err != nil {
 		return err
@@ -467,6 +546,30 @@ func validateOfficial(template Template) error {
 		return err
 	}
 	return nil
+}
+
+func validateLaunchSensitive(launch LaunchDefinition, definitions map[string]TemplateVariable) error {
+	if sensitivePlaceholder(launch.Executable, definitions) || sensitivePlaceholder(launch.WorkingDirectory, definitions) {
+		return validationError(CodeInvalidPlatformLaunch, "sensitive variables are not permitted in launch paths")
+	}
+	for _, argument := range launch.Arguments {
+		if sensitivePlaceholder(argument, definitions) {
+			return validationError(CodeInvalidPlatformLaunch, "sensitive variables are not permitted in launch arguments")
+		}
+	}
+	return nil
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func validateConfigurationReferences(configuration *ConfigurationDefinition) error {
@@ -500,8 +603,24 @@ func decodeConfigAdapter(data []byte, reference ConfigAdapterReference, template
 		return ConfigAdapterDefinition{}, errors.New("configuration adapter metadata is invalid")
 	}
 	extension := strings.ToLower(path.Ext(adapter.Target))
-	if (adapter.Format != "xml-properties" && adapter.Format != "ini-key-values") || (adapter.Format == "xml-properties" && extension != ".xml") || (adapter.Format == "ini-key-values" && extension != ".ini") || validateRelativeConfigTarget(adapter.Target) != nil {
+	standardFormat := adapter.Format == "xml-properties" || adapter.Format == "ini-key-values"
+	tupleFormat := adapter.Format == "section-tuple-key-values"
+	if (!standardFormat && !tupleFormat) || (adapter.Format == "xml-properties" && extension != ".xml") || ((adapter.Format == "ini-key-values" || tupleFormat) && extension != ".ini") || validateRelativeConfigTarget(adapter.Target) != nil {
 		return ConfigAdapterDefinition{}, errors.New("configuration adapter target is unsafe")
+	}
+	propertyPattern := regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
+	sectionPattern := regexp.MustCompile(`^[A-Za-z0-9_./-]{1,160}$`)
+	if tupleFormat {
+		if !sectionPattern.MatchString(adapter.Section) || !propertyPattern.MatchString(adapter.ContainerProperty) {
+			return ConfigAdapterDefinition{}, errors.New("configuration adapter container is invalid")
+		}
+	} else if adapter.Section != "" || adapter.ContainerProperty != "" {
+		return ConfigAdapterDefinition{}, errors.New("configuration adapter container is invalid")
+	}
+	if adapter.Initialization != nil {
+		if adapter.PostStartOnly || adapter.Initialization.Mode != "seed-from-file" || validateRelativeConfigTarget(adapter.Initialization.Source) != nil {
+			return ConfigAdapterDefinition{}, errors.New("configuration adapter initialization is invalid")
+		}
 	}
 	if adapter.PostStartOnly && adapter.Format != "ini-key-values" {
 		return ConfigAdapterDefinition{}, errors.New("configuration adapter lifecycle is invalid")
@@ -511,7 +630,6 @@ func decodeConfigAdapter(data []byte, reference ConfigAdapterReference, template
 		variables[variable.Key] = variable
 	}
 	properties, keys := map[string]bool{}, map[string]bool{}
-	propertyPattern := regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
 	for _, field := range adapter.Fields {
 		variable, ok := variables[field.Key]
 		if keys[field.Key] || properties[field.Property] || !officialVariablePattern.MatchString(field.Key) || !propertyPattern.MatchString(field.Property) || strings.TrimSpace(field.Label) == "" || len(field.Label) > 80 || len(field.Section) > 80 || validateAdapterField(field) != nil {
@@ -567,7 +685,7 @@ func validateRelativeConfigTarget(value string) error {
 		return errors.New("configuration target is unsafe")
 	}
 	segments := strings.Split(value, "/")
-	if len(segments) > 4 {
+	if len(segments) > 8 {
 		return errors.New("configuration target is too deep")
 	}
 	segmentPattern := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -581,10 +699,16 @@ func validateRelativeConfigTarget(value string) error {
 
 func validateOfficialLaunch(launch LaunchDefinition, known map[string]bool) error {
 	if launch.WorkingRoot != "server_root" || strings.TrimSpace(launch.Executable) == "" || absoluteExecutable(launch.Executable) || forbiddenExecutables[strings.ToLower(filepath.Base(launch.Executable))] || len(launch.Arguments) > 128 {
-		return errors.New("official template launch definition is unsafe")
+		if forbiddenExecutables[strings.ToLower(filepath.Base(launch.Executable))] {
+			return validationError(CodeShellSemanticsForbidden, "shell and command interpreters are forbidden")
+		}
+		return validationError(CodeInvalidPlatformLaunch, "official template launch definition is unsafe")
+	}
+	if err := validateTemplatePath(launch.Executable, known); err != nil && launch.Resolver == "" {
+		return validationError(CodeInvalidPath, "launch executable path is unsafe")
 	}
 	if launch.WorkingDirectory != "" {
-		if clean, err := ExpandRelativePath(launch.WorkingDirectory, map[string]string{}, map[string]bool{}); err != nil || clean != filepath.ToSlash(filepath.Clean(launch.WorkingDirectory)) {
+		if err := validateTemplatePath(launch.WorkingDirectory, known); err != nil {
 			return errors.New("official template working directory is unsafe")
 		}
 	}
@@ -603,12 +727,15 @@ func validateOfficialLaunch(launch LaunchDefinition, known map[string]bool) erro
 	values := append([]string{launch.Executable}, launch.Arguments...)
 	for index, value := range values {
 		javaClasspath := strings.Contains(value, ";") && index > 1 && (values[index-1] == "-cp" || values[index-1] == "-classpath") && safeWindowsJavaClasspath(value)
-		if unsafeLaunchPath(value) || strings.ContainsAny(value, "\x00\r\n&|><`") || (strings.Contains(value, ";") && !javaClasspath) || strings.Contains(value, "$(") {
+		if (index == 0 && unsafeLaunchPath(value)) || strings.ContainsAny(value, "\x00\r\n`") || strings.Contains(value, "$(") || (index > 0 && strings.Contains(value, ";") && (values[index-1] == "-cp" || values[index-1] == "-classpath") && !javaClasspath) {
 			return errors.New("official template contains unsafe launch data")
 		}
 		if _, err := Expand(value, map[string]string{}, known); err != nil {
 			return errors.New("official template contains invalid placeholders")
 		}
+	}
+	if err := validateEnvironment(launch.Environment, known); err != nil {
+		return err
 	}
 	return nil
 }
@@ -638,7 +765,7 @@ func validateOfficialPorts(items []TemplatePort, definitions map[string]Template
 	}
 	seen := map[string]bool{}
 	for _, item := range items {
-		if strings.TrimSpace(item.Name) == "" || len(item.Name) > 64 || (item.Protocol != "tcp" && item.Protocol != "udp") || (item.Variable == "" && (item.Port < 1 || item.Port > 65535)) || (item.Variable != "" && item.Port != 0) {
+		if strings.TrimSpace(item.Name) == "" || len(item.Name) > 64 || len(item.Purpose) > 256 || (item.Protocol != "tcp" && item.Protocol != "udp") || (item.Variable == "" && (item.Port < 1 || item.Port > 65535)) || (item.Variable != "" && item.Port != 0) {
 			return errors.New("official template port is invalid")
 		}
 		if item.Variable != "" {
