@@ -24,11 +24,17 @@ import (
 
 const MaxConfigBytes = 2 << 20
 
+const sectionTupleFormat = "section-tuple-key-values"
+
 var (
 	ErrUnavailable  = errors.New("managed game configuration is unavailable")
 	ErrInvalidValue = errors.New("configuration value is invalid")
 	ErrUnsafeTarget = errors.New("configuration target is unsafe")
+	ErrInitialize   = errors.New("configuration initialization failed")
+	ErrParse        = errors.New("configuration parse failed")
+	ErrApply        = errors.New("configuration apply failed")
 	propertyName    = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
+	sectionName     = regexp.MustCompile(`^[A-Za-z0-9_./-]{1,160}$`)
 )
 
 type ServerSource interface {
@@ -173,8 +179,22 @@ func ValidateDefinition(definition templates.ConfigAdapterDefinition) error {
 	if definition.SchemaVersion != 1 || definition.ID == "" || definition.Version == "" || !safeDefinitionTarget(definition.Format, definition.Target) || len(definition.Fields) == 0 || len(definition.Fields) > 128 {
 		return ErrUnsafeTarget
 	}
-	if definition.PostStartOnly && definition.Format != "ini-key-values" {
+	standardFormat := definition.Format == "xml-properties" || definition.Format == "ini-key-values"
+	tupleFormat := definition.Format == sectionTupleFormat
+	if (!standardFormat && !tupleFormat) || (definition.PostStartOnly && definition.Format != "ini-key-values") {
 		return ErrUnsafeTarget
+	}
+	if tupleFormat {
+		if !sectionName.MatchString(definition.Section) || !propertyName.MatchString(definition.ContainerProperty) {
+			return ErrInvalidValue
+		}
+	} else if definition.Section != "" || definition.ContainerProperty != "" {
+		return ErrInvalidValue
+	}
+	if definition.Initialization != nil {
+		if definition.PostStartOnly || definition.Initialization.Mode != "seed-from-file" || !safeDefinitionPath(definition.Initialization.Source) {
+			return ErrUnsafeTarget
+		}
 	}
 	keys, properties := map[string]bool{}, map[string]bool{}
 	for _, field := range definition.Fields {
@@ -193,7 +213,14 @@ func ValidateDefinition(definition templates.ConfigAdapterDefinition) error {
 
 func safeDefinitionTarget(format, target string) bool {
 	extension := strings.ToLower(filepath.Ext(target))
-	if (format != "xml-properties" && format != "ini-key-values") || (format == "xml-properties" && extension != ".xml") || (format == "ini-key-values" && extension != ".ini") || target == "" || len(target) > 240 || strings.Contains(target, `\`) || filepath.IsAbs(target) {
+	if (format != "xml-properties" && format != "ini-key-values" && format != sectionTupleFormat) || (format == "xml-properties" && extension != ".xml") || ((format == "ini-key-values" || format == sectionTupleFormat) && extension != ".ini") || !safeDefinitionPath(target) {
+		return false
+	}
+	return true
+}
+
+func safeDefinitionPath(target string) bool {
+	if target == "" || len(target) > 240 || strings.Contains(target, `\`) || filepath.IsAbs(target) {
 		return false
 	}
 	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(target)))
@@ -201,7 +228,7 @@ func safeDefinitionTarget(format, target string) bool {
 		return false
 	}
 	segments := strings.Split(clean, "/")
-	if len(segments) > 4 {
+	if len(segments) > 8 {
 		return false
 	}
 	segment := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -214,6 +241,14 @@ func safeDefinitionTarget(format, target string) bool {
 }
 
 func Apply(root string, definition templates.ConfigAdapterDefinition, values map[string]string) error {
+	return applyWithWriters(root, definition, values, atomicWrite, atomicCreate)
+}
+
+func applyWithWriter(root string, definition templates.ConfigAdapterDefinition, values map[string]string, write func(string, []byte) error) error {
+	return applyWithWriters(root, definition, values, write, write)
+}
+
+func applyWithWriters(root string, definition templates.ConfigAdapterDefinition, values map[string]string, write, create func(string, []byte) error) error {
 	if err := ValidateDefinition(definition); err != nil {
 		return err
 	}
@@ -230,7 +265,7 @@ func Apply(root string, definition templates.ConfigAdapterDefinition, values map
 		if err := validateValue(field, value); err != nil {
 			return err
 		}
-		if definition.Format == "ini-key-values" && strings.ContainsAny(value, "\r\n") {
+		if (definition.Format == "ini-key-values" || definition.Format == sectionTupleFormat) && strings.ContainsAny(value, "\r\n") {
 			return ErrInvalidValue
 		}
 		replacements[field.Property] = value
@@ -243,18 +278,46 @@ func Apply(root string, definition templates.ConfigAdapterDefinition, values map
 		return err
 	}
 	data, err := readBounded(target)
+	targetExisted := err == nil
+	if err != nil && definition.Initialization != nil && errors.Is(err, os.ErrNotExist) {
+		source, sourceErr := safeTarget(root, definition.Initialization.Source)
+		if sourceErr != nil {
+			return fmt.Errorf("%w: %v", ErrInitialize, sourceErr)
+		}
+		data, sourceErr = readBounded(source)
+		if sourceErr != nil {
+			return fmt.Errorf("%w: seed is unavailable", ErrInitialize)
+		}
+		err = nil
+	}
 	if err != nil {
 		return err
 	}
-	updated, _, err := transformForFormat(definition.Format, data, replacements, properties(definition))
+	updated, _, err := transformForDefinition(definition, data, replacements)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrParse, err)
 	}
-	backup := filepath.Join(root, ".gamenode-backups", definition.Target+".previous")
-	if err = atomicWrite(backup, data); err != nil {
-		return err
+	if err = ensureSafeParent(root, target); err != nil {
+		return fmt.Errorf("%w: target parent is unsafe", ErrInitialize)
 	}
-	return atomicWrite(target, updated)
+	if targetExisted {
+		backupRelative := filepath.ToSlash(filepath.Join(".gamenode-backups", filepath.FromSlash(definition.Target+".previous")))
+		backup, backupErr := safeTarget(root, backupRelative)
+		if backupErr != nil || ensureSafeParent(root, backup) != nil {
+			return fmt.Errorf("%w: backup path is unsafe", ErrApply)
+		}
+		if err = write(backup, data); err != nil {
+			return fmt.Errorf("%w: backup could not be written", ErrApply)
+		}
+	}
+	commit := write
+	if !targetExisted {
+		commit = create
+	}
+	if err = commit(target, updated); err != nil {
+		return fmt.Errorf("%w: target could not be written", ErrApply)
+	}
+	return nil
 }
 
 func Read(root string, definition templates.ConfigAdapterDefinition) (map[string]string, error) {
@@ -269,15 +332,18 @@ func Read(root string, definition templates.ConfigAdapterDefinition) (map[string
 	if err != nil {
 		return nil, err
 	}
-	_, found, err := transformForFormat(definition.Format, data, nil, properties(definition))
+	_, found, err := transformForDefinition(definition, data, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrParse, err)
 	}
 	result := map[string]string{}
 	for _, field := range definition.Fields {
 		value, ok := found[field.Property]
 		if !ok {
-			return nil, errors.New("configuration property is missing")
+			return nil, fmt.Errorf("%w: managed property is missing", ErrParse)
+		}
+		if err = validateValue(field, value); err != nil {
+			return nil, fmt.Errorf("%w: managed property type is invalid", ErrParse)
 		}
 		result[field.Key] = value
 	}
@@ -292,12 +358,15 @@ func properties(definition templates.ConfigAdapterDefinition) map[string]bool {
 	return result
 }
 
-func transformForFormat(format string, data []byte, replacements map[string]string, wanted map[string]bool) ([]byte, map[string]string, error) {
-	switch format {
+func transformForDefinition(definition templates.ConfigAdapterDefinition, data []byte, replacements map[string]string) ([]byte, map[string]string, error) {
+	wanted := properties(definition)
+	switch definition.Format {
 	case "xml-properties":
 		return transformXML(data, replacements, wanted)
 	case "ini-key-values":
 		return transformINI(data, replacements, wanted)
+	case sectionTupleFormat:
+		return transformSectionTuple(data, replacements, definition.Fields, definition.Section, definition.ContainerProperty)
 	default:
 		return nil, nil, ErrUnsafeTarget
 	}
@@ -529,6 +598,54 @@ func safeTarget(root, name string) (string, error) {
 	return target, nil
 }
 
+// ensureSafeParent creates missing target directories one component at a time.
+// Existing symlinks and reparse points are resolved at every step and must stay
+// below the canonical server root before creation continues.
+func ensureSafeParent(root, target string) error {
+	cleanRoot, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return ErrUnsafeTarget
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(cleanRoot)
+	if err != nil {
+		return ErrUnsafeTarget
+	}
+	parent := filepath.Dir(target)
+	relative, err := filepath.Rel(cleanRoot, parent)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return ErrUnsafeTarget
+	}
+	current := cleanRoot
+	if relative == "." {
+		return nil
+	}
+	for _, segment := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, segment)
+		info, statErr := os.Lstat(current)
+		if errors.Is(statErr, os.ErrNotExist) {
+			if err = os.Mkdir(current, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+				return ErrUnsafeTarget
+			}
+		} else if statErr != nil || !info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+			return ErrUnsafeTarget
+		}
+		resolved, resolveErr := filepath.EvalSymlinks(current)
+		if resolveErr != nil || !pathWithin(resolvedRoot, resolved) {
+			return ErrUnsafeTarget
+		}
+		resolvedInfo, statErr := os.Stat(resolved)
+		if statErr != nil || !resolvedInfo.IsDir() {
+			return ErrUnsafeTarget
+		}
+	}
+	return nil
+}
+
+func pathWithin(root, candidate string) bool {
+	relative, err := filepath.Rel(root, candidate)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
+}
+
 func readBounded(name string) ([]byte, error) {
 	file, err := os.Open(name)
 	if err != nil {
@@ -559,6 +676,9 @@ func atomicWrite(name string, data []byte) error {
 	if err = temporary.Chmod(0600); err == nil {
 		_, err = temporary.Write(data)
 	}
+	if err == nil {
+		err = temporary.Sync()
+	}
 	if closeErr := temporary.Close(); err == nil {
 		err = closeErr
 	}
@@ -579,4 +699,29 @@ func atomicWrite(name string, data []byte) error {
 	}
 	_ = os.Remove(previous)
 	return nil
+}
+
+// atomicCreate publishes a fully written same-directory temporary file without
+// replacing a target that appeared concurrently after the missing-file check.
+func atomicCreate(name string, data []byte) error {
+	directory := filepath.Dir(name)
+	temporary, err := os.CreateTemp(directory, ".gamenode-config-create-*")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err = temporary.Chmod(0600); err == nil {
+		_, err = temporary.Write(data)
+	}
+	if err == nil {
+		err = temporary.Sync()
+	}
+	if closeErr := temporary.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Link(temporaryName, name)
 }

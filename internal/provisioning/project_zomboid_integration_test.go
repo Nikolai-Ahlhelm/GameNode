@@ -156,7 +156,7 @@ func TestProjectZomboidFullDeploymentIntegration(t *testing.T) {
 	if err = db.QueryRow(`SELECT template_source,template_version FROM server_template_variables WHERE server_id=? AND variable_key='SERVER_PORT'`, serverID).Scan(&source, &version); err != nil {
 		t.Fatal(err)
 	}
-	if source != templates.SourceOfficial || version != "1.1.0" {
+	if source != templates.SourceOfficial || version != "2.0.0" {
 		t.Fatalf("provenance source=%q version=%q", source, version)
 	}
 	var portCount int

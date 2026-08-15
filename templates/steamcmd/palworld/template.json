@@ -1,0 +1,368 @@
+{
+  "schema_version": 2,
+  "id": "palworld",
+  "name": "Palworld Dedicated Server",
+  "description": "Install the official Palworld dedicated server through SteamCMD and run the Windows native server binary directly.",
+  "version": "1.1.0",
+  "category": "steamcmd",
+  "minimum_gamenode_version": "0.2.0",
+  "known_limitations": [
+    "This template advertises Windows support only until a reviewed direct Linux launch is available without invoking PalServer.sh.",
+    "PalWorldSettings.ini uses the compiled section-tuple-key-values adapter format; this supports this reviewed file shape, not arbitrary Unreal Engine configuration files.",
+    "When PalWorldSettings.ini is missing, GameNode safely seeds it from DefaultPalWorldSettings.ini before registration and first start.",
+    "GameNode currently stops Palworld through the native process lifecycle; no Palworld REST graceful-shutdown integration is provided, and timeout escalation can force-kill the process.",
+    "Automatic updates, Workshop/mod installation, RCON management, and REST API management are outside this template."
+  ],
+  "icon": "steamcmd",
+  "source_type": "official",
+  "source_identifier": "palworld",
+  "source_format_version": "2",
+  "tags": [
+    "palworld",
+    "steam",
+    "steamcmd",
+    "survival"
+  ],
+  "source_metadata": {
+    "author": "GameNode",
+    "tags": [
+      "palworld",
+      "steam",
+      "steamcmd",
+      "survival"
+    ]
+  },
+  "installer": {
+    "type": "steamcmd",
+    "steamcmd": {
+      "app_id": 2394010,
+      "validate": true,
+      "login_mode": "anonymous",
+      "platform": "native",
+      "install_target": "server_root"
+    }
+  },
+  "platform_launches": {
+    "windows": {
+      "executable": "PalServer.exe",
+      "arguments": [
+        "-port={{SERVER_PORT}}",
+        "-players={{MAX_PLAYERS}}",
+        "-logformat={{LOG_FORMAT}}"
+      ],
+      "working_root": "server_root",
+      "stop_method": "terminate",
+      "stop_timeout_seconds": 30
+    }
+  },
+  "variables": [
+    {
+      "name": "Server port",
+      "description": "Primary UDP listen port used by the Palworld dedicated server.",
+      "key": "SERVER_PORT",
+      "default_value": "8211",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1024,
+        "max": 65535
+      },
+      "group": "Network"
+    },
+    {
+      "name": "Maximum players",
+      "description": "Maximum number of participants passed to the dedicated server.",
+      "key": "MAX_PLAYERS",
+      "default_value": "32",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1,
+        "max": 32
+      },
+      "group": "Server"
+    },
+    {
+      "name": "Log format",
+      "description": "Dedicated-server log output format.",
+      "key": "LOG_FORMAT",
+      "default_value": "text",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "enum",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "allowed": [
+          "text",
+          "Json"
+        ]
+      },
+      "group": "Advanced",
+      "advanced": true
+    },
+    {
+      "name": "Server name",
+      "description": "Name written to PalWorldSettings.ini.",
+      "key": "SERVER_NAME",
+      "default_value": "My GameNode Palworld Server",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min_length": 1,
+        "max_length": 128
+      },
+      "group": "Server"
+    },
+    {
+      "name": "Server description",
+      "description": "Description written to PalWorldSettings.ini.",
+      "key": "SERVER_DESCRIPTION",
+      "default_value": "Managed by GameNode",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": false,
+      "nullable": true,
+      "validation": {
+        "max_length": 512
+      },
+      "group": "Server"
+    },
+    {
+      "name": "Server password",
+      "description": "Optional player join password.",
+      "key": "SERVER_PASSWORD",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "secret",
+      "sensitive": true,
+      "required": false,
+      "nullable": true,
+      "validation": {
+        "max_length": 128
+      },
+      "group": "Access",
+      "advanced": true
+    },
+    {
+      "name": "Admin password",
+      "description": "Optional in-game administrator password.",
+      "key": "ADMIN_PASSWORD",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "secret",
+      "sensitive": true,
+      "required": false,
+      "nullable": true,
+      "validation": {
+        "max_length": 128
+      },
+      "group": "Access",
+      "advanced": true
+    },
+    {
+      "name": "Enable RCON",
+      "description": "Enable the deprecated Palworld RCON interface.",
+      "key": "RCON_ENABLED",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Remote administration",
+      "advanced": true
+    },
+    {
+      "name": "RCON port",
+      "description": "RCON TCP port when RCON is enabled.",
+      "key": "RCON_PORT",
+      "default_value": "25575",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1024,
+        "max": 65535
+      },
+      "group": "Remote administration",
+      "advanced": true
+    },
+    {
+      "name": "Enable REST API",
+      "description": "Enable Palworld's built-in REST API.",
+      "key": "REST_API_ENABLED",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Remote administration",
+      "advanced": true
+    },
+    {
+      "name": "REST API port",
+      "description": "Listen port for Palworld's built-in REST API.",
+      "key": "REST_API_PORT",
+      "default_value": "8212",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1024,
+        "max": 65535
+      },
+      "group": "Remote administration",
+      "advanced": true
+    },
+    {
+      "name": "Enable save backups",
+      "description": "Enable Palworld's built-in save backup mechanism.",
+      "key": "BACKUP_ENABLED",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Reliability",
+      "advanced": true
+    }
+  ],
+  "ports": [
+    {
+      "name": "Game",
+      "protocol": "udp",
+      "variable": "SERVER_PORT",
+      "required": true,
+      "purpose": "Primary Palworld game traffic"
+    },
+    {
+      "name": "RCON",
+      "protocol": "tcp",
+      "variable": "RCON_PORT",
+      "required": true,
+      "purpose": "Reserved and conflict-checked even while RCON is disabled"
+    },
+    {
+      "name": "REST API",
+      "protocol": "tcp",
+      "variable": "REST_API_PORT",
+      "required": true,
+      "purpose": "Reserved and conflict-checked even while the REST API is disabled"
+    }
+  ],
+  "expected_files": [
+    {
+      "path": "PalServer.exe",
+      "type": "file",
+      "required": true,
+      "executable": true,
+      "platform": "windows"
+    },
+    {
+      "path": "Pal",
+      "type": "directory",
+      "required": true
+    },
+    {
+      "path": "DefaultPalWorldSettings.ini",
+      "type": "file",
+      "required": true
+    }
+  ],
+  "config_files": [
+    {
+      "path": "Pal/Saved/Config/WindowsServer/PalWorldSettings.ini",
+      "format": "ini",
+      "description": "Palworld server settings managed by the reviewed Palworld OptionSettings adapter."
+    }
+  ],
+  "requirements": [
+    {
+      "type": "steamcmd",
+      "level": "hard",
+      "value": "anonymous",
+      "description": "Managed anonymous SteamCMD installation is required."
+    },
+    {
+      "type": "os",
+      "level": "hard",
+      "value": "windows",
+      "description": "This initial GameNode template currently advertises only the reviewed direct Windows launch."
+    },
+    {
+      "type": "disk",
+      "level": "informational",
+      "description": "Ensure sufficient free storage for the current Palworld dedicated-server build."
+    }
+  ],
+  "help": {
+    "summary": "GameNode installs Palworld Dedicated Server with SteamCMD App ID 2394010 and launches PalServer.exe directly without a shell.",
+    "notes": [
+      "PalWorldSettings.ini is an Unreal-style single OptionSettings tuple rather than a conventional key-per-line INI.",
+      "GameNode creates the configuration target from DefaultPalWorldSettings.ini after SteamCMD validation and before registration; an existing target is never replaced by the seed.",
+      "RCON and REST API ports are always reserved and conflict-checked because the current port model has no conditional registrations.",
+      "Stop uses GameNode's native terminate lifecycle with force-kill fallback; it does not call Palworld's REST save or shutdown endpoints.",
+      "RCON is deprecated upstream; prefer the REST API for future management integrations, and do not expose the REST API directly to the public Internet."
+    ]
+  },
+  "configuration": {
+    "adapters": [
+      {
+        "id": "palworld-settings",
+        "schema_version": 1,
+        "file": "palworld-settings.adapter.json"
+      }
+    ]
+  },
+  "compatibility": {
+    "status": "partially_compatible",
+    "findings": [
+      {
+        "severity": "warning",
+        "component": "stop",
+        "code": "PALWORLD_GRACEFUL_STOP_UNAVAILABLE",
+        "summary": "Palworld REST save/shutdown is not integrated; native terminate may escalate to force kill after the configured timeout."
+      }
+    ]
+  },
+  "read_only": true,
+  "platforms": [
+    "windows"
+  ],
+  "prerequisites": [
+    "Network access to Steam content servers",
+    "Sufficient storage for the dedicated server"
+  ]
+}

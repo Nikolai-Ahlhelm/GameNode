@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "id": "palworld-settings",
+  "version": "1.0.0",
+  "format": "section-tuple-key-values",
+  "target": "Pal/Saved/Config/WindowsServer/PalWorldSettings.ini",
+  "section": "/Script/Pal.PalGameWorldSettings",
+  "container_property": "OptionSettings",
+  "initialization": {
+    "mode": "seed-from-file",
+    "source": "DefaultPalWorldSettings.ini"
+  },
+  "restart_required": true,
+  "fields": [
+    {
+      "key": "SERVER_NAME",
+      "label": "Server name",
+      "description": "Name shown to players and in server listings.",
+      "section": "General",
+      "type": "string",
+      "property": "ServerName",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min_length": 1,
+        "max_length": 128
+      }
+    },
+    {
+      "key": "SERVER_DESCRIPTION",
+      "label": "Server description",
+      "description": "Description advertised by the Palworld server.",
+      "section": "General",
+      "type": "string",
+      "property": "ServerDescription",
+      "required": false,
+      "nullable": true,
+      "sensitive": false,
+      "validation": {
+        "max_length": 512
+      }
+    },
+    {
+      "key": "SERVER_PASSWORD",
+      "label": "Server password",
+      "description": "Optional password required for players to join.",
+      "section": "Security",
+      "type": "secret",
+      "property": "ServerPassword",
+      "required": false,
+      "nullable": true,
+      "sensitive": true,
+      "validation": {
+        "max_length": 128
+      }
+    },
+    {
+      "key": "ADMIN_PASSWORD",
+      "label": "Admin password",
+      "description": "Password used to obtain administrative privileges on the game server.",
+      "section": "Security",
+      "type": "secret",
+      "property": "AdminPassword",
+      "required": false,
+      "nullable": true,
+      "sensitive": true,
+      "validation": {
+        "max_length": 128
+      }
+    },
+    {
+      "key": "RCON_ENABLED",
+      "label": "Enable RCON",
+      "description": "Enable Palworld RCON. Upstream currently marks RCON as deprecated in favor of the REST API.",
+      "section": "Remote administration",
+      "type": "boolean",
+      "property": "RCONEnabled",
+      "required": true,
+      "nullable": false,
+      "sensitive": false
+    },
+    {
+      "key": "RCON_PORT",
+      "label": "RCON port",
+      "description": "TCP port used by RCON when enabled.",
+      "section": "Remote administration",
+      "type": "integer",
+      "property": "RCONPort",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min": 1024,
+        "max": 65535
+      }
+    },
+    {
+      "key": "REST_API_ENABLED",
+      "label": "Enable REST API",
+      "description": "Enable Palworld's built-in REST API. Do not expose it directly to the public Internet.",
+      "section": "Remote administration",
+      "type": "boolean",
+      "property": "RESTAPIEnabled",
+      "required": true,
+      "nullable": false,
+      "sensitive": false
+    },
+    {
+      "key": "REST_API_PORT",
+      "label": "REST API port",
+      "description": "Listen port for Palworld's built-in REST API.",
+      "section": "Remote administration",
+      "type": "integer",
+      "property": "RESTAPIPort",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min": 1024,
+        "max": 65535
+      }
+    },
+    {
+      "key": "BACKUP_ENABLED",
+      "label": "Enable save backups",
+      "description": "Enable Palworld's built-in save-data backup behavior.",
+      "section": "Reliability",
+      "type": "boolean",
+      "property": "bIsUseBackupSaveData",
+      "required": true,
+      "nullable": false,
+      "sensitive": false
+    }
+  ]
+}

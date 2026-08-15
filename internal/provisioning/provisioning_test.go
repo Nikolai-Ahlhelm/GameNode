@@ -17,6 +17,7 @@ import (
 
 	"gamenode"
 	"gamenode/internal/database"
+	"gamenode/internal/gameconfig"
 	"gamenode/internal/ports"
 	gameRuntime "gamenode/internal/runtime"
 	"gamenode/internal/servers"
@@ -45,6 +46,7 @@ type fakeInstaller struct {
 	createExecutable bool
 	executable       string
 	configXML        string
+	files            map[string][]byte
 	output           string
 }
 
@@ -83,13 +85,27 @@ func (i *fakeInstaller) Install(ctx context.Context, root string, plan steamcmd.
 		if executable == "" {
 			executable = "server.x86_64"
 		}
-		if err := os.WriteFile(filepath.Join(root, executable), []byte("test"), 0700); err != nil {
+		executablePath := filepath.Join(root, filepath.FromSlash(executable))
+		if err := os.MkdirAll(filepath.Dir(executablePath), 0700); err != nil {
 			return err
 		}
-		if i.configXML != "" {
-			return os.WriteFile(filepath.Join(root, "serverconfig.xml"), []byte(i.configXML), 0600)
+		if err := os.WriteFile(executablePath, []byte("test"), 0700); err != nil {
+			return err
 		}
-		return nil
+	}
+	if i.configXML != "" {
+		if err := os.WriteFile(filepath.Join(root, "serverconfig.xml"), []byte(i.configXML), 0600); err != nil {
+			return err
+		}
+	}
+	for relative, data := range i.files {
+		target := filepath.Join(root, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, data, 0600); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -410,7 +426,7 @@ func TestValidationFailureIsNotReportedAsSteamCMDFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	job = waitTerminal(t, service, job.ID)
-	if job.FailureCode != "EXPECTED_EXECUTABLE_MISSING" || job.FailurePhase != ValidatingInstallation || !job.InstallationCompleted {
+	if job.FailureCode != templates.CodeInvalidPath || job.FailurePhase != ResolvingLaunch || !job.InstallationCompleted {
 		t.Fatalf("validation result=%#v", job)
 	}
 }
@@ -634,7 +650,7 @@ func TestSensitiveValueCannotBecomeExecutablePath(t *testing.T) {
 	db, root, template := provisionFixture(t)
 	defer db.Close()
 	template.Launch.Executable = "./${BETA_PASSWORD}"
-	if _, _, err := buildServer(template, *template.Launch, "Seven", root, map[string]string{"BETA_PASSWORD": "secret"}, map[string]bool{"BETA_PASSWORD": true}); err == nil || strings.Contains(err.Error(), "secret") {
+	if _, err := templates.ResolveLaunch(template, "linux", map[string]string{"BETA_PASSWORD": "secret"}, root); err == nil || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("unsafe or leaking error: %v", err)
 	}
 }
@@ -712,6 +728,25 @@ func TestOfficialSteamProvisioningSelectsPlatformCreatesPortsAndProvenance(t *te
 	}
 }
 
+func TestGameConfigFailureHasDedicatedPhaseCodeAndNoServerRecord(t *testing.T) {
+	db, data, template := officialSteamProvisionFixture(t, "windows")
+	defer db.Close()
+	template.ResolvedAdapters = []templates.ConfigAdapterDefinition{{SchemaVersion: 1, ID: "serverconfig", Version: "1.0.0", Format: "xml-properties", Target: "serverconfig.xml", RestartRequired: true, Fields: []templates.ConfigAdapterField{{Key: "SERVER_PORT", Label: "Port", Type: "integer", Property: "ServerPort", Required: true, Validation: template.Variables[0].Validation}}}}
+	installer := &fakeInstaller{createExecutable: true, executable: "Server.exe", configXML: `<ServerSettings><property name="ServerPort" value="26900"></ServerSettings>`}
+	service := NewWithOptions(db, &templateSource{template: template}, installer, servers.NewService(servers.NewStore(db), gameRuntime.NewNative()), data, Options{HostOS: "windows"})
+	defer service.Close()
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Broken Config", DirectoryName: "broken-config", Values: map[string]string{"SERVER_PORT": "26910", "SERVER_NAME": "Broken"}, ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitTerminal(t, service, job.ID)
+	var serverCount int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM servers`).Scan(&serverCount)
+	if job.Status != Failed || !job.InstallationCompleted || job.FailurePhase != ResolvingLaunch || job.FailureCode != "GAME_CONFIG_PARSE_FAILED" || job.RegistrationRecoverable || serverCount != 0 {
+		t.Fatalf("job=%#v server_count=%d", job, serverCount)
+	}
+}
+
 func TestOfficialSteamProvisioningPersistsPostStartAdapterWithoutInventingConfig(t *testing.T) {
 	db, data, template := officialSteamProvisionFixture(t, "windows")
 	defer db.Close()
@@ -735,6 +770,144 @@ func TestOfficialSteamProvisioningPersistsPostStartAdapterWithoutInventingConfig
 	var count int
 	if err = db.QueryRow(`SELECT COUNT(*) FROM server_config_adapters WHERE server_id=? AND adapter_id='project-zomboid-server-ini'`, job.ServerID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("adapter snapshot count=%d err=%v", count, err)
+	}
+}
+
+func TestPalworldOfficialProvisioningSeedsAndAppliesEveryManagedValue(t *testing.T) {
+	db, data, _ := provisionFixture(t)
+	defer db.Close()
+	templateData, err := os.ReadFile(filepath.Join("..", "..", "templates", "steamcmd", "palworld", "template.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var template templates.Template
+	if err = json.Unmarshal(templateData, &template); err != nil {
+		t.Fatal(err)
+	}
+	adapterData, err := os.ReadFile(filepath.Join("..", "..", "templates", "steamcmd", "palworld", "palworld-settings.adapter.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var adapter templates.ConfigAdapterDefinition
+	if err = json.Unmarshal(adapterData, &adapter); err != nil {
+		t.Fatal(err)
+	}
+	template.ResolvedAdapters = []templates.ConfigAdapterDefinition{adapter}
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "templates", "steamcmd", "palworld", "fixtures", "PalWorldSettings.example.ini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := &fakeInstaller{createExecutable: true, executable: "PalServer.exe", files: map[string][]byte{"DefaultPalWorldSettings.ini": fixture, "Pal/.keep": []byte("fixture")}}
+	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	service := NewWithOptions(db, &templateSource{template: template}, installer, serverService, data, Options{HostOS: "windows"})
+	defer service.Close()
+	values := map[string]string{
+		"SERVER_PORT": "18211", "MAX_PLAYERS": "24", "LOG_FORMAT": "Json", "SERVER_NAME": "Release Integration",
+		"SERVER_DESCRIPTION": `Comma, quote " and slash \`, "SERVER_PASSWORD": "player-secret", "ADMIN_PASSWORD": "admin-secret",
+		"RCON_ENABLED": "false", "RCON_PORT": "25576", "REST_API_ENABLED": "false", "REST_API_PORT": "18212", "BACKUP_ENABLED": "true",
+	}
+	job, err := service.Start(context.Background(), Request{TemplateID: "palworld", ServerName: "Palworld", DirectoryName: "palworld-integration", Values: values, ActorUserID: "actor", ActorUsername: "operator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitTerminal(t, service, job.ID)
+	if job.Status != Completed || !job.InstallationCompleted || job.ServerID == "" {
+		t.Fatalf("job=%#v", job)
+	}
+	root := filepath.Join(data, "servers", "palworld-integration")
+	configured, err := gameconfig.Read(root, adapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, expected := range values {
+		if _, managed := configured[key]; managed && configured[key] != expected {
+			t.Fatalf("%s=%q want %q", key, configured[key], expected)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(adapter.Target)))
+	if err != nil || !strings.Contains(string(raw), "UnknownFutureSetting=-12") || !strings.Contains(string(raw), "CrossplayPlatforms=(Steam,Xbox,PS5,Mac)") {
+		t.Fatalf("unknown defaults were not preserved: %v %s", err, raw)
+	}
+	record, err := serverService.Get(context.Background(), job.ServerID)
+	var portCount int
+	portErr := db.QueryRow(`SELECT COUNT(*) FROM server_ports WHERE server_id=?`, job.ServerID).Scan(&portCount)
+	if err != nil || filepath.Base(record.Server.Executable) != "PalServer.exe" || record.Server.Arguments[0] != "-port=18211" || portErr != nil || portCount != 3 {
+		t.Fatalf("record=%#v err=%v", record, err)
+	}
+	encoded, _ := json.Marshal(job)
+	if strings.Contains(string(encoded), "player-secret") || strings.Contains(string(encoded), "admin-secret") {
+		t.Fatal("Palworld secret leaked through provisioning job")
+	}
+}
+
+func TestSatisfactoryOfficialProvisioningUsesDirectPlatformLaunches(t *testing.T) {
+	for _, test := range []struct {
+		host, executable  string
+		wantFirstArgument string
+	}{
+		{host: "windows", executable: "FactoryServer.exe", wantFirstArgument: "-log"},
+	} {
+		t.Run(test.host, func(t *testing.T) {
+			db, data, _ := provisionFixture(t)
+			defer db.Close()
+			templateData, err := os.ReadFile(filepath.Join("..", "..", "templates", "steamcmd", "satisfactory", "template.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var template templates.Template
+			if err = json.Unmarshal(templateData, &template); err != nil {
+				t.Fatal(err)
+			}
+			installer := &fakeInstaller{createExecutable: true, executable: test.executable, files: map[string][]byte{"Engine/.fixture": []byte("engine"), "FactoryGame/.fixture": []byte("game")}}
+			serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+			service := NewWithOptions(db, &templateSource{template: template}, installer, serverService, data, Options{HostOS: test.host})
+			defer service.Close()
+			values := map[string]string{"SERVER_PORT": "37777", "RELIABLE_PORT": "38888", "MAX_PLAYERS": "8", "RELEASE_BRANCH": "experimental"}
+			job, err := service.Start(context.Background(), Request{TemplateID: "satisfactory", ServerName: "Satisfactory", DirectoryName: "satisfactory-" + test.host, Values: values, ActorUserID: "actor"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			job = waitTerminal(t, service, job.ID)
+			if job.Status != Completed || job.ServerID == "" || !job.InstallationCompleted {
+				t.Fatalf("job=%#v", job)
+			}
+			record, err := serverService.Get(context.Background(), job.ServerID)
+			if err != nil || filepath.Base(record.Server.Executable) != filepath.Base(test.executable) || record.Server.Arguments[0] != test.wantFirstArgument || installer.plan.AppID != 1690800 || installer.plan.BetaBranch != "experimental" {
+				t.Fatalf("record=%#v plan=%#v err=%v", record, installer.plan, err)
+			}
+			joined := strings.Join(record.Server.Arguments, " ")
+			for _, expected := range []string{"-Port=37777", "-ReliablePort=38888", "MaxPlayers=8"} {
+				if !strings.Contains(joined, expected) {
+					t.Fatalf("missing launch argument %q in %#v", expected, record.Server.Arguments)
+				}
+			}
+			var portCount int
+			if err = db.QueryRow(`SELECT COUNT(*) FROM server_ports WHERE server_id=? AND port IN (37777,38888)`, job.ServerID).Scan(&portCount); err != nil || portCount != 3 {
+				t.Fatalf("ports=%d err=%v", portCount, err)
+			}
+			var adapterCount int
+			if err = db.QueryRow(`SELECT COUNT(*) FROM server_config_adapters WHERE server_id=?`, job.ServerID).Scan(&adapterCount); err != nil || adapterCount != 0 {
+				t.Fatalf("unexpected config adapter count=%d err=%v", adapterCount, err)
+			}
+		})
+	}
+}
+
+func TestSatisfactoryOfficialTemplateRejectsLinuxProvisioning(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "templates", "steamcmd", "satisfactory", "template.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var template templates.Template
+	if err = json.Unmarshal(data, &template); err != nil {
+		t.Fatal(err)
+	}
+	values, _, err := templates.ResolveValues(template, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = CheckProvisionable(template, values, "linux"); !errors.Is(err, ErrNotProvisionable) {
+		t.Fatalf("Linux Satisfactory provisioning unexpectedly available: %v", err)
 	}
 }
 

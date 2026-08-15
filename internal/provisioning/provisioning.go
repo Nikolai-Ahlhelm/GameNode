@@ -104,6 +104,7 @@ type Event struct {
 type Provisionability struct {
 	Provisionable    bool   `json:"provisionable"`
 	HostPlatform     string `json:"host_platform"`
+	Code             string `json:"code,omitempty"`
 	Summary          string `json:"summary"`
 	Installer        string `json:"installer,omitempty"`
 	AppID            int    `json:"app_id,omitempty"`
@@ -313,7 +314,7 @@ func (s *Service) Start(ctx context.Context, request Request) (Job, error) {
 	if err != nil {
 		return Job{}, err
 	}
-	launch, ok := templates.LaunchForPlatform(template, s.hostOS)
+	_, ok := templates.LaunchForPlatform(template, s.hostOS)
 	if !ok {
 		return Job{}, ErrNotProvisionable
 	}
@@ -367,7 +368,7 @@ func (s *Service) Start(ctx context.Context, request Request) (Job, error) {
 	s.wg.Add(1)
 	s.mu.Unlock()
 	s.log.Info("provisioning job queued", "module", "Provisioning.Start", "job_id", job.ID, "template_id", job.TemplateID, "app_id", job.AppID)
-	go s.execute(jobCtx, current, template, *launch, values, sensitive, provisionedPorts, plan)
+	go s.execute(jobCtx, current, template, values, sensitive, provisionedPorts, plan)
 	return job, nil
 }
 
@@ -399,10 +400,21 @@ func (s *Service) Check(ctx context.Context, templateID string) (Provisionabilit
 	}
 	plan, err := CheckProvisionable(template, values, s.hostOS)
 	if err != nil {
-		return Provisionability{Provisionable: false, HostPlatform: s.hostOS, Summary: "Template cannot be safely installed and launched on this host platform"}, nil
+		code, summary := provisionabilityFailure(err)
+		return Provisionability{Provisionable: false, HostPlatform: s.hostOS, Code: code, Summary: summary}, nil
 	}
 	launch, _ := templates.LaunchForPlatform(template, s.hostOS)
 	return Provisionability{Provisionable: true, HostPlatform: s.hostOS, Summary: "Native SteamCMD installation and structured launch are available", Installer: templates.InstallerSteamCMD, AppID: plan.AppID, Validate: plan.Validate, LaunchExecutable: launch.Executable}, nil
+}
+
+func provisionabilityFailure(err error) (string, string) {
+	if code := templates.ValidationCode(err); code != templates.CodeSchemaInvalid {
+		var validation *templates.ValidationError
+		if errors.As(err, &validation) {
+			return code, validation.Message
+		}
+	}
+	return "TEMPLATE_NOT_PROVISIONABLE", "Template is compatible but not provisionable on this node"
 }
 func (s *Service) Cancel(ctx context.Context, id, actorID string) (Job, error) {
 	s.log.Info("provisioning cancellation requested", "module", "Provisioning.Cancel", "job_id", id, "actor_user_id", actorID)
@@ -420,7 +432,7 @@ func (s *Service) Cancel(ctx context.Context, id, actorID string) (Job, error) {
 	return s.store.Get(ctx, id)
 }
 
-func (s *Service) execute(ctx context.Context, current *run, template templates.Template, launch templates.LaunchDefinition, values map[string]string, sensitive map[string]bool, provisionedPorts []ports.Port, plan steamcmd.InstallPlan) {
+func (s *Service) execute(ctx context.Context, current *run, template templates.Template, values map[string]string, sensitive map[string]bool, provisionedPorts []ports.Port, plan steamcmd.InstallPlan) {
 	s.log.Info("provisioning worker started", "module", "Provisioning.Worker", "job_id", current.job.ID, "template_id", template.ID, "recovering", current.recovering)
 	defer s.wg.Done()
 	defer s.release(current)
@@ -475,13 +487,14 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 	if !current.recovering {
 		s.phase(current, ValidatingInstallation, "Validating installed game files")
 	}
-	if err = validateInstallation(launch, current.root, values); err != nil {
+	err = templates.ValidateExpectedFiles(template, s.hostOS, values, current.root)
+	if err != nil {
 		s.log.With("module", "Provisioning.Validation").Error("installed game files failed validation", "job_id", current.job.ID, "template_id", template.ID, "error", err)
-		s.fail(current, ValidatingInstallation, "EXPECTED_EXECUTABLE_MISSING", "Installation validation failed", "SteamCMD completed, but the expected game executable was not found", true)
+		s.fail(current, ValidatingInstallation, templates.ValidationCode(err), "Installation validation failed", "SteamCMD completed, but one or more required launch artifacts were missing or unsafe", true)
 		return
 	}
 	s.phase(current, InstallationValidated, "Game installation validated")
-	s.phase(current, ResolvingLaunch, "Resolving the native server launch")
+	s.phase(current, ResolvingLaunch, "Applying validated game configuration")
 	configSnapshots := make([]servers.ProvisionedConfigAdapter, 0, len(template.ResolvedAdapters))
 	for _, adapter := range template.ResolvedAdapters {
 		adapterValues := map[string]string{}
@@ -493,7 +506,8 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 		if !adapter.PostStartOnly {
 			if err = gameconfig.Apply(current.root, adapter, adapterValues); err != nil {
 				s.log.With("module", "Provisioning.GameConfig").Error("game configuration could not be written", "job_id", current.job.ID, "template_id", template.ID, "adapter_id", adapter.ID, "error", err)
-				s.fail(current, ResolvingLaunch, "LAUNCH_RESOLUTION_FAILED", "Game configuration failed", "Installed files remain but the validated game configuration could not be written", true)
+				code, summary := gameConfigFailure(err)
+				s.fail(current, ResolvingLaunch, code, "Game configuration failed", summary, true)
 				return
 			}
 		}
@@ -505,7 +519,13 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 		}
 		configSnapshots = append(configSnapshots, servers.ProvisionedConfigAdapter{ID: adapter.ID, SchemaVersion: adapter.SchemaVersion, Version: adapter.Version, TemplateID: template.ID, TemplateVersion: template.Version, DefinitionJSON: definitionJSON})
 	}
-	server, metadata, err := buildServer(template, launch, current.job.ServerName, current.root, values, sensitive)
+	resolvedLaunch, err := templates.ResolveLaunch(template, s.hostOS, values, current.root)
+	if err != nil {
+		s.log.With("module", "Provisioning.Validation").Error("native launch resolution failed", "job_id", current.job.ID, "template_id", template.ID, "error", err)
+		s.fail(current, ResolvingLaunch, templates.ValidationCode(err), "Launch resolution failed", "Game files and configuration were validated, but GameNode could not resolve the native server launch", true)
+		return
+	}
+	server, metadata, err := buildServer(template, resolvedLaunch, current.job.ServerName, values, sensitive)
 	if err != nil {
 		s.log.With("module", "Provisioning.ServerConfig").Error("server configuration could not be built", "job_id", current.job.ID, "template_id", template.ID, "error", err)
 		s.fail(current, ResolvingLaunch, "LAUNCH_RESOLUTION_FAILED", "Launch resolution failed", "Game files were installed successfully, but GameNode could not resolve the native server launch", true)
@@ -658,6 +678,17 @@ func steamCMDFailure(err error) string {
 	}
 }
 
+func gameConfigFailure(err error) (string, string) {
+	switch {
+	case errors.Is(err, gameconfig.ErrInitialize):
+		return "GAME_CONFIG_INITIALIZATION_FAILED", "Game files were installed, but the managed configuration could not be initialized safely"
+	case errors.Is(err, gameconfig.ErrParse):
+		return "GAME_CONFIG_PARSE_FAILED", "Game files were installed, but the managed configuration could not be parsed safely"
+	default:
+		return "GAME_CONFIG_APPLY_FAILED", "Game files were installed, but the validated game configuration could not be written"
+	}
+}
+
 func (s *Service) phase(current *run, status, summary string) {
 	s.mu.Lock()
 	if current.job.Status == Completed || current.job.Status == Failed || current.job.Status == Cancelled {
@@ -743,15 +774,21 @@ func (s *Service) release(current *run) {
 }
 
 func CheckProvisionable(template templates.Template, values map[string]string, hostOS string) (steamcmd.InstallPlan, error) {
-	if template.Compatibility.Status == templates.Unsupported || template.Installer.Type != templates.InstallerSteamCMD || template.Installer.SteamCMD == nil {
+	if template.Compatibility.Status == templates.Unsupported {
 		return steamcmd.InstallPlan{}, ErrNotProvisionable
 	}
+	if template.Installer.Type != templates.InstallerSteamCMD || template.Installer.SteamCMD == nil {
+		return steamcmd.InstallPlan{}, fmt.Errorf("%w: %w", ErrNotProvisionable, &templates.ValidationError{Code: templates.CodeUnsupportedInstaller, Message: "Template installer is not available through managed provisioning"})
+	}
+	if err := templates.CheckHostRequirements(template, hostOS, runtime.GOARCH); err != nil {
+		return steamcmd.InstallPlan{}, fmt.Errorf("%w: %w", ErrNotProvisionable, err)
+	}
 	if template.Configuration != nil && len(template.ResolvedAdapters) != len(template.Configuration.Adapters) {
-		return steamcmd.InstallPlan{}, ErrNotProvisionable
+		return steamcmd.InstallPlan{}, fmt.Errorf("%w: %w", ErrNotProvisionable, &templates.ValidationError{Code: templates.CodeSchemaInvalid, Message: "Required game configuration adapter is unavailable or invalid"})
 	}
 	launch, ok := templates.LaunchForPlatform(template, hostOS)
 	if !ok {
-		return steamcmd.InstallPlan{}, ErrNotProvisionable
+		return steamcmd.InstallPlan{}, fmt.Errorf("%w: %w", ErrNotProvisionable, &templates.ValidationError{Code: templates.CodeInvalidPlatformLaunch, Message: hostOS + " launch definition missing"})
 	}
 	source := template.Installer.SteamCMD
 	if source.AppID <= 0 || source.InstallTarget != "server_root" || source.LoginMode == "credentials_required" {
@@ -797,97 +834,25 @@ func CheckProvisionable(template templates.Template, values map[string]string, h
 	return plan, nil
 }
 
-func buildServer(template templates.Template, launch templates.LaunchDefinition, name, root string, values map[string]string, sensitive map[string]bool) (servers.Server, []servers.ProvisionedVariable, error) {
-	known := map[string]bool{}
-	for key := range values {
-		known[key] = true
-		if sensitive[key] && (strings.Contains(launch.Executable, "{{"+key+"}}") || strings.Contains(launch.Executable, "${"+key+"}")) {
-			return servers.Server{}, nil, errors.New("sensitive variables are not permitted in a launch executable")
-		}
-	}
-	executable, err := templates.ExpandRelativePath(launch.Executable, values, known)
-	if err != nil {
-		return servers.Server{}, nil, errors.New("launch executable expansion failed")
-	}
-	expectedExecutable := filepath.Join(root, filepath.FromSlash(executable))
-	resolvedExecutable, err := filepath.EvalSymlinks(expectedExecutable)
-	if err != nil || !inside(root, resolvedExecutable) {
-		return servers.Server{}, nil, errors.New("expected launch executable is missing or unsafe")
-	}
-	executableInfo, err := os.Stat(resolvedExecutable)
-	if err != nil || !executableInfo.Mode().IsRegular() {
-		return servers.Server{}, nil, errors.New("expected launch executable is missing or unsafe")
-	}
-	workingDirectory := root
-	if launch.WorkingDirectory != "" {
-		relativeWorkingDirectory, expandErr := templates.ExpandRelativePath(launch.WorkingDirectory, values, known)
-		if expandErr != nil {
-			return servers.Server{}, nil, errors.New("working directory expansion failed")
-		}
-		workingDirectory, err = filepath.EvalSymlinks(filepath.Join(root, filepath.FromSlash(relativeWorkingDirectory)))
-		if err != nil || !inside(root, workingDirectory) {
-			return servers.Server{}, nil, errors.New("working directory is missing or unsafe")
-		}
-		workingInfo, statErr := os.Stat(workingDirectory)
-		if statErr != nil || !workingInfo.IsDir() {
-			return servers.Server{}, nil, errors.New("working directory is missing or unsafe")
-		}
-	}
-	arguments := make([]string, 0, len(launch.Arguments))
-	for _, raw := range launch.Arguments {
-		value, err := templates.Expand(raw, values, known)
-		if err != nil {
-			return servers.Server{}, nil, errors.New("launch argument expansion failed")
-		}
-		arguments = append(arguments, value)
-	}
+func buildServer(template templates.Template, launch templates.ResolvedLaunch, name string, values map[string]string, sensitive map[string]bool) (servers.Server, []servers.ProvisionedVariable, error) {
 	metadata := make([]servers.ProvisionedVariable, 0, len(values))
 	environment := map[string]string{}
 	for key, value := range values {
 		environment[key] = value
 		metadata = append(metadata, servers.ProvisionedVariable{Key: key, Sensitive: sensitive[key], Source: template.SourceType, Version: template.Version})
 	}
-	stopMethod := launch.StopMethod
-	if stopMethod == "" {
-		stopMethod = "terminate"
-	}
-	stopTimeout := launch.StopTimeout
-	if stopTimeout == 0 {
-		stopTimeout = 15
+	for key, value := range launch.Environment {
+		environment[key] = value
 	}
 	serverID, err := newServerID()
 	if err != nil {
 		return servers.Server{}, nil, errors.New("server identity could not be created")
 	}
-	server := servers.Server{ID: serverID, CreationMode: servers.CreationTemplate, Name: name, Description: template.Description, WorkingDirectory: workingDirectory, Executable: resolvedExecutable, Arguments: arguments, EnvironmentVariables: environment, RuntimeType: "native", RestartPolicy: "never", StopMethod: stopMethod, StopCommand: launch.StopCommand, StopTimeoutSeconds: stopTimeout, AutoRestartMaxAttempts: 3, AutoRestartWindowSeconds: 300, AutoRestartDelaySeconds: 5}
+	server := servers.Server{ID: serverID, CreationMode: servers.CreationTemplate, Name: name, Description: template.Description, WorkingDirectory: launch.WorkingDirectory, Executable: launch.Executable, Arguments: launch.Arguments, EnvironmentVariables: environment, RuntimeType: "native", RestartPolicy: "never", StopMethod: launch.StopMethod, StopCommand: launch.StopCommand, StopTimeoutSeconds: launch.StopTimeout, AutoRestartMaxAttempts: 3, AutoRestartWindowSeconds: 300, AutoRestartDelaySeconds: 5}
 	if err = server.Validate(); err != nil {
 		return servers.Server{}, nil, errors.New("installed server definition is invalid")
 	}
 	return server, metadata, nil
-}
-
-// validateInstallation is deliberately separate from server registration: a
-// successful SteamCMD process only becomes an installation success after the
-// template-owned launch artifact is present under the managed root.
-func validateInstallation(launch templates.LaunchDefinition, root string, values map[string]string) error {
-	known := make(map[string]bool, len(values))
-	for key := range values {
-		known[key] = true
-	}
-	executable, err := templates.ExpandRelativePath(launch.Executable, values, known)
-	if err != nil {
-		return err
-	}
-	path := filepath.Join(root, filepath.FromSlash(executable))
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil || !inside(root, resolved) {
-		return errors.New("expected executable is missing or unsafe")
-	}
-	info, err := os.Stat(resolved)
-	if err != nil || !info.Mode().IsRegular() {
-		return errors.New("expected executable is missing or unsafe")
-	}
-	return nil
 }
 
 func resolveTemplatePorts(definitions []templates.TemplatePort, values map[string]string) ([]ports.Port, error) {

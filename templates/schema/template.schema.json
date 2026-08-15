@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gamenode.dev/schemas/template-v2.json",
+  "title": "GameNode Official Template v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "name", "description", "version", "category", "source_type", "source_metadata", "installer", "variables", "compatibility", "read_only", "platforms", "expected_files"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 128},
+    "description": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "version": {"type": "string", "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"},
+    "category": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "minimum_gamenode_version": {"type": "string"},
+    "known_limitations": {"type": "array", "maxItems": 32, "items": {"type": "string", "maxLength": 512}},
+    "tags": {"type": "array", "maxItems": 32, "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"}},
+    "icon": {"type": "string", "maxLength": 64},
+    "source_type": {"const": "official"},
+    "source_identifier": {"type": "string"},
+    "source_format_version": {"const": "2"},
+    "source_metadata": {"$ref": "#/$defs/sourceMetadata"},
+    "installer": {"$ref": "#/$defs/installer"},
+    "launch": {"$ref": "#/$defs/launch"},
+    "platform_launches": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {"windows": {"$ref": "#/$defs/launch"}, "linux": {"$ref": "#/$defs/launch"}}
+    },
+    "variables": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/variable"}},
+    "ports": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/port"}},
+    "expected_files": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/expectedFile"}},
+    "config_files": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/configFile"}},
+    "requirements": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/requirement"}},
+    "help": {"$ref": "#/$defs/help"},
+    "configuration": {"$ref": "#/$defs/configuration"},
+    "compatibility": {"$ref": "#/$defs/compatibility"},
+    "read_only": {"const": true},
+    "platforms": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["windows", "linux"]}},
+    "prerequisites": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "sourceMetadata": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "author": {"type": "string"}, "exported_at": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}},
+        "features": {"type": "array", "items": {"type": "string"}}, "docker_images": {"type": "object"},
+        "original_sha256": {"type": "string"}, "ignored_fields": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "installer": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["type", "steamcmd"], "properties": {"type": {"const": "steamcmd"}, "steamcmd": {"$ref": "#/$defs/steamcmd"}}},
+        {"type": "object", "additionalProperties": false, "required": ["type"], "properties": {"type": {"const": "existing-files"}}}
+      ]
+    },
+    "steamcmd": {
+      "type": "object", "additionalProperties": false, "required": ["app_id", "validate", "login_mode", "platform", "install_target"],
+      "properties": {
+        "app_id": {"type": "integer", "minimum": 1}, "validate": {"type": "boolean"}, "login_mode": {"const": "anonymous"},
+        "platform": {"enum": ["native", "windows", "linux"]}, "install_target": {"const": "server_root"},
+        "beta_branch_variable": {"type": "string"}, "beta_password_variable": {"type": "string", "maxLength": 0},
+        "username_variable": {"type": "string", "maxLength": 0}, "password_variable": {"type": "string", "maxLength": 0},
+        "auth_variable": {"type": "string", "maxLength": 0}, "platform_variable": {"type": "string", "maxLength": 0}
+      }
+    },
+    "launch": {
+      "type": "object", "additionalProperties": false, "required": ["executable", "arguments", "working_root"],
+      "properties": {
+        "executable": {"type": "string", "minLength": 1, "maxLength": 240}, "arguments": {"type": "array", "maxItems": 128, "items": {"type": "string", "maxLength": 16384}},
+        "working_root": {"const": "server_root"}, "working_directory": {"type": "string", "maxLength": 240},
+        "environment": {"type": "object", "maxProperties": 64, "propertyNames": {"pattern": "^[A-Z][A-Z0-9_]{0,63}$"}, "additionalProperties": {"type": "string", "maxLength": 16384}},
+        "stop_method": {"enum": ["terminate", "stdin_command"]}, "stop_command": {"type": "string", "maxLength": 256},
+        "stop_timeout_seconds": {"type": "integer", "minimum": 0, "maximum": 300}, "resolver": {"enum": ["java", "neoforge"]}
+      }
+    },
+    "variable": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "key", "default_value", "user_viewable", "user_editable", "type", "sensitive", "required", "nullable", "validation"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 80}, "description": {"type": "string", "maxLength": 512},
+        "key": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"}, "default_value": {"type": "string", "maxLength": 16384},
+        "user_viewable": {"type": "boolean"}, "user_editable": {"type": "boolean"}, "type": {"enum": ["string", "integer", "number", "boolean", "enum", "secret"]},
+        "sensitive": {"type": "boolean"}, "required": {"type": "boolean"}, "nullable": {"type": "boolean"}, "validation": {"$ref": "#/$defs/validation"},
+        "raw_rules": {"type": "array", "items": {"type": "string"}}, "placeholder": {"type": "string", "maxLength": 160},
+        "advanced": {"type": "boolean"}, "group": {"type": "string", "maxLength": 64}
+      }
+    },
+    "validation": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"min": {"type": "number"}, "max": {"type": "number"}, "min_length": {"type": "integer", "minimum": 0, "maximum": 16384}, "max_length": {"type": "integer", "minimum": 0, "maximum": 16384}, "allowed": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"type": "string"}}}
+    },
+    "port": {
+      "type": "object", "additionalProperties": false, "required": ["name", "protocol"],
+      "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 64}, "protocol": {"enum": ["tcp", "udp"]}, "port": {"type": "integer", "minimum": 1, "maximum": 65535}, "variable": {"type": "string"}, "offset": {"type": "integer", "minimum": 0, "maximum": 100}, "required": {"type": "boolean"}, "purpose": {"type": "string", "maxLength": 256}}
+    },
+    "expectedFile": {
+      "type": "object", "additionalProperties": false, "required": ["path", "type", "required"],
+      "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 240}, "type": {"enum": ["file", "directory"]}, "required": {"type": "boolean"}, "executable": {"type": "boolean"}, "platform": {"enum": ["windows", "linux"]}}
+    },
+    "configFile": {
+      "type": "object", "additionalProperties": false, "required": ["path", "format"],
+      "properties": {"path": {"type": "string", "minLength": 1, "maxLength": 240}, "format": {"type": "string", "minLength": 1, "maxLength": 32}, "description": {"type": "string", "maxLength": 512}}
+    },
+    "requirement": {
+      "type": "object", "additionalProperties": false, "required": ["type", "level", "description"],
+      "properties": {"type": {"enum": ["os", "architecture", "java", "steamcmd", "disk", "note"]}, "level": {"enum": ["hard", "informational"]}, "value": {"type": "string", "maxLength": 128}, "description": {"type": "string", "minLength": 1, "maxLength": 512}}
+    },
+    "help": {"type": "object", "additionalProperties": false, "properties": {"summary": {"type": "string", "maxLength": 1024}, "notes": {"type": "array", "maxItems": 32, "items": {"type": "string", "maxLength": 512}}}},
+    "configuration": {
+      "type": "object", "additionalProperties": false, "required": ["adapters"],
+      "properties": {
+        "adapters": {
+          "type": "array", "minItems": 1, "maxItems": 8,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["id", "schema_version", "file"],
+            "properties": {"id": {"type": "string"}, "schema_version": {"const": 1}, "file": {"type": "string"}}
+          }
+        }
+      }
+    },
+    "compatibility": {
+      "type": "object", "additionalProperties": false, "required": ["status", "findings"],
+      "properties": {
+        "status": {"enum": ["compatible", "partially_compatible", "unsupported"]},
+        "findings": {
+          "type": "array", "maxItems": 128,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["severity", "component", "code", "summary"],
+            "properties": {"severity": {"enum": ["info", "warning", "error"]}, "component": {"type": "string"}, "code": {"type": "string"}, "summary": {"type": "string"}}
+          }
+        }
+      }
+    }
+  }
+}

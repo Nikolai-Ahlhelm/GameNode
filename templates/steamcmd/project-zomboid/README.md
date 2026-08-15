@@ -1,7 +1,7 @@
 # Project Zomboid Official template
 
 This directory owns all reviewed GameNode product data for Project Zomboid.
-Schema v1 installs the Dedicated Server with fixed Steam App ID `380870`,
+Template schema v2 installs the Dedicated Server with fixed Steam App ID `380870`,
 anonymous login, and validation.
 
 The current Windows depot launches through `StartServer64.bat`, but GameNode does
@@ -18,7 +18,9 @@ ports, native start, first-boot console interaction, `SERVER STARTED`, save, and
 clean exit code 0. Linux is not declared until its native launcher has the same
 independent acceptance.
 
-Template `1.1.0` adds the versioned `project-zomboid-server-ini` adapter. Project
+Template `1.1.0` added the versioned `project-zomboid-server-ini` adapter. Current
+template `2.0.0` preserves that launch/adapter behavior and adds the hardened v2
+artifact, Requirements, port-purpose, help, and UI metadata contract. Project
 Zomboid creates `Server/gamenode.ini` only on first start, so the adapter is
 persisted during provisioning but remains read-only/pending until that file
 exists. It then exposes only the declared flat settings: public name and

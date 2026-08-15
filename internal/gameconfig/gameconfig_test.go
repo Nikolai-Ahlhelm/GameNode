@@ -170,7 +170,7 @@ func TestINIKeyValuesRejectsMalformedDuplicateMissingSectionsAndInjection(t *tes
 }
 
 func TestINIKeyValuesRejectsUnsafeNestedTarget(t *testing.T) {
-	for _, target := range []string{"../gamenode.ini", "Server/../../evil.ini", `Server\\gamenode.ini`, "Server/config.xml", "Server/deeper/than/the/limit/gamenode.ini"} {
+	for _, target := range []string{"../gamenode.ini", "Server/../../evil.ini", `Server\\gamenode.ini`, "Server/config.xml", "one/two/three/four/five/six/seven/eight/gamenode.ini"} {
 		definition := iniAdapterFixture()
 		definition.Target = target
 		if err := ValidateDefinition(definition); err == nil {

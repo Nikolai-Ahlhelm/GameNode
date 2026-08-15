@@ -110,6 +110,16 @@ See `docs/security.md`, `docs/api.md`, ADR `docs/adr/0005-filesystem-sandbox.md`
 
 ## 10. Templates and Game Library Model
 
+- Official Template schema v2 is the contributor contract; schema v1 remains
+  readable for cached/backward-compatible data. Templates are data, never code.
+  Installer/resolver values are whitelisted, platform support is explicit,
+  selected paths are server-root-relative and sandboxed, and resolution yields
+  only executable + arguments/environment/working-directory/stop data.
+- Schema v2 expected files are validated after installation and before server
+  registration. Requirements distinguish enforceable host facts from
+  informational hints. Existing servers pin their resolved launch, ports,
+  adapters, and template provenance/version; catalog updates never mutate them.
+
 - Normalized `templates.Template` is the runtime-independent source of truth. Eggs are an untrusted import format, never a runtime format.
 - Current source values are `official`, `builtin`, and `pelican-pterodactyl` (shown as imported in the UI). Official and built-in entries are read-only; imported rows live in SQLite.
 - Egg ingestion is bounded, strict, and conservative. It stores normalized fields and a provenance hash, not raw Egg JSON or install scripts. Container paths collapse only to semantic `server_root`; Docker image/environment semantics do not reach runtime.
@@ -141,9 +151,9 @@ See `docs/security.md`, `docs/api.md`, ADR `docs/adr/0005-filesystem-sandbox.md`
 - `templates/catalog.json` is manifest schema v1 and lists relative JSON files below `templates/`. The fixed source is `https://raw.githubusercontent.com/Nikolai-Ahlhelm/GameNode/main/templates/`; there is no configurable source, GitHub API discovery, token, hash, or signature in v1.
 - The catalog, each template, and same-directory adapter are independently bounded and validated. Relative files cannot be URLs, absolute/drive/UNC paths, traversal, or unlisted paths.
 - `<data>/templates/cache` is a sanitized last-good cache. It loads during catalog construction. Remote refresh is on library use/manual refresh, not a startup dependency; refresh failure preserves cached official entries and imported/built-in availability, marks offline state, and must not break GameNode startup.
-- Current repository catalog entries are Minecraft NeoForge 1.0.0 (adopt existing, Windows/Linux), 7 Days to Die 1.1.0 (SteamCMD, Windows/Linux), and Project Zomboid 1.1.0 (SteamCMD, Windows only).
+- Current repository catalog entries are Minecraft NeoForge 2.0.0 (adopt existing, Windows/Linux), 7 Days to Die 2.0.0 (SteamCMD, Windows/Linux), Project Zomboid 2.0.0 (SteamCMD, Windows only), Palworld 1.1.0 (SteamCMD, Windows only), Satisfactory 1.0.0 (SteamCMD, Windows only), and Eco 1.0.0 (SteamCMD, Windows/Linux).
 - To add/update an official template: follow `templates/README.md`; add/update reviewed JSON under the correct game directory; keep IDs stable; bump template version for behavior/default/port changes; update `catalog.json` in the same change; validate backend and frontend helpers; use an opt-in real provision/start/stop smoke when practical.
-- Catalog and template schema versions must match code constants (currently v1). `minimum_gamenode_version` is validated and enforced as an unsupported compatibility finding for older release builds; development versions are intentionally treated as current enough.
+- Catalog schema v1 and Official Template schema v2 must match the code constants; Template schema v1 remains readable for cached/backward-compatible data. `minimum_gamenode_version` is validated and enforced as an unsupported compatibility finding for older release builds; development versions are intentionally treated as current enough.
 
 ## 14. Frontend Rules
 
