@@ -814,13 +814,21 @@ func validateOfficialLaunch(launch LaunchDefinition, known map[string]bool) erro
 			return errors.New("official template working directory is unsafe")
 		}
 	}
-	if launch.StopMethod != "" && launch.StopMethod != "terminate" && launch.StopMethod != "stdin_command" {
-		return errors.New("official template stop method is unsupported")
+	// The whitelist is intentionally closed and compiled: templates declare
+	// only a stop type and a bounded timeout, never signal numbers, Windows
+	// API flags, control characters, helper executables, or free stop
+	// commands. console_interrupt selects a fixed, reviewed Windows runtime
+	// behavior (see internal/runtime.Interrupt); it never carries a command.
+	if launch.StopMethod != "" && launch.StopMethod != "terminate" && launch.StopMethod != "stdin_command" && launch.StopMethod != "console_interrupt" {
+		return validationError(CodeUnsupportedStopMethod, "official template stop method is unsupported")
 	}
 	if launch.StopMethod == "stdin_command" && !safeStopCommand(launch.StopCommand) {
 		return errors.New("official template stop command is unsafe")
 	}
-	if launch.StopMethod != "stdin_command" && launch.StopCommand != "" {
+	if launch.StopMethod == "console_interrupt" && launch.StopCommand != "" {
+		return validationError(CodeUnsupportedStopMethod, "console_interrupt templates cannot declare a stop command")
+	}
+	if launch.StopMethod != "stdin_command" && launch.StopMethod != "console_interrupt" && launch.StopCommand != "" {
 		return errors.New("official template stop command requires stdin")
 	}
 	if launch.StopTimeout < 0 || launch.StopTimeout > 300 {

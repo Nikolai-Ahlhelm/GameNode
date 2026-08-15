@@ -872,7 +872,7 @@ func TestSatisfactoryOfficialProvisioningUsesDirectPlatformLaunches(t *testing.T
 				t.Fatalf("job=%#v", job)
 			}
 			record, err := serverService.Get(context.Background(), job.ServerID)
-			if err != nil || filepath.Base(record.Server.Executable) != filepath.Base(test.executable) || record.Server.Arguments[0] != test.wantFirstArgument || installer.plan.AppID != 1690800 || installer.plan.BetaBranch != "experimental" {
+			if err != nil || filepath.Base(record.Server.Executable) != filepath.Base(test.executable) || record.Server.Arguments[0] != test.wantFirstArgument || installer.plan.AppID != 1690800 || installer.plan.BetaBranch != "experimental" || record.Server.StopMethod != "console_interrupt" || record.Server.StopCommand != "" {
 				t.Fatalf("record=%#v plan=%#v err=%v", record, installer.plan, err)
 			}
 			joined := strings.Join(record.Server.Arguments, " ")

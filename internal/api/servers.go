@@ -16,6 +16,7 @@ import (
 	"gamenode/internal/auth"
 	"gamenode/internal/filesystem"
 	"gamenode/internal/rbac"
+	"gamenode/internal/runtime"
 	"gamenode/internal/servers"
 )
 
@@ -651,6 +652,17 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request, csrf bool)
 func serverError(w http.ResponseWriter, err error, conflict bool) {
 	if errors.Is(err, sql.ErrNoRows) {
 		errorOut(w, http.StatusNotFound, "not_found", "server not found")
+		return
+	}
+	// Console-interrupt outcomes get their own safe, specific messages instead
+	// of the generic conflict text below; they never carry OS error text,
+	// PIDs, or handles. See docs/security.md.
+	if errors.Is(err, runtime.ErrConsoleInterruptUnsupported) {
+		errorOut(w, http.StatusConflict, runtime.CodeConsoleInterruptUnsupported, "Windows console interrupt is unavailable for this process")
+		return
+	}
+	if errors.Is(err, runtime.ErrConsoleInterruptFailed) {
+		errorOut(w, http.StatusConflict, runtime.CodeConsoleInterruptFailed, "Windows console interrupt could not be delivered")
 		return
 	}
 	if conflict {

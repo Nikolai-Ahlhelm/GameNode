@@ -80,6 +80,19 @@ func (nativeRuntime) Stop(ctx context.Context, identity Identity, timeout time.D
 	})
 }
 
+// Interrupt has no Linux implementation. Linux servers use SIGTERM through
+// Stop; there is no Windows console control event concept here. This is a
+// stable interface stub, not an emulation, so it always reports the
+// documented unsupported error rather than silently no-op succeeding.
+func (nativeRuntime) Interrupt(_ context.Context, _ Identity) error {
+	return ErrConsoleInterruptUnsupported
+}
+
+// RunConsoleSignalHelper has no Linux behavior; GameNode never re-execs
+// itself as a console-signal helper on this platform. It always reports that
+// this invocation is not the helper.
+func RunConsoleSignalHelper() (int, bool) { return 0, false }
+
 func (nativeRuntime) Kill(_ context.Context, identity Identity) error {
 	if err := verifyLinux(identity); err != nil {
 		return err

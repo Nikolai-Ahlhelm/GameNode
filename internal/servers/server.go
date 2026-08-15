@@ -34,6 +34,13 @@ const (
 	StateStopping    = "stopping"
 	StateCrashed     = "crashed"
 	StateUnknown     = "unknown"
+
+	// StopMethodConsoleInterrupt is a compiled, Windows-only stop type. A
+	// process started with this stop method receives a targeted Windows
+	// console control event instead of being terminated outright; there is no
+	// free-form stop string or template-defined signal number behind it. See
+	// internal/runtime.Interrupt and docs/runtime.md.
+	StopMethodConsoleInterrupt = "console_interrupt"
 )
 
 var (
@@ -143,8 +150,8 @@ func (s *Server) Validate() error {
 	if s.StopMethod == "" {
 		s.StopMethod = "terminate"
 	}
-	if s.StopMethod != "terminate" && s.StopMethod != "stdin_command" {
-		return errors.New("stop method must be terminate or stdin_command")
+	if s.StopMethod != "terminate" && s.StopMethod != "stdin_command" && s.StopMethod != StopMethodConsoleInterrupt {
+		return errors.New("stop method must be terminate, stdin_command, or console_interrupt")
 	}
 	if s.StopMethod == "stdin_command" {
 		if strings.TrimSpace(s.StopCommand) == "" || len(s.StopCommand) > 256 || strings.ContainsAny(s.StopCommand, "\r\n\x00") {
@@ -903,6 +910,10 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 			Stderr: session.Output("stderr"),
 			Stdin:  session.AttachInput,
 		},
+		// Derived from the normalized stop method, never from template or
+		// request data directly, so only a console_interrupt server changes
+		// how its process group is created.
+		ConsoleInterruptCapable: record.Server.StopMethod == StopMethodConsoleInterrupt,
 	})
 	if err != nil {
 		cleanup()
@@ -995,6 +1006,7 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 	_ = s.store.SaveRuntime(ctx, id, record.Runtime)
 	identity := runtime.Identity{PID: record.Runtime.PID, StartKey: record.Runtime.processStartKey}
 	instance, _ := s.instances.Load(id)
+	interruptSent := false
 	if kill {
 		err = s.runtime.Kill(ctx, identity)
 	} else if record.Server.StopMethod == "stdin_command" {
@@ -1003,6 +1015,20 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 			err = errors.New("console input is unavailable for the detached process")
 		} else {
 			err = process.session.Input(record.Server.StopCommand + "\n")
+		}
+	} else if record.Server.StopMethod == StopMethodConsoleInterrupt {
+		process, ok := instance.(*processInstance)
+		if !ok || process.identity != identity {
+			// A process rediscovered after a GameNode restart has no
+			// verifiable, safely addressable console in this GameNode
+			// lifetime (see docs/runtime.md). Do not claim a graceful
+			// interrupt was attempted; fall back to the existing bounded
+			// terminate/force-kill lifecycle instead.
+			s.log.Warn("console interrupt unavailable for detached process; falling back to terminate", "module", module, "server_id", id, "pid", identity.PID)
+			err = s.runtime.Stop(ctx, identity, time.Duration(record.Server.StopTimeoutSeconds)*time.Second)
+		} else {
+			err = s.runtime.Interrupt(ctx, identity)
+			interruptSent = err == nil
 		}
 	} else {
 		err = s.runtime.Stop(ctx, identity, time.Duration(record.Server.StopTimeoutSeconds)*time.Second)
@@ -1017,7 +1043,7 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 	}
 	lock.Unlock()
 	if process, ok := instance.(*processInstance); ok && process.identity == identity {
-		if !kill && record.Server.StopMethod == "stdin_command" {
+		if !kill && (record.Server.StopMethod == "stdin_command" || interruptSent) {
 			timer := time.NewTimer(time.Duration(record.Server.StopTimeoutSeconds) * time.Second)
 			select {
 			case <-process.done:
@@ -1029,12 +1055,16 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 					return Record{}, killErr
 				}
 				if errors.Is(killErr, runtime.ErrNotRunning) {
-					// The game accepted the stdin stop command and exited, but the
-					// Wait callback is delayed by inherited Windows pipe handles.
-					// Its identity is already known absent, so finish the managed
+					// The game accepted the stop signal and exited, but the Wait
+					// callback is delayed by inherited Windows pipe handles. Its
+					// identity is already known absent, so finish the managed
 					// lifecycle instead of leaving the server permanently stopping.
 					s.finalizeInstance(process, runtime.ExitResult{ExitCode: 0})
 				}
+				// A successful signal delivery is not a successful graceful stop.
+				// This is the bounded, controlled record of a timeout fallback;
+				// no argv, environment, console content, or handle values.
+				s.log.Warn("server did not exit before stop timeout; force-kill fallback used", "module", module, "server_id", id, "pid", identity.PID, "stop_method", record.Server.StopMethod)
 				<-process.done
 			case <-ctx.Done():
 				timer.Stop()

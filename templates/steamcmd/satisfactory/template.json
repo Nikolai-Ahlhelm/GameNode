@@ -3,12 +3,13 @@
   "id": "satisfactory",
   "name": "Satisfactory Dedicated Server",
   "description": "Install the official Satisfactory dedicated server through SteamCMD and launch its native Windows server executable without a shell.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "category": "steamcmd",
   "minimum_gamenode_version": "0.2.0",
   "known_limitations": [
     "A new server must be claimed and given its administrator password through Satisfactory's in-game Server Manager; these values are not exposed as ineffective GameNode variables.",
-    "GameNode does not call Satisfactory's HTTPS management API. The Windows native terminate lifecycle cannot guarantee Satisfactory's documented graceful-shutdown behavior and may risk unsaved state.",
+    "GameNode does not call Satisfactory's HTTPS management API. Stop now sends a targeted Windows console interrupt (the compiled console_interrupt runtime stop type) instead of terminating the process outright, but real-world graceful-shutdown acceptance against a running Satisfactory dedicated server is still pending; see the compatibility findings below.",
+    "A server rediscovered after a GameNode restart cannot receive a safely addressed console interrupt and falls back to GameNode's terminate lifecycle for that stop.",
     "Satisfactory may automatically increment the primary port if it becomes unavailable after GameNode's preflight; GameNode does not automatically discover or re-register that changed port.",
     "Automatic updates, mods, save management, and HTTPS API management are outside this template."
   ],
@@ -34,7 +35,7 @@
       "executable": "FactoryServer.exe",
       "arguments": ["-log", "-unattended", "-Port={{SERVER_PORT}}", "-ReliablePort={{RELIABLE_PORT}}", "-ini:Game:[/Script/Engine.GameSession]:MaxPlayers={{MAX_PLAYERS}}"],
       "working_root": "server_root",
-      "stop_method": "terminate",
+      "stop_method": "console_interrupt",
       "stop_timeout_seconds": 60
     }
   },
@@ -122,13 +123,14 @@
       "After first start, claim the server and configure administrator/player passwords through Satisfactory's in-game Server Manager.",
       "The primary port is registered for both TCP and UDP; the reliable messaging port is registered for TCP.",
       "Satisfactory 1.0 no longer uses the historical ports 15000 and 15777.",
-      "Stop currently uses GameNode's native terminate lifecycle. No HTTPS shutdown hook or SIGINT-specific runtime method is integrated."
+      "Stop uses GameNode's compiled console_interrupt runtime stop type: a targeted Windows console interrupt (CTRL_BREAK) scoped to this process's own process group, not a broadcast, not stdin text, and not an HTTPS shutdown hook. If the process does not exit before the configured timeout, GameNode falls back to its existing bounded force-kill path.",
+      "A server rediscovered after a GameNode restart stops through GameNode's terminate lifecycle instead, because its original console cannot be safely reattached."
     ]
   },
   "compatibility": {
     "status": "partially_compatible",
     "findings": [
-      {"severity":"warning","component":"stop","code":"SATISFACTORY_GRACEFUL_STOP_UNAVAILABLE","summary":"The current Windows GameNode lifecycle cannot guarantee Satisfactory's documented HTTPS or interactive Ctrl-C graceful shutdown path."},
+      {"severity":"warning","component":"stop","code":"SATISFACTORY_GRACEFUL_STOP_ACCEPTANCE_PENDING","summary":"The Windows console_interrupt runtime stop path is implemented and covered by automated tests, but has not yet been verified against a real running Satisfactory dedicated server; compatibility stays partially_compatible until that real-world acceptance passes."},
       {"severity":"info","component":"configuration","code":"SATISFACTORY_SERVER_CLAIM_REQUIRED","summary":"Server claim, name, administrator password, and player password are managed through Satisfactory's Server Manager rather than template variables."}
     ]
   },

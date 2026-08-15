@@ -39,7 +39,7 @@ are the current trust boundary.
 2. Confirm each supported platform and its exact installed executable.
 3. Add one explicit `platform_launches` entry per declared platform.
 4. Keep `arguments` as a JSON string array; placeholders may reference declared variables only.
-5. Choose `terminate`, or a documented bounded `stdin_command`; never add a stop script.
+5. Choose `terminate`, a documented bounded `stdin_command`, or — Windows only, and only when the upstream server documents handling Ctrl+C/Ctrl+Break as its graceful path — the compiled `console_interrupt` stop type; never add a stop script, a signal number, a Windows API flag, or a control character. `console_interrupt` must not set `stop_command`. See `docs/runtime.md`.
 6. Add only verified ports, using an integer variable when users may change a port.
 7. Validate the JSON and catalog with `go test ./internal/templates`.
 8. Add/update the catalog entry and bump the template version for executable, arguments, defaults, ports, or installer behavior.

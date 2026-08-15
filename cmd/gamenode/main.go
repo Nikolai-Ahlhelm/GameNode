@@ -36,6 +36,13 @@ import (
 var webAssets embed.FS
 
 func main() {
+	// A disposable console-signal helper invocation never performs normal
+	// GameNode startup. See internal/runtime.RunConsoleSignalHelper and
+	// docs/runtime.md for why this compiled binary re-execs itself instead of
+	// shelling out to a script or introducing a second service.
+	if code, ok := runtime.RunConsoleSignalHelper(); ok {
+		os.Exit(code)
+	}
 	configPath := flag.String("config", "", "Path to YAML configuration (defaults to config.yaml beside the executable)")
 	flag.Parse()
 	path := *configPath

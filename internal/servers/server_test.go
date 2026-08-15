@@ -28,6 +28,7 @@ type fakeRuntime struct {
 	start      func(runtime.StartOptions) error
 	stop       func() error
 	kill       func() error
+	interrupt  func() error
 	status     runtime.Status
 	statusErr  error
 	metrics    runtime.Metrics
@@ -36,6 +37,7 @@ type fakeRuntime struct {
 	starts     int
 	stops      int
 	kills      int
+	interrupts int
 }
 
 type testInput struct {
@@ -86,6 +88,17 @@ func (f *fakeRuntime) Kill(context.Context, runtime.Identity) error {
 		return kill()
 	}
 	f.exit(runtime.ExitResult{ExitCode: 1})
+	return nil
+}
+func (f *fakeRuntime) Interrupt(context.Context, runtime.Identity) error {
+	f.mu.Lock()
+	f.interrupts++
+	interrupt := f.interrupt
+	f.mu.Unlock()
+	if interrupt != nil {
+		return interrupt()
+	}
+	f.exit(runtime.ExitResult{ExitCode: 0})
 	return nil
 }
 func (f *fakeRuntime) exit(result runtime.ExitResult) {

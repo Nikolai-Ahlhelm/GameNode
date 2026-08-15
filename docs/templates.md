@@ -59,7 +59,7 @@ Expansion is not recursive, does not read host environment variables, and never 
 
 ## Stop behavior
 
-Stop behavior is `terminate` or a bounded `stdin_command` with a safe single-line command. After the timeout, the normal GameNode lifecycle performs its existing force-kill fallback. Stop scripts, shell commands, and template-defined signals are not supported.
+Stop behavior is `terminate`, a bounded `stdin_command` with a safe single-line command, or the compiled Windows-only `console_interrupt` (a targeted `CTRL_BREAK_EVENT`; see `docs/runtime.md`). A template declares only the stop type and a bounded `stop_timeout_seconds`; it never declares a signal number, Windows API flag, control character, helper executable, or free-form stop command. `console_interrupt` must not declare `stop_command` — that combination fails validation with `TEMPLATE_UNSUPPORTED_STOP_METHOD`, as does any stop type outside this fixed whitelist. After the timeout, the normal GameNode lifecycle performs its existing force-kill fallback. Stop scripts, shell commands, and template-defined signals are not supported.
 
 ## Variables
 
