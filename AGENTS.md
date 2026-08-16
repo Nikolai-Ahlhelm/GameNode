@@ -167,6 +167,7 @@ See `docs/security.md`, `docs/api.md`, ADR `docs/adr/0005-filesystem-sandbox.md`
 - Preserve the established dark infrastructure UI, desktop-first responsive behavior, and shared `PageHeader`, `SectionHeader`, `LoadingState`, `EmptyState`, and error/notice patterns.
 - Every asynchronous surface needs honest loading, error, and empty states. Never fabricate metrics, health, console attachment, progress, or sample data.
 - Reuse existing APIs and domain data. Do not add a backend endpoint or persistence field solely to make a graph look richer unless the milestone requires it.
+- Theme (dark/light/system), sidebar-collapsed, and wallpaper are personal browser-local preferences stored only in `localStorage` via `web/src/theme.ts` (`gamenode:ui-preferences`) - never instance-wide `internal/settings` state. Design tokens live centrally in `web/src/styles.css`'s `:root`/`:root[data-theme="light"]` blocks; do not hardcode a new theme-dependent color in a component or per-page CSS file. A wallpaper image is processed and validated entirely client-side (`web/src/wallpaper.ts`: PNG/JPEG/WebP only, decoded and re-encoded through canvas, never SVG, never a remote URL) and never uploaded to the backend. See `docs/architecture.md`'s "UI theme, preferences, and wallpaper foundation" section.
 
 ## 15. Database and Migration Rules
 

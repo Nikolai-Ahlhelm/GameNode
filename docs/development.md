@@ -17,6 +17,8 @@ Run `go test ./...`, `go test -race ./...`, and `go vet ./...`, then `npm ci`, `
 
 Tenant/RBAC-scope isolation has its own regression suite, `internal/api/cross_tenant_test.go`, run as part of `go test ./internal/api`; it builds two fully independent tenants and asserts uniform `403` cross-tenant denial plus dashboard/list non-leakage. Pure tenant frontend logic (slug derivation, name/slug validation, membership candidate filtering, tenant selector locking) is covered by `web/tests/tenants-helpers.test.ts`, part of `npm run test:helpers`.
 
+Theme resolution and wallpaper/preference sanitization (`web/src/theme.ts`) are covered by `web/tests/theme.test.ts`; the shared server/health status-to-tone mapping (`web/src/server-status.ts`) is covered by `web/tests/server-status.test.ts`. Both run as part of `npm run test:helpers`. The wallpaper file-processing path (`web/src/wallpaper.ts`) needs a real `createImageBitmap`/canvas and is verified manually in a browser instead (see the UI theme section of `docs/architecture.md`).
+
 ## GitHub Actions CI and releases
 
 `.github/workflows/ci.yml` runs for pull requests to `main`, pushes to `main`, and manual dispatches. Linux CI checks formatting, vet, tests, builds, and `go test -race ./...`; a native Windows runner executes the Go suite and build, including Windows-specific filesystem and runtime tests. The frontend job uses Node.js 22 and runs `npm ci`, `npm run check`, `npm run test:helpers`, and `npm run build`. Packaging jobs rebuild the production frontend immediately before compiling each binary, so the Go `embed` package receives current assets.

@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { Network, Pencil, Plus, Trash2 } from 'lucide-react';
 import { EmptyState, LoadingState, SectionHeader } from './ui';
-import { protocol, statusLabel, validPort } from './ports-helpers';
+import { listOrEmpty, protocol, statusLabel, validPort } from './ports-helpers';
 
 type Port = { id: string; name: string; protocol: string; bind_address: string; port: number; status: string };
 const api = async <T,>(path: string, init?: RequestInit): Promise<T> => { const response = await fetch(`/api/v1${path}`, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) }, ...init }); if (!response.ok) { const body = await response.json().catch(() => null); throw new Error(body?.error?.message ?? 'Request failed'); } return response.status === 204 ? undefined as T : response.json(); };
@@ -9,7 +9,10 @@ const csrf = (token: string) => ({ 'X-CSRF-Token': token });
 
 export function PortsTab({ serverID, token, canManage }: { serverID: string; token: string; canManage: boolean }) {
   const [ports, setPorts] = useState<Port[]>([]), [editing, setEditing] = useState<Port>(), [open, setOpen] = useState(false), [error, setError] = useState(''), [loading, setLoading] = useState(true);
-  const load = () => { setLoading(true); setError(''); api<{ ports: Port[] }>(`/servers/${serverID}/ports`).then(value => setPorts(value.ports)).catch(reason => setError(reason.message)).finally(() => setLoading(false)); };
+  // A server with no ports registered yet gets back `{ports: null}` (Go nil
+  // slice), not `{ports: []}` - guard the render path from that (see
+  // ports-helpers.ts's listOrEmpty).
+  const load = () => { setLoading(true); setError(''); api<{ ports: Port[] | null }>(`/servers/${serverID}/ports`).then(value => setPorts(listOrEmpty(value.ports))).catch(reason => setError(reason.message)).finally(() => setLoading(false)); };
   useEffect(load, [serverID]);
   const remove = async (port: Port) => { if (!confirm(`Delete port assignment?\n${port.name || 'Unnamed'} · ${port.protocol.toUpperCase()} ${port.bind_address}:${port.port}`)) return; try { await api(`/servers/${serverID}/ports/${port.id}`, { method: 'DELETE', headers: csrf(token) }); load(); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Request failed'); } };
   return <section className="ports-page"><SectionHeader title="Network ports" description="TCP and UDP assignments used by this server." actions={canManage ? <button onClick={() => { setEditing(undefined); setOpen(true); }}><Plus />Add port</button> : undefined} />{error && <p className="error notice">{error}</p>}{loading ? <LoadingState label="Loading port assignments…" /> : ports.length === 0 ? <EmptyState title="No ports configured" description="Document the TCP or UDP endpoints this application exposes." icon={Network} action={canManage ? <button onClick={() => setOpen(true)}><Plus />Add port</button> : undefined} /> : <div className="data-table ports-table"><div className="table-head"><span>Name</span><span>Protocol</span><span>Bind address</span><span>Port</span><span>Status</span><span>Actions</span></div>{ports.map(port => <div className="table-row" key={port.id}><strong>{port.name || 'Unnamed port'}</strong><span><span className="status">{port.protocol.toUpperCase()}</span></span><code>{port.bind_address || '0.0.0.0'}</code><strong>{port.port}</strong><span className={`status port-${port.status}`}>{statusLabel(port.status)}</span>{canManage ? <span className="table-actions"><button className="quiet" aria-label={`Edit ${port.name || 'port'}`} onClick={() => { setEditing(port); setOpen(true); }}><Pencil />Edit</button><button className="danger quiet" aria-label={`Delete ${port.name || 'port'}`} onClick={() => void remove(port)}><Trash2 />Delete</button></span> : <span />}</div>)}</div>}{open && <PortDialog value={editing} serverID={serverID} token={token} onClose={() => setOpen(false)} onDone={() => { setOpen(false); load(); }} />}</section>;

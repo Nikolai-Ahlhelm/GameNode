@@ -16,6 +16,7 @@ The current implementation covers the foundation, native runtime, live console, 
 - Build scope-neutral roles from the authoritative permission catalog; the UI identifies tenant- and server-assignable roles and explains global-only or mixed-role incompatibilities.
 - Monitor server process health and history, configure bounded auto-restart policies, and register TCP/UDP ports for collision checks before start.
 - Configure the instance name, subtitle, local PNG/ICO favicon, monitoring, logging, and password policy from typed settings. New passwords default to 8–256 characters, with administrator-configurable bounds.
+- Switch between dark, light, and system themes, collapse the sidebar, and optionally set a local background wallpaper (PNG/JPEG/WebP, processed and validated entirely in the browser) from Settings → Appearance. These are personal, browser-local preferences, not shared instance settings.
 - Analyze and persist Pelican/Pterodactyl Eggs as normalized GameNode templates with compatibility reports and native SteamCMD/launch plans.
 - Provision supported templates asynchronously through a managed SteamCMD installation, then create an ordinary native GameNode server.
 - Adopt an existing Minecraft NeoForge installation through the Official read-only template and a conservative launcher resolver.

@@ -2,4 +2,5 @@ export const serverStateLabel=(state?:string)=>({running:'Running',stopped:'Stop
 export const serverStateTone=(state?:string)=>state==='running'?'running':state==='crashed'?'crashed':state==='detached'?'stopping':state==='stopped'?'stopped':state||'unknown';
 export const runtimeStateLabel=(state?:string,consoleDetached?:boolean)=>state==='running'&&consoleDetached?'Running (console detached)':serverStateLabel(state);
 export const healthLabel=(health?:string)=>health==='healthy'?'Healthy':health==='degraded'?'Degraded':health==='detached'?'Console detached':health==='stopped'?'Stopped':health==='crashed'?'Crashed':'Unavailable';
+export const healthTone=(health?:string)=>health==='healthy'?'running':health==='degraded'?'degraded':health==='crashed'?'crashed':health==='detached'?'stopping':health==='stopped'?'stopped':'unknown';
 export const metric=(value?:number,unit='')=>Number.isFinite(value)?`${value}${unit}`:'Unavailable';

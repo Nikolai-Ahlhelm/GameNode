@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "check": "tsc -b --pretty false",
-    "test:helpers": "node --experimental-strip-types --test tests/files-helpers.test.ts tests/game-configuration-helpers.test.ts tests/capabilities.test.ts tests/identity-helpers.test.ts tests/ports-helpers.test.ts tests/settings-helpers.test.ts tests/support-helpers.test.ts tests/templates-helpers.test.ts tests/audit-helpers.test.ts tests/server-helpers.test.ts tests/tenants-helpers.test.ts"
+    "test:helpers": "node --experimental-strip-types --test tests/files-helpers.test.ts tests/game-configuration-helpers.test.ts tests/capabilities.test.ts tests/identity-helpers.test.ts tests/ports-helpers.test.ts tests/settings-helpers.test.ts tests/support-helpers.test.ts tests/templates-helpers.test.ts tests/audit-helpers.test.ts tests/server-helpers.test.ts tests/tenants-helpers.test.ts tests/theme.test.ts tests/server-status.test.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
