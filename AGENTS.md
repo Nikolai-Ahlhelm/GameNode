@@ -23,7 +23,8 @@ The current v0.2 direction adds a normalized template model, the Official Game L
 - `internal/auth`: local authentication, setup, opaque cookie sessions, CSRF tokens.
 - `internal/identity`: local users, groups, and memberships.
 - `internal/rbac`: allow-only permission catalog, roles, assignments, evaluator.
-- `internal/servers`: server records and normal lifecycle orchestration; coordinates runtime, console, monitoring, ports, and auto-restart.
+- `internal/servers`: server records and normal lifecycle orchestration; coordinates runtime, console, monitoring, ports, and auto-restart. Every server carries an immutable `TenantID` owned by `internal/tenants`.
+- `internal/tenants`: the Tenant Foundation domain. Persistent, transport-independent tenants and tenant memberships; tenant CRUD and membership add/list/remove. Membership alone grants no RBAC permission. `TenantServerRoot` is the single resolver for managed/provisioned storage (`<data>/tenants/<tenant-id>/servers/<directory>`); it independently revalidates both the tenant ID and directory name and never trusts an earlier caller's checks.
 - `internal/runtime`: transport-free native process start/status/metrics/stop/kill; OS implementations live in platform files.
 - `internal/console`: bounded in-memory console sessions, history, subscribers, and stdin.
 - `internal/filesystem`: authoritative server-root sandbox and all file-browser operations.
@@ -36,8 +37,8 @@ The current v0.2 direction adds a normalized template model, the Official Game L
 - `internal/provisioning`: persisted asynchronous provisioning jobs and normal-server creation.
 - `internal/gameconfig`: persisted, versioned declarative per-game configuration adapters and safe format-specific edits.
 - `internal/database`: SQLite open/migration runner.
-- `migrations`: ordered embedded SQL migrations. The current highest file is `019_server_config_values.sql`.
-- `web`: React/TypeScript/Vite source and Node helper tests. `cmd/gamenode/webassets` is generated production output embedded by Go.
+- `migrations`: ordered embedded SQL migrations. The current highest file is `022_rbac_tenant_scope.sql`.
+- `web`: React/TypeScript/Vite source and Node helper tests. `cmd/gamenode/webassets` is generated production output embedded by Go. `web/src/tenants.tsx`/`tenants-helpers.ts` hold the Tenant admin UI (list/create/detail with Overview/Servers/Members/Access tabs) and the shared `useCreatableTenants()`/`resolveTenantSelection()` helpers reused by the Custom/Adopt server form and the Game Library provisioning wizard; there is still no router, only existing component-state navigation.
 - `templates`: repository-owned Official Game Library manifest, templates, adapters, fixtures, and contribution rules.
 - `docs`: architecture, security, runtime, API, development, CI, and ADR details.
 - `server-test` and root `tmp-*` artifacts: local acceptance/reference material, not product architecture or proof of a fresh test run.
@@ -94,10 +95,10 @@ See `docs/security.md`, `docs/api.md`, ADR `docs/adr/0005-filesystem-sandbox.md`
 
 - The backend is authoritative. UI capability checks hide or disable affordances only.
 - RBAC is allow-only. There are no deny rules or implicit permission hierarchies. A `*.Manage` permission does **not** imply `*.View`; `Files.Edit` does not imply any other Files permission.
-- Global assignments apply when evaluating server-scoped permissions. Server assignments apply only to their specific server. Permissions classified by `rbac.GlobalOnly` never become effective from a server assignment.
+- RBAC scopes are `global`, `tenant`, and `server`. For a permission evaluated against a specific server, it is effective via an enabled admin bypass, a direct/group global assignment, a direct/group tenant assignment for that server's own tenant, or a direct/group server assignment for that exact server - never a tenant assignment for a different tenant. Roles stay scope-neutral; only an assignment carries a scope. Tenant membership (`internal/tenants`) alone never grants a permission. Permissions classified by `rbac.GlobalOnly` never become effective from a tenant or server assignment; `rbac.AllowedScopes` is the single source of truth for which scopes a given permission accepts, consumed by both the evaluator and `ServerAssignable`/`TenantAssignable`'s shared whole-role-suitability check.
 - A disabled user is denied before the enabled-admin bypass. An active administrator bypasses the normal evaluator.
-- Current groups are Server (`View/Create/Edit/Delete/Start/Stop/Restart/Kill`), Console (`View/Send`), Files (`View/Edit/Upload/Download/Delete/Rename`), Ports (`View/Manage`), identity (`Users`, `Groups`, `Roles`: `View/Manage`), platform (`Settings.View/Manage`), Templates (`View/Manage`), `Monitoring.View`, and `Audit.View`. The code catalog is definitive.
-- Global-only currently includes `Server.Create`, all Users/Groups/Roles permissions, Settings, Templates, and `Audit.View`.
+- Current groups are Server (`View/Create/Edit/Delete/Start/Stop/Restart/Kill`), Console (`View/Send`), Files (`View/Edit/Upload/Download/Delete/Rename`), Ports (`View/Manage`), identity (`Users`, `Groups`, `Roles`: `View/Manage`), platform (`Settings.View/Manage`), Templates (`View/Manage`), `Monitoring.View`, `Audit.View`, and Tenants (`View/Manage`, administering tenant entities themselves - never resources inside one). The code catalog is definitive.
+- Global-only currently includes all Users/Groups/Roles permissions, Settings, Templates, `Audit.View`, and `Tenants.View`/`Tenants.Manage`. `Server.Create` is the one deliberate exception among server-family permissions: it allows `global` and `tenant` but never `server` scope, since a server does not exist yet when `Server.Create` is evaluated.
 - Template browsing/provisionability and provisioning currently require global `Templates.View`; import/delete/refresh requires `Templates.Manage`. Starting or inspecting a provisioning job additionally requires global `Server.Create`. Jobs are owner-visible/cancellable, with active admins allowed to act for the owner.
 - Update the API product capability list and coverage tests whenever the permission catalog changes.
 
@@ -170,7 +171,8 @@ See `docs/security.md`, `docs/api.md`, ADR `docs/adr/0005-filesystem-sandbox.md`
 ## 15. Database and Migration Rules
 
 - SQLite via `modernc.org/sqlite` is the only database. Foreign keys and a busy timeout are enabled at open.
-- Migrations are committed SQL, embedded by `migrations_embed.go`, sorted lexically, and applied once inside individual transactions. Inspect `migrations/` before choosing a number; current highest is `019_server_config_values.sql`.
+- Migrations are committed SQL, embedded by `migrations_embed.go`, sorted lexically, and applied once inside individual transactions. Inspect `migrations/` before choosing a number; current highest is `022_rbac_tenant_scope.sql`.
+- `internal/database.Migrate` applies every pending migration with foreign key enforcement disabled on one dedicated connection, then verifies `PRAGMA foreign_key_check` before re-enabling it. This exists so a table rebuild (see 020, which gives `servers` a mandatory `tenant_id`) can `DROP`/rebuild a table that other live tables still reference by foreign key without SQLite's implicit cascading `DELETE` on `DROP TABLE` destroying that unrelated data. A migration that rebuilds a referenced table should rely on this rather than reintroducing its own pragma toggling.
 - Never edit an already applied migration. Add the next zero-padded migration and update tests/queries/models together.
 - Verify both a fresh database and upgrade from the previous schema. Migration SQL must be deterministic and must not depend on local paths, network, clock-based data decisions, or unordered input.
 - Store/parse timestamps as UTC RFC3339Nano unless an existing schema contract says otherwise.

@@ -11,6 +11,7 @@ import (
 	"gamenode/internal/auth"
 	"gamenode/internal/database"
 	"gamenode/internal/identity"
+	"gamenode/internal/tenants"
 )
 
 func testDB(t *testing.T) *sql.DB {
@@ -92,24 +93,47 @@ func TestCatalogAndEvaluator(t *testing.T) {
 
 func TestPermissionScopeMatrix(t *testing.T) {
 	globalOnly := map[string]bool{
-		"Server.Create": true, "Users.View": true, "Users.Manage": true,
+		"Users.View": true, "Users.Manage": true,
 		"Groups.View": true, "Groups.Manage": true, "Roles.View": true, "Roles.Manage": true,
 		"Settings.View": true, "Settings.Manage": true, "Log.Read": true, "Log.FlushDirectory": true,
 		"Templates.View": true, "Templates.Manage": true, "Audit.View": true,
+		"Tenants.View": true, "Tenants.Manage": true,
 	}
-	if len(Catalog) != 32 {
+	// Server.Create is the one deliberate exception: it supports "global"
+	// and "tenant" but never "server" (a server does not exist yet at the
+	// moment it is evaluated).
+	globalAndTenantOnly := map[string]bool{"Server.Create": true}
+	if len(Catalog) != 34 {
 		t.Fatalf("catalog contains %d permissions; update the explicit scope matrix test", len(Catalog))
 	}
 	for _, permission := range Catalog {
-		want := []string{"global", "server"}
-		if globalOnly[permission.Key] {
+		want := []string{"global", "tenant", "server"}
+		switch {
+		case globalOnly[permission.Key]:
 			want = []string{"global"}
+		case globalAndTenantOnly[permission.Key]:
+			want = []string{"global", "tenant"}
 		}
 		got := AllowedScopes(permission.Key)
 		if len(got) != len(want) || strings.Join(got, ",") != strings.Join(want, ",") {
 			t.Errorf("AllowedScopes(%s) = %v, want %v", permission.Key, got, want)
 		}
+		for _, scopeType := range []string{"global", "tenant", "server"} {
+			want := len(want) > 0 && contains(want, scopeType)
+			if got := ScopeAllowed(permission.Key, scopeType); got != want {
+				t.Errorf("ScopeAllowed(%s, %s) = %t, want %t", permission.Key, scopeType, got, want)
+			}
+		}
 	}
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestGroupAssignmentsAreImmediateAndScoped(t *testing.T) {
@@ -191,7 +215,7 @@ func TestPlatformPermissionsAreGlobalOnly(t *testing.T) {
 	if err = service.ReplacePermissions(ctx, role.ID, platformPermissions); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.ExecContext(ctx, "INSERT INTO servers(id,name,description,creation_mode,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", "server-a", "server", "", "custom", "C:/", "test.exe", "[]", "{}", "native", 0, "never", "terminate", "", 15, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+	if _, err = db.ExecContext(ctx, "INSERT INTO servers(id,tenant_id,name,description,creation_mode,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", "server-a", "default", "server", "", "custom", "C:/", "test.exe", "[]", "{}", "native", 0, "never", "terminate", "", 15, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
 		t.Fatal(err)
 	}
 	if err = service.AssignUser(ctx, user.ID, role.ID, Scope{Type: "server", ID: ptr("server-a")}); !errors.Is(err, ErrInvalidScope) {
@@ -248,7 +272,7 @@ func TestServerAssignmentRejectsGlobalOnlyPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	serverID := "server-for-scope-test"
-	if _, err = db.ExecContext(ctx, "INSERT INTO servers(id,name,description,creation_mode,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", serverID, "scope", "", "custom", "C:/", "x", "[]", "{}", "native", 0, "never", "terminate", "", 15, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+	if _, err = db.ExecContext(ctx, "INSERT INTO servers(id,tenant_id,name,description,creation_mode,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", serverID, "default", "scope", "", "custom", "C:/", "x", "[]", "{}", "native", 0, "never", "terminate", "", 15, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
 		t.Fatal(err)
 	}
 	if err = service.AssignUser(ctx, u.ID, role.ID, Scope{Type: "server", ID: &serverID}); !errors.Is(err, ErrInvalidScope) {
@@ -419,12 +443,554 @@ func TestEmptyRoleCannotBeAssignedToServer(t *testing.T) {
 	}
 }
 
+// TestTenantScopeDirectAndGroupAssignment covers the direct and group tenant
+// assignment scenarios from GameNode_Tenant_Foundation_Prompt.md section 3.7:
+// Alice, directly assigned Server Viewer at Tenant A, sees both of Tenant
+// A's servers and none of Tenant B's; Bob gets the identical effective
+// access purely through group membership at Tenant A.
+func TestTenantScopeDirectAndGroupAssignment(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	identities := identity.New(db)
+	alice, err := identities.CreateUser(ctx, identity.CreateUserInput{Username: "alice", Email: "alice@example.test", Password: "a password long enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := identities.CreateUser(ctx, identity.CreateUserInput{Username: "bob", Email: "bob@example.test", Password: "a password long enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	operators, err := identities.CreateGroup(ctx, identity.CreateGroupInput{Name: "Operators"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = identities.AddMember(ctx, operators.ID, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	tenantA := createRBACTenant(t, db, "Tenant A")
+	tenantB := createRBACTenant(t, db, "Tenant B")
+	insertRBACServerForTenant(t, db, "a1", tenantA.ID)
+	insertRBACServerForTenant(t, db, "a2", tenantA.ID)
+	insertRBACServerForTenant(t, db, "b1", tenantB.ID)
+
+	service := New(db)
+	viewer, err := service.CreateRole(ctx, "Server Viewer", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.ReplacePermissions(ctx, viewer.ID, []string{"Server.View"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.AssignUser(ctx, alice.ID, viewer.ID, Scope{Type: "tenant", ID: &tenantA.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.AssignGroup(ctx, operators.ID, viewer.ID, Scope{Type: "tenant", ID: &tenantA.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, userID := range []string{alice.ID, bob.ID} {
+		for _, server := range []string{"a1", "a2"} {
+			allowed, err := service.Allowed(ctx, userID, "Server.View", Scope{Type: "server", ID: ptr(server)})
+			if err != nil || !allowed {
+				t.Fatalf("Allowed(%s, Server.View, %s) = %t, %v; want true", userID, server, allowed, err)
+			}
+		}
+		allowed, err := service.Allowed(ctx, userID, "Server.View", Scope{Type: "server", ID: ptr("b1")})
+		if err != nil || allowed {
+			t.Fatalf("Allowed(%s, Server.View, b1) = %t, %v; want false (different tenant)", userID, allowed, err)
+		}
+	}
+	// A tenant grant is also directly visible when the caller evaluates
+	// tenant scope itself (e.g. a future "may I create a server in this
+	// tenant" check), not only when resolved through a server.
+	if allowed, err := service.Allowed(ctx, alice.ID, "Server.View", Scope{Type: "tenant", ID: &tenantA.ID}); err != nil || !allowed {
+		t.Fatalf("Allowed(alice, Server.View, tenant A) = %t, %v; want true", allowed, err)
+	}
+	if allowed, err := service.Allowed(ctx, alice.ID, "Server.View", Scope{Type: "tenant", ID: &tenantB.ID}); err != nil || allowed {
+		t.Fatalf("Allowed(alice, Server.View, tenant B) = %t, %v; want false", allowed, err)
+	}
+}
+
+// TestGlobalAssignmentSeesAllTenants proves a global grant applies across
+// every tenant's servers, not just one.
+func TestGlobalAssignmentSeesAllTenants(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	identities := identity.New(db)
+	user, err := identities.CreateUser(ctx, identity.CreateUserInput{Username: "global-viewer", Email: "global-viewer@example.test", Password: "a password long enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantA := createRBACTenant(t, db, "Tenant A")
+	tenantB := createRBACTenant(t, db, "Tenant B")
+	insertRBACServerForTenant(t, db, "ga1", tenantA.ID)
+	insertRBACServerForTenant(t, db, "gb1", tenantB.ID)
+	service := New(db)
+	role, err := service.CreateRole(ctx, "Global Viewer", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.ReplacePermissions(ctx, role.ID, []string{"Server.View"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.AssignUser(ctx, user.ID, role.ID, Scope{Type: "global"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, server := range []string{"ga1", "gb1"} {
+		allowed, err := service.Allowed(ctx, user.ID, "Server.View", Scope{Type: "server", ID: ptr(server)})
+		if err != nil || !allowed {
+			t.Fatalf("Allowed(global user, Server.View, %s) = %t, %v; want true", server, allowed, err)
+		}
+	}
+}
+
+// TestServerScopedAssignmentDoesNotLeakToTenantSiblings proves a
+// server-specific grant applies to exactly that one server, even when a
+// sibling server shares the same tenant.
+func TestServerScopedAssignmentDoesNotLeakToTenantSiblings(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	identities := identity.New(db)
+	user, err := identities.CreateUser(ctx, identity.CreateUserInput{Username: "server-scoped", Email: "server-scoped@example.test", Password: "a password long enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantA := createRBACTenant(t, db, "Tenant A")
+	insertRBACServerForTenant(t, db, "sa1", tenantA.ID)
+	insertRBACServerForTenant(t, db, "sa2", tenantA.ID)
+	service := New(db)
+	role, err := service.CreateRole(ctx, "One Server", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.ReplacePermissions(ctx, role.ID, []string{"Server.View"}); err != nil {
+		t.Fatal(err)
+	}
+	serverA1 := "sa1"
+	if err = service.AssignUser(ctx, user.ID, role.ID, Scope{Type: "server", ID: &serverA1}); err != nil {
+		t.Fatal(err)
+	}
+	if allowed, err := service.Allowed(ctx, user.ID, "Server.View", Scope{Type: "server", ID: ptr("sa1")}); err != nil || !allowed {
+		t.Fatalf("Allowed(sa1) = %t, %v; want true", allowed, err)
+	}
+	if allowed, err := service.Allowed(ctx, user.ID, "Server.View", Scope{Type: "server", ID: ptr("sa2")}); err != nil || allowed {
+		t.Fatalf("Allowed(sa2) = %t, %v; want false (sibling server, same tenant, no grant)", allowed, err)
+	}
+}
+
+// TestTenantMembershipAloneGrantsNoPermission is the explicit test demanded
+// by GameNode_Tenant_Foundation_Prompt.md section 3.6 and this step's item
+// 10: belonging to a tenant (internal/tenants.Membership) never by itself
+// makes any permission effective. Only a role assignment does.
+func TestTenantMembershipAloneGrantsNoPermission(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	identities := identity.New(db)
+	alice, err := identities.CreateUser(ctx, identity.CreateUserInput{Username: "member-only", Email: "member-only@example.test", Password: "a password long enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantA := createRBACTenant(t, db, "Tenant A")
+	insertRBACServerForTenant(t, db, "member-only-server", tenantA.ID)
+	if _, err = tenants.New(db).AddMember(ctx, tenantA.ID, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	service := New(db)
+	allowed, err := service.Allowed(ctx, alice.ID, "Server.View", Scope{Type: "server", ID: ptr("member-only-server")})
+	if err != nil || allowed {
+		t.Fatalf("Allowed(tenant member without a role assignment) = %t, %v; want false", allowed, err)
+	}
+	allowed, err = service.Allowed(ctx, alice.ID, "Server.View", Scope{Type: "tenant", ID: &tenantA.ID})
+	if err != nil || allowed {
+		t.Fatalf("Allowed(tenant member without a role assignment, tenant scope) = %t, %v; want false", allowed, err)
+	}
+}
+
+// TestTenantScopeDisabledUserDeniedBeforeAdminBypass and
+// TestTenantScopeAdminBypassesEvaluator mirror the existing global/server
+// disabled-user and admin-bypass coverage for the new tenant scope.
+func TestTenantScopeDisabledUserDeniedBeforeAdminBypass(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if _, err := auth.New(db).CreateInitialAdmin(ctx, "admin", "admin@example.test", "a password long enough"); err != nil {
+		t.Fatal(err)
+	}
+	identities := identity.New(db)
+	user, err := identities.CreateUser(ctx, identity.CreateUserInput{Username: "disabled-tenant", Email: "disabled-tenant@example.test", Password: "a password long enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantA := createRBACTenant(t, db, "Tenant A")
+	service := New(db)
+	role, err := service.CreateRole(ctx, "Tenant Role", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.ReplacePermissions(ctx, role.ID, []string{"Server.View"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.AssignUser(ctx, user.ID, role.ID, Scope{Type: "tenant", ID: &tenantA.ID}); err != nil {
+		t.Fatal(err)
+	}
+	disabled := false
+	if _, err = identities.UpdateUser(ctx, "", user.ID, identity.UpdateUserInput{Enabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	if allowed, err := service.Allowed(ctx, user.ID, "Server.View", Scope{Type: "tenant", ID: &tenantA.ID}); err != nil || allowed {
+		t.Fatalf("Allowed(disabled user, tenant scope) = %t, %v; want false", allowed, err)
+	}
+}
+func TestTenantScopeAdminBypassesEvaluator(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	identities := identity.New(db)
+	admin, err := identities.CreateUser(ctx, identity.CreateUserInput{Username: "tenant-admin", Email: "tenant-admin@example.test", Password: "a password long enough", IsAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantA := createRBACTenant(t, db, "Tenant A")
+	insertRBACServerForTenant(t, db, "admin-bypass-server", tenantA.ID)
+	service := New(db)
+	// No role assignment of any kind: an enabled admin bypasses the
+	// evaluator entirely, at every scope type.
+	if allowed, err := service.Allowed(ctx, admin.ID, "Server.View", Scope{Type: "tenant", ID: &tenantA.ID}); err != nil || !allowed {
+		t.Fatalf("Allowed(admin, tenant scope) = %t, %v; want true", allowed, err)
+	}
+	if allowed, err := service.Allowed(ctx, admin.ID, "Server.View", Scope{Type: "server", ID: ptr("admin-bypass-server")}); err != nil || !allowed {
+		t.Fatalf("Allowed(admin, server scope) = %t, %v; want true", allowed, err)
+	}
+}
+
+// TestMixedOrGlobalOnlyRoleRejectsTenantAssignment covers item 11's
+// "Mixed/global-only role: tenant assignment rejected" and the tenant
+// equivalents of the existing ErrEmptyServerRole/ErrInvalidScope guards.
+func TestMixedOrGlobalOnlyRoleRejectsTenantAssignment(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	identities := identity.New(db)
+	user, err := identities.CreateUser(ctx, identity.CreateUserInput{Username: "mixed-tenant", Email: "mixed-tenant@example.test", Password: "a password long enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantA := createRBACTenant(t, db, "Tenant A")
+	service := New(db)
+
+	globalOnlyRole, err := service.CreateRole(ctx, "Global Only", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.ReplacePermissions(ctx, globalOnlyRole.ID, []string{"Users.View"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.AssignUser(ctx, user.ID, globalOnlyRole.ID, Scope{Type: "tenant", ID: &tenantA.ID}); !errors.Is(err, ErrInvalidTenantScope) {
+		t.Fatalf("global-only role tenant assignment error = %v, want ErrInvalidTenantScope", err)
+	}
+
+	mixedRole, err := service.CreateRole(ctx, "Mixed", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.ReplacePermissions(ctx, mixedRole.ID, []string{"Server.View", "Users.View"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.AssignUser(ctx, user.ID, mixedRole.ID, Scope{Type: "tenant", ID: &tenantA.ID}); !errors.Is(err, ErrInvalidTenantScope) {
+		t.Fatalf("mixed role tenant assignment error = %v, want ErrInvalidTenantScope", err)
+	}
+
+	emptyRole, err := service.CreateRole(ctx, "Empty For Tenant", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.AssignUser(ctx, user.ID, emptyRole.ID, Scope{Type: "tenant", ID: &tenantA.ID}); !errors.Is(err, ErrEmptyTenantRole) {
+		t.Fatalf("empty role tenant assignment error = %v, want ErrEmptyTenantRole", err)
+	}
+
+	// A role suitable for tenant/server scope is still rejected when the
+	// named tenant does not exist.
+	suitable, err := service.CreateRole(ctx, "Suitable", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.ReplacePermissions(ctx, suitable.ID, []string{"Server.View"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.AssignUser(ctx, user.ID, suitable.ID, Scope{Type: "tenant", ID: ptr("does-not-exist")}); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("unknown tenant assignment error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+// TestServerCreateSupportsGlobalAndTenantButNotServerScope covers this
+// step's item 5: Server.Create is assignable at global or tenant scope, and
+// explicitly rejected at server scope (a server does not exist yet at the
+// moment Server.Create is evaluated).
+func TestServerCreateSupportsGlobalAndTenantButNotServerScope(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	identities := identity.New(db)
+	globalUser, err := identities.CreateUser(ctx, identity.CreateUserInput{Username: "create-global", Email: "create-global@example.test", Password: "a password long enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantUser, err := identities.CreateUser(ctx, identity.CreateUserInput{Username: "create-tenant", Email: "create-tenant@example.test", Password: "a password long enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantA := createRBACTenant(t, db, "Tenant A")
+	tenantB := createRBACTenant(t, db, "Tenant B")
+	insertRBACServerForTenant(t, db, "create-scope-server", tenantA.ID)
+	service := New(db)
+	role, err := service.CreateRole(ctx, "Creator", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.ReplacePermissions(ctx, role.ID, []string{"Server.Create"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.AssignUser(ctx, globalUser.ID, role.ID, Scope{Type: "global"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.AssignUser(ctx, tenantUser.ID, role.ID, Scope{Type: "tenant", ID: &tenantA.ID}); err != nil {
+		t.Fatal(err)
+	}
+	// Server scope is rejected outright by the evaluator's scope catalog
+	// check, so this cannot be created as an assignment in the first place.
+	if err = service.AssignUser(ctx, tenantUser.ID, role.ID, Scope{Type: "server", ID: ptr("create-scope-server")}); !errors.Is(err, ErrInvalidScope) {
+		t.Fatalf("Server.Create server-scope assignment error = %v, want ErrInvalidScope", err)
+	}
+	if allowed, err := service.Allowed(ctx, globalUser.ID, "Server.Create", Scope{Type: "tenant", ID: &tenantA.ID}); err != nil || !allowed {
+		t.Fatalf("global grantee Server.Create at tenant A = %t, %v; want true", allowed, err)
+	}
+	if allowed, err := service.Allowed(ctx, globalUser.ID, "Server.Create", Scope{Type: "tenant", ID: &tenantB.ID}); err != nil || !allowed {
+		t.Fatalf("global grantee Server.Create at tenant B = %t, %v; want true", allowed, err)
+	}
+	if allowed, err := service.Allowed(ctx, tenantUser.ID, "Server.Create", Scope{Type: "tenant", ID: &tenantA.ID}); err != nil || !allowed {
+		t.Fatalf("tenant grantee Server.Create at tenant A = %t, %v; want true", allowed, err)
+	}
+	if allowed, err := service.Allowed(ctx, tenantUser.ID, "Server.Create", Scope{Type: "tenant", ID: &tenantB.ID}); err != nil || allowed {
+		t.Fatalf("tenant grantee Server.Create at tenant B = %t, %v; want false", allowed, err)
+	}
+	// Evaluating Server.Create "for a server" makes no sense and is
+	// rejected by the evaluator too, independent of assignment validation.
+	if allowed, err := service.Allowed(ctx, globalUser.ID, "Server.Create", Scope{Type: "server", ID: ptr("create-scope-server")}); err != nil || allowed {
+		t.Fatalf("Server.Create at server scope = %t, %v; want false", allowed, err)
+	}
+}
+
+func TestRoleTenantAssignableSemantics(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	service := New(db)
+	tests := []struct {
+		name        string
+		permissions []string
+		want        bool
+	}{
+		{name: "empty", permissions: nil, want: false},
+		{name: "tenant permissions", permissions: []string{"Server.View", "Server.Create", "Console.View"}, want: true},
+		{name: "global only", permissions: []string{"Users.View"}, want: false},
+		{name: "mixed", permissions: []string{"Users.View", "Server.View"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			role, err := service.CreateRole(ctx, "tenant-role-"+strings.ReplaceAll(tt.name, " ", "-"), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = service.ReplacePermissions(ctx, role.ID, tt.permissions); err != nil {
+				t.Fatal(err)
+			}
+			role, err = service.GetRole(ctx, role.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if role.TenantAssignable != tt.want {
+				t.Fatalf("tenant_assignable = %t, want %t (%v)", role.TenantAssignable, tt.want, role.Permissions)
+			}
+			// server_assignable must stay independently correct: Server.Create
+			// alone is tenant-assignable but not server-assignable.
+			if tt.name == "tenant permissions" {
+				soloCreate, err := service.CreateRole(ctx, "solo-create", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = service.ReplacePermissions(ctx, soloCreate.ID, []string{"Server.Create"}); err != nil {
+					t.Fatal(err)
+				}
+				soloCreate, err = service.GetRole(ctx, soloCreate.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !soloCreate.TenantAssignable || soloCreate.ServerAssignable {
+					t.Fatalf("Server.Create-only role: tenant_assignable=%t server_assignable=%t, want true/false", soloCreate.TenantAssignable, soloCreate.ServerAssignable)
+				}
+			}
+		})
+	}
+}
+
+// TestRolePermissionUpdateCannotInvalidateTenantAssignment mirrors
+// TestRolePermissionUpdateCannotInvalidateServerAssignment for the tenant
+// scope guard added to ReplacePermissions.
+func TestRolePermissionUpdateCannotInvalidateTenantAssignment(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	identities := identity.New(db)
+	user, err := identities.CreateUser(ctx, identity.CreateUserInput{Username: "tenant-assigned", Email: "tenant-assigned@example.test", Password: "a password long enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantA := createRBACTenant(t, db, "Tenant A")
+	service := New(db)
+	role, err := service.CreateRole(ctx, "Assigned Tenant Operator", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.ReplacePermissions(ctx, role.ID, []string{"Server.View"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.AssignUser(ctx, user.ID, role.ID, Scope{Type: "tenant", ID: &tenantA.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.ReplacePermissions(ctx, role.ID, []string{"Server.View", "Users.View"}); !errors.Is(err, ErrRoleHasTenantAssignments) {
+		t.Fatalf("mixed permission update error = %v, want ErrRoleHasTenantAssignments", err)
+	}
+	if err = service.ReplacePermissions(ctx, role.ID, nil); !errors.Is(err, ErrRoleHasTenantAssignments) {
+		t.Fatalf("empty permission update error = %v, want ErrRoleHasTenantAssignments", err)
+	}
+	permissions, err := service.GetRolePermissions(ctx, role.ID)
+	if err != nil || len(permissions) != 1 || permissions[0] != "Server.View" {
+		t.Fatalf("permissions changed after rejected update: %v, %v", permissions, err)
+	}
+	// A permission set that stays tenant-assignable is still accepted.
+	if err = service.ReplacePermissions(ctx, role.ID, []string{"Server.View", "Console.View"}); err != nil {
+		t.Fatalf("tenant-suitable update rejected: %v", err)
+	}
+}
+
+// TestTenantManagementPermissionsAreGlobalOnlyAndIndependent covers item 7:
+// Tenants.View/Tenants.Manage are global-only, Manage does not imply View,
+// and tenant membership/entity administration is distinct from RBAC access
+// to resources inside a tenant.
+func TestTenantManagementPermissionsAreGlobalOnlyAndIndependent(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	identities := identity.New(db)
+	manager, err := identities.CreateUser(ctx, identity.CreateUserInput{Username: "tenant-manager", Email: "tenant-manager@example.test", Password: "a password long enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantA := createRBACTenant(t, db, "Tenant A")
+	service := New(db)
+	role, err := service.CreateRole(ctx, "Tenant Manager", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.ReplacePermissions(ctx, role.ID, []string{"Tenants.Manage"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.AssignUser(ctx, manager.ID, role.ID, Scope{Type: "tenant", ID: &tenantA.ID}); !errors.Is(err, ErrInvalidTenantScope) {
+		t.Fatalf("Tenants.Manage tenant-scope assignment error = %v, want ErrInvalidTenantScope", err)
+	}
+	if err = service.AssignUser(ctx, manager.ID, role.ID, Scope{Type: "global"}); err != nil {
+		t.Fatal(err)
+	}
+	if allowed, err := service.Allowed(ctx, manager.ID, "Tenants.Manage", Scope{Type: "global"}); err != nil || !allowed {
+		t.Fatalf("Allowed(Tenants.Manage) = %t, %v; want true", allowed, err)
+	}
+	if allowed, err := service.Allowed(ctx, manager.ID, "Tenants.View", Scope{Type: "global"}); err != nil || allowed {
+		t.Fatalf("Allowed(Tenants.View) = %t, %v; want false (Manage does not imply View)", allowed, err)
+	}
+	// Tenants.Manage grants no access to resources inside the tenant it
+	// administers.
+	insertRBACServerForTenant(t, db, "tenant-manager-server", tenantA.ID)
+	if allowed, err := service.Allowed(ctx, manager.ID, "Server.View", Scope{Type: "server", ID: ptr("tenant-manager-server")}); err != nil || allowed {
+		t.Fatalf("Allowed(Tenants.Manage grantee, Server.View) = %t, %v; want false", allowed, err)
+	}
+}
+
 func insertRBACServer(t *testing.T, db *sql.DB, id string) {
 	t.Helper()
-	if _, err := db.Exec("INSERT INTO servers(id,name,description,creation_mode,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", id, id, "", "custom", "C:/", "test.exe", "[]", "{}", "native", 0, "never", "terminate", "", 15, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+	insertRBACServerForTenant(t, db, id, tenants.DefaultTenantID)
+}
+func insertRBACServerForTenant(t *testing.T, db *sql.DB, id, tenantID string) {
+	t.Helper()
+	if _, err := db.Exec("INSERT INTO servers(id,tenant_id,name,description,creation_mode,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", id, tenantID, id, "", "custom", "C:/", "test.exe", "[]", "{}", "native", 0, "never", "terminate", "", 15, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
 		t.Fatal(err)
 	}
 }
+func createRBACTenant(t *testing.T, db *sql.DB, name string) tenants.Tenant {
+	t.Helper()
+	tenant, err := tenants.New(db).Create(context.Background(), tenants.CreateInput{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tenant
+}
+
+// TestListTenantAssignmentsMirrorsListServerAssignments proves the tenant
+// access read (used by GET /api/v1/tenants/{id}/access) reuses the existing
+// assignment tables exactly like ListServerAssignments does for server
+// scope: it returns both direct user and group assignments for the
+// requested tenant, and nothing for an unrelated tenant.
+func TestListTenantAssignmentsMirrorsListServerAssignments(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	identities := identity.New(db)
+	user, err := identities.CreateUser(ctx, identity.CreateUserInput{Username: "direct-tenant", Email: "direct-tenant@example.test", Password: "a password long enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := identities.CreateGroup(ctx, identity.CreateGroupInput{Name: "tenant-operators"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantA := createRBACTenant(t, db, "Tenant A")
+	tenantB := createRBACTenant(t, db, "Tenant B")
+	service := New(db)
+	role, err := service.CreateRole(ctx, "Tenant Access Role", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.ReplacePermissions(ctx, role.ID, []string{"Server.View"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.AssignUser(ctx, user.ID, role.ID, Scope{Type: "tenant", ID: &tenantA.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.AssignGroup(ctx, group.ID, role.ID, Scope{Type: "tenant", ID: &tenantA.ID}); err != nil {
+		t.Fatal(err)
+	}
+	assignments, err := service.ListTenantAssignments(ctx, tenantA.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assignments) != 2 {
+		t.Fatalf("tenant A assignments = %#v, want 2", assignments)
+	}
+	foundUser, foundGroup := false, false
+	for _, assignment := range assignments {
+		if assignment.Scope.Type != "tenant" || assignment.Scope.ID == nil || *assignment.Scope.ID != tenantA.ID {
+			t.Fatalf("unexpected assignment scope: %#v", assignment)
+		}
+		switch assignment.SubjectType {
+		case "user":
+			foundUser = assignment.SubjectID == user.ID && assignment.SubjectName == user.Username
+		case "group":
+			foundGroup = assignment.SubjectID == group.ID && assignment.SubjectName == group.Name
+		}
+	}
+	if !foundUser || !foundGroup {
+		t.Fatalf("missing expected subjects: %#v", assignments)
+	}
+	empty, err := service.ListTenantAssignments(ctx, tenantB.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("tenant B assignments = %#v, want none", empty)
+	}
+}
+
 func mustFirstAssignment(t *testing.T, service *Service, ctx context.Context, user string) string {
 	t.Helper()
 	assignments, err := service.ListUserAssignments(ctx, user)

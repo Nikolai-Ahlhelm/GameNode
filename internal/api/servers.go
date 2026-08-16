@@ -18,6 +18,7 @@ import (
 	"gamenode/internal/rbac"
 	"gamenode/internal/runtime"
 	"gamenode/internal/servers"
+	"gamenode/internal/tenants"
 )
 
 const maxFileMutationRequestBytes = filesystem.MaxReadBytes*6 + 64<<10
@@ -84,6 +85,16 @@ func (s *Server) serversHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonOut(w, http.StatusOK, map[string]any{"servers": records})
 	case http.MethodPost:
+		// This endpoint accepts an arbitrary admin-supplied WorkingDirectory
+		// (Custom Application, Adopt Existing) and therefore stays global
+		// Server.Create only, deliberately, even though the permission
+		// itself now also supports tenant scope. A tenant-scoped
+		// Server.Create grant must never be able to register or point a
+		// server at an arbitrary host path; it is honored only by the
+		// managed template/SteamCMD provisioning flow (see
+		// internal/api/provisioning.go and internal/tenants.TenantServerRoot),
+		// which never accepts a host path from the client. See
+		// docs/architecture.md's Tenant Foundation Step 4 section.
 		u, _, ok := s.requirePermission(w, r, "Server.Create", rbac.Scope{Type: "global"}, true)
 		if !ok {
 			return
@@ -107,10 +118,48 @@ func (s *Server) serversHandler(w http.ResponseWriter, r *http.Request) {
 			internal(w)
 			return
 		}
-		jsonOut(w, http.StatusCreated, record)
+		jsonOut(w, http.StatusCreated, map[string]any{"server": record.Server, "runtime": record.Runtime, "tenant_name": s.tenantName(r.Context(), record.Server.TenantID)})
 	default:
 		method(w)
 	}
+}
+
+// creatableTenantsHandler implements GET /api/v1/servers/creatable-tenants:
+// the tenants the current authenticated user may create a managed server
+// in. This exists so the Create Server / Game Library UI can offer or lock
+// a tenant selector without requiring Tenants.View, which a plain
+// tenant-scoped operator does not hold - it reveals only tenant id/name,
+// the same information already shown on every server record the user can
+// see. A global Server.Create grant (or admin bypass) returns every tenant;
+// a tenant-scoped grant returns only its own tenant(s); no grant returns an
+// empty list, which the UI treats as "no create action available".
+func (s *Server) creatableTenantsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w)
+		return
+	}
+	u, _, ok := s.requireAuth(w, r, false)
+	if !ok {
+		return
+	}
+	list, err := s.tenants.List(r.Context())
+	if err != nil {
+		internal(w)
+		return
+	}
+	result := make([]tenants.Tenant, 0, len(list))
+	for _, tenant := range list {
+		tenantID := tenant.ID
+		allowed, err := s.allowed(r.Context(), u, "Server.Create", rbac.Scope{Type: "tenant", ID: &tenantID})
+		if err != nil {
+			internal(w)
+			return
+		}
+		if allowed {
+			result = append(result, tenant)
+		}
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"tenants": result})
 }
 
 func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
@@ -219,12 +268,17 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 				internal(w)
 				return
 			}
-			jsonOut(w, http.StatusOK, map[string]any{"server": record.Server, "runtime": record.Runtime, "capabilities": capabilities})
+			jsonOut(w, http.StatusOK, map[string]any{"server": record.Server, "runtime": record.Runtime, "capabilities": capabilities, "tenant_name": s.tenantName(r.Context(), record.Server.TenantID)})
 		case http.MethodPatch:
 			var server servers.Server
 			if !decode(w, r, &server) {
 				return
 			}
+			// server.TenantID is whatever the client sent (or left empty);
+			// servers.Store.Update always preserves the existing tenant
+			// regardless, so a PATCH body can never move a server between
+			// tenants (see internal/servers.Store.Update and
+			// GameNode_Tenant_Foundation_Prompt.md section 4.8).
 			record, err := s.servers.Update(r.Context(), id, server)
 			if err != nil {
 				s.recordServerAudit(r, u, audit.ServerUpdate, audit.Failure, id, "", err)
@@ -238,7 +292,7 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 				internal(w)
 				return
 			}
-			jsonOut(w, http.StatusOK, record)
+			jsonOut(w, http.StatusOK, map[string]any{"server": record.Server, "runtime": record.Runtime, "tenant_name": s.tenantName(r.Context(), record.Server.TenantID)})
 		case http.MethodDelete:
 			name := ""
 			if existing, err := s.servers.Get(r.Context(), id); err == nil {

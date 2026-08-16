@@ -15,6 +15,8 @@ On Windows, `./start-dev.ps1` starts both development processes in separate term
 
 Run `go test ./...`, `go test -race ./...`, and `go vet ./...`, then `npm ci`, `npm run check`, `npm run test:helpers`, and `npm run build` in `web`. The race detector must run on the same operating system and architecture as the produced test binary; CI runs it on native Linux amd64. See `docs/ci.md` for the complete CI job and artifact matrix.
 
+Tenant/RBAC-scope isolation has its own regression suite, `internal/api/cross_tenant_test.go`, run as part of `go test ./internal/api`; it builds two fully independent tenants and asserts uniform `403` cross-tenant denial plus dashboard/list non-leakage. Pure tenant frontend logic (slug derivation, name/slug validation, membership candidate filtering, tenant selector locking) is covered by `web/tests/tenants-helpers.test.ts`, part of `npm run test:helpers`.
+
 ## GitHub Actions CI and releases
 
 `.github/workflows/ci.yml` runs for pull requests to `main`, pushes to `main`, and manual dispatches. Linux CI checks formatting, vet, tests, builds, and `go test -race ./...`; a native Windows runner executes the Go suite and build, including Windows-specific filesystem and runtime tests. The frontend job uses Node.js 22 and runs `npm ci`, `npm run check`, `npm run test:helpers`, and `npm run build`. Packaging jobs rebuild the production frontend immediately before compiling each binary, so the Go `embed` package receives current assets.

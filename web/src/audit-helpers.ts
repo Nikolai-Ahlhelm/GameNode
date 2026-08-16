@@ -62,6 +62,11 @@ const actionLabels: Record<string, string> = {
   'support.bundle_generate': 'Support bundle generated',
   'template.import': 'Template imported',
   'template.delete': 'Template deleted',
+  'tenant.create': 'Tenant created',
+  'tenant.update': 'Tenant updated',
+  'tenant.delete': 'Tenant deleted',
+  'tenant.member_add': 'Tenant member added',
+  'tenant.member_remove': 'Tenant member removed',
 };
 
 export const auditActionLabel = (action: string): string => actionLabels[action] ?? action.split(/[._]/).filter(Boolean).map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');

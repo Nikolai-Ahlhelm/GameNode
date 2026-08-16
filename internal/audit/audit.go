@@ -32,6 +32,7 @@ const (
 	Settings = "settings"
 	System   = "system"
 	Template = "template"
+	Tenant   = "tenant"
 )
 const (
 	Login                   = "auth.login"
@@ -80,6 +81,15 @@ const (
 	ServerProvisionComplete = "server.provision_complete"
 	ServerProvisionFail     = "server.provision_fail"
 	ServerProvisionCancel   = "server.provision_cancel"
+	// Tenant actions are catalogued here for the Tenant Foundation domain
+	// (internal/tenants) ahead of its API layer. No handler records these yet;
+	// see docs/architecture.md and AGENTS.md's audit rules on best-effort,
+	// actor-attributed recording once that transport exists.
+	TenantCreate       = "tenant.create"
+	TenantUpdate       = "tenant.update"
+	TenantDelete       = "tenant.delete"
+	TenantMemberAdd    = "tenant.member_add"
+	TenantMemberRemove = "tenant.member_remove"
 )
 
 type Event struct {

@@ -23,6 +23,7 @@ import (
 	"gamenode/internal/servers"
 	"gamenode/internal/steamcmd"
 	"gamenode/internal/templates"
+	"gamenode/internal/tenants"
 )
 
 type templateSource struct {
@@ -159,6 +160,20 @@ func provisionFixture(t *testing.T) (*sql.DB, string, templates.Template) {
 	template := templates.Template{ID: "template", Name: "7 Days To Die", Description: "fixture", SourceType: templates.SourcePelicanPterodactyl, Installer: templates.InstallerDefinition{Type: templates.InstallerSteamCMD, SteamCMD: &templates.SteamCMDPlan{AppID: 294420, Validate: true, LoginMode: "anonymous", Platform: "native", BetaBranchVariable: "BETA", BetaPasswordVariable: "BETA_PASSWORD", InstallTarget: "server_root"}}, Launch: &templates.LaunchDefinition{Executable: "./server.x86_64", Arguments: []string{"-port=${SERVER_PORT}", "-name=${SERVER_NAME}"}, WorkingRoot: "server_root"}, Variables: []templates.TemplateVariable{{Name: "Port", Key: "SERVER_PORT", DefaultValue: "26900", UserEditable: true, Type: "integer", Required: true, Validation: templates.Validation{Min: &min, Max: &max}}, {Name: "Server name", Key: "SERVER_NAME", DefaultValue: "seven", UserEditable: true, Type: "string", Required: true}, {Name: "Beta", Key: "BETA", DefaultValue: "", UserEditable: true, Type: "string", Nullable: true}, {Name: "Beta password", Key: "BETA_PASSWORD", DefaultValue: "", UserEditable: true, Type: "secret", Sensitive: true, Nullable: true}}, Compatibility: templates.Compatibility{Status: templates.PartiallyCompatible}}
 	template.Version = "3.0.0"
 	return db, root, template
+}
+
+// defaultTenantServerRoot resolves the same managed storage root the
+// provisioning service computes for a directory name when a Request leaves
+// TenantID empty (Service.Start defaults it to tenants.DefaultTenantID).
+// Tests use this instead of hard-coding the legacy <data>/servers/<dir>
+// layout.
+func defaultTenantServerRoot(t *testing.T, dataRoot, directoryName string) string {
+	t.Helper()
+	root, err := tenants.TenantServerRoot(dataRoot, tenants.DefaultTenantID, directoryName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 func TestProvisioningSuccessCreatesNormalServerAfterInstall(t *testing.T) {
@@ -350,6 +365,57 @@ func TestRetryRegistrationReusesSnapshotWithoutRunningInstaller(t *testing.T) {
 	}
 }
 
+// TestRetryRegistrationPreservesTenant proves a retried registration keeps
+// the same tenant context as the original failed attempt: the recreated
+// service instance below only rediscovers the tenant through the persisted
+// job/snapshot, never through a fresh Request.
+func TestRetryRegistrationPreservesTenant(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	tenant, err := tenants.New(db).Create(context.Background(), tenants.CreateInput{Name: "Retry Tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := &fakeInstaller{createExecutable: true}
+	service := NewWithOptions(db, &templateSource{template: template}, installer, &failingCreator{}, data, Options{HostOS: "linux"})
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Seven", DirectoryName: "retry-tenant", ActorUserID: "actor", TenantID: tenant.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitTerminal(t, service, job.ID)
+	if job.TenantID != tenant.ID {
+		t.Fatalf("failed job.TenantID = %q, want %q", job.TenantID, tenant.ID)
+	}
+	service.Close()
+	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	service = NewWithOptions(db, &templateSource{template: template}, installer, serverService, data, Options{HostOS: "linux"})
+	defer service.Close()
+	if err = service.Initialize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := service.RetryRegistration(context.Background(), job.ID, "actor")
+	if err != nil || retried.Status != Completed || retried.ServerID == "" {
+		t.Fatalf("retry=%#v err=%v", retried, err)
+	}
+	if retried.TenantID != tenant.ID {
+		t.Fatalf("retried job.TenantID = %q, want %q", retried.TenantID, tenant.ID)
+	}
+	record, err := serverService.Get(context.Background(), retried.ServerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRoot, err := tenants.TenantServerRoot(data, tenant.ID, "retry-tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Server.TenantID != tenant.ID {
+		t.Fatalf("retried server.TenantID = %q, want %q", record.Server.TenantID, tenant.ID)
+	}
+	if !strings.HasPrefix(record.Server.WorkingDirectory, wantRoot) {
+		t.Fatalf("retried server working directory %q not under tenant root %q", record.Server.WorkingDirectory, wantRoot)
+	}
+}
+
 func TestConcurrentRetryRegistrationCreatesExactlyOneServer(t *testing.T) {
 	db, data, template := provisionFixture(t)
 	defer db.Close()
@@ -534,11 +600,131 @@ func TestConcurrentSameRootRejectedAndBootstrapDifferentRootsAllowed(t *testing.
 	}
 }
 
+// TestSameDirectoryNameAcrossTenantsAllowed proves the target reservation key
+// is effectively tenant_id+directory_name: two tenants may each provision a
+// server named "shared" at the same time without conflicting, and each
+// server's working directory lands under its own tenant's storage root.
+func TestSameDirectoryNameAcrossTenantsAllowed(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	tenantService := tenants.New(db)
+	tenantA, err := tenantService.Create(context.Background(), tenants.CreateInput{Name: "Tenant A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantB, err := tenantService.Create(context.Background(), tenants.CreateInput{Name: "Tenant B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := &fakeInstaller{wait: make(chan struct{}), started: make(chan struct{}, 2), createExecutable: true}
+	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	service := NewWithOptions(db, &templateSource{template: template}, installer, serverService, data, Options{HostOS: "linux"})
+	defer service.Close()
+	first, err := service.Start(context.Background(), Request{TemplateID: "template", ServerName: "One", DirectoryName: "shared", ActorUserID: "actor", TenantID: tenantA.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Start(context.Background(), Request{TemplateID: "template", ServerName: "Two", DirectoryName: "shared", ActorUserID: "actor", TenantID: tenantB.ID})
+	if err != nil {
+		t.Fatalf("same directory name in a different tenant was rejected: %v", err)
+	}
+	close(installer.wait)
+	firstJob := waitTerminal(t, service, first.ID)
+	secondJob := waitTerminal(t, service, second.ID)
+	if firstJob.Status != Completed || secondJob.Status != Completed {
+		t.Fatalf("provisioning did not complete: first=%#v second=%#v", firstJob, secondJob)
+	}
+	firstRecord, err := serverService.Get(context.Background(), firstJob.ServerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRecord, err := serverService.Get(context.Background(), secondJob.ServerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstRecord.Server.TenantID != tenantA.ID || secondRecord.Server.TenantID != tenantB.ID {
+		t.Fatalf("tenant ownership mismatch: first=%q second=%q", firstRecord.Server.TenantID, secondRecord.Server.TenantID)
+	}
+	if firstRecord.Server.WorkingDirectory == secondRecord.Server.WorkingDirectory {
+		t.Fatalf("expected different working directories per tenant, both = %q", firstRecord.Server.WorkingDirectory)
+	}
+	wantFirstRoot, err := tenants.TenantServerRoot(data, tenantA.ID, "shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSecondRoot, err := tenants.TenantServerRoot(data, tenantB.ID, "shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(firstRecord.Server.WorkingDirectory, wantFirstRoot) {
+		t.Fatalf("first server working directory %q not under tenant A root %q", firstRecord.Server.WorkingDirectory, wantFirstRoot)
+	}
+	if !strings.HasPrefix(secondRecord.Server.WorkingDirectory, wantSecondRoot) {
+		t.Fatalf("second server working directory %q not under tenant B root %q", secondRecord.Server.WorkingDirectory, wantSecondRoot)
+	}
+}
+
+func TestProvisioningRejectsUnknownTenant(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	service := NewWithOptions(db, &templateSource{template: template}, &fakeInstaller{}, &failingCreator{}, data, Options{HostOS: "linux"})
+	defer service.Close()
+	if _, err := service.Start(context.Background(), Request{TemplateID: "template", ServerName: "Seven", DirectoryName: "seven", ActorUserID: "actor", TenantID: "does-not-exist"}); !errors.Is(err, ErrInvalidTenant) {
+		t.Fatalf("unknown tenant error = %v, want ErrInvalidTenant", err)
+	}
+}
+
+// TestProvisioningJobAndServerStoreTenantID proves a job started for an
+// explicit tenant stores that tenant on both the job record and the
+// resulting normal server, with a working directory placed under that
+// tenant's storage.
+func TestProvisioningJobAndServerStoreTenantID(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	tenant, err := tenants.New(db).Create(context.Background(), tenants.CreateInput{Name: "Acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := &fakeInstaller{createExecutable: true}
+	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	service := NewWithOptions(db, &templateSource{template: template}, installer, serverService, data, Options{HostOS: "linux"})
+	defer service.Close()
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Seven", DirectoryName: "acme-seven", ActorUserID: "actor", TenantID: tenant.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.TenantID != tenant.ID {
+		t.Fatalf("job.TenantID = %q, want %q", job.TenantID, tenant.ID)
+	}
+	job = waitTerminal(t, service, job.ID)
+	if job.Status != Completed || job.ServerID == "" {
+		t.Fatalf("job=%#v", job)
+	}
+	if job.TenantID != tenant.ID {
+		t.Fatalf("persisted job.TenantID = %q, want %q", job.TenantID, tenant.ID)
+	}
+	record, err := serverService.Get(context.Background(), job.ServerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRoot, err := tenants.TenantServerRoot(data, tenant.ID, "acme-seven")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Server.TenantID != tenant.ID {
+		t.Fatalf("server.TenantID = %q, want %q", record.Server.TenantID, tenant.ID)
+	}
+	if !strings.HasPrefix(record.Server.WorkingDirectory, wantRoot) {
+		t.Fatalf("server working directory %q not under tenant root %q", record.Server.WorkingDirectory, wantRoot)
+	}
+}
+
 func TestExistingTargetAndMissingTemplate(t *testing.T) {
 	db, data, template := provisionFixture(t)
 	defer db.Close()
-	os.MkdirAll(filepath.Join(data, "servers", "seven"), 0700)
-	os.WriteFile(filepath.Join(data, "servers", "seven", "foreign.txt"), []byte("x"), 0600)
+	seven := defaultTenantServerRoot(t, data, "seven")
+	os.MkdirAll(seven, 0700)
+	os.WriteFile(filepath.Join(seven, "foreign.txt"), []byte("x"), 0600)
 	service := NewWithOptions(db, &templateSource{template: template}, &fakeInstaller{}, &failingCreator{}, data, Options{HostOS: "linux"})
 	defer service.Close()
 	if _, err := service.Start(context.Background(), Request{TemplateID: "template", ServerName: "Seven", DirectoryName: "seven", ActorUserID: "actor"}); !errors.Is(err, ErrTargetConflict) {
@@ -720,7 +906,7 @@ func TestOfficialSteamProvisioningSelectsPlatformCreatesPortsAndProvenance(t *te
 			if err = db.QueryRow(`SELECT COUNT(*) FROM server_config_adapters WHERE server_id=? AND adapter_id='serverconfig' AND adapter_version='1.0.0'`, job.ServerID).Scan(&adapterCount); err != nil || adapterCount != 1 {
 				t.Fatalf("config snapshots=%d err=%v", adapterCount, err)
 			}
-			configData, readErr := os.ReadFile(filepath.Join(data, "servers", "official-"+test.host, "serverconfig.xml"))
+			configData, readErr := os.ReadFile(filepath.Join(defaultTenantServerRoot(t, data, "official-"+test.host), "serverconfig.xml"))
 			if readErr != nil || !strings.Contains(string(configData), `value="26910"`) {
 				t.Fatalf("config=%s err=%v", configData, readErr)
 			}
@@ -764,7 +950,7 @@ func TestOfficialSteamProvisioningPersistsPostStartAdapterWithoutInventingConfig
 	if job.Status != Completed || job.ServerID == "" {
 		t.Fatalf("job=%#v", job)
 	}
-	if _, err = os.Stat(filepath.Join(data, "servers", "post-start", "Server", "gamenode.ini")); !os.IsNotExist(err) {
+	if _, err = os.Stat(filepath.Join(defaultTenantServerRoot(t, data, "post-start"), "Server", "gamenode.ini")); !os.IsNotExist(err) {
 		t.Fatalf("post-start configuration was invented during provisioning: %v", err)
 	}
 	var count int
@@ -814,7 +1000,7 @@ func TestPalworldOfficialProvisioningSeedsAndAppliesEveryManagedValue(t *testing
 	if job.Status != Completed || !job.InstallationCompleted || job.ServerID == "" {
 		t.Fatalf("job=%#v", job)
 	}
-	root := filepath.Join(data, "servers", "palworld-integration")
+	root := defaultTenantServerRoot(t, data, "palworld-integration")
 	configured, err := gameconfig.Read(root, adapter)
 	if err != nil {
 		t.Fatal(err)

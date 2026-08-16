@@ -2,7 +2,7 @@
 
 GameNode is a self-contained, single-node game-server management platform for Windows and Linux. It manages existing native applications through a local web interface; it does not require containers, templates, or a central controller.
 
-The current implementation covers the foundation, native runtime, live console, server-root file browser, RBAC, monitoring and health state, auto-restart, port management, audit log, dashboards, typed settings, diagnostics, support bundles, the Official Game Library, safe Egg template import, and native SteamCMD provisioning. When an existing database has pending schema migrations, startup creates a consistent `*.pre-migration-*.db` SQLite copy beside it before changing the schema; this is an upgrade safeguard, not a general backup system. Cluster/controller operation, Docker/Podman, a marketplace, automatic server updates, backups, scheduling, and firewall/NAT automation are intentionally out of scope.
+The current implementation covers the foundation, native runtime, live console, server-root file browser, RBAC, tenant-scoped multi-tenancy, monitoring and health state, auto-restart, port management, audit log, dashboards, typed settings, diagnostics, support bundles, the Official Game Library, safe Egg template import, and native SteamCMD provisioning. When an existing database has pending schema migrations, startup creates a consistent `*.pre-migration-*.db` SQLite copy beside it before changing the schema; this is an upgrade safeguard, not a general backup system. Cluster/controller operation, Docker/Podman, a marketplace, automatic server updates, backups, scheduling, and firewall/NAT automation are intentionally out of scope.
 
 ## Capabilities
 
@@ -11,8 +11,9 @@ The current implementation covers the foundation, native runtime, live console, 
 - View stdout/stderr and send console input over authenticated WebSockets.
 - Browse and manage files under each server's configured working directory: list, open, edit, create, upload, download, rename/move, and delete.
 - Edit bounded UTF-8 text files in Monaco; `txt`, `json`, `yaml`, `yml`, `xml`, `ini`, `cfg`, and `properties` are supported editor formats.
-- Assign allow-only roles to local users and groups at global or server scope.
-- Build scope-neutral roles from the authoritative permission catalog; the UI identifies server-assignable roles and explains global-only or mixed-role incompatibilities.
+- Organize servers into tenants - logically separate customer or organization boundaries with their own managed storage location, membership roster, and administration UI. Every server belongs to exactly one tenant, set at creation and immutable afterward.
+- Assign allow-only roles to local users and groups at global, tenant, or server scope.
+- Build scope-neutral roles from the authoritative permission catalog; the UI identifies tenant- and server-assignable roles and explains global-only or mixed-role incompatibilities.
 - Monitor server process health and history, configure bounded auto-restart policies, and register TCP/UDP ports for collision checks before start.
 - Configure the instance name, subtitle, local PNG/ICO favicon, monitoring, logging, and password policy from typed settings. New passwords default to 8–256 characters, with administrator-configurable bounds.
 - Analyze and persist Pelican/Pterodactyl Eggs as normalized GameNode templates with compatibility reports and native SteamCMD/launch plans.
@@ -21,7 +22,9 @@ The current implementation covers the foundation, native runtime, live console, 
 
 ## Security model
 
-The dashboard can administer the existing RBAC model: reusable roles draw from the backend permission catalog, then administrators assign roles to users or groups globally or per server. Global-only permissions cannot be saved as server assignments. Grants are explicit: `Manage` never implies `View`.
+The dashboard can administer the existing RBAC model: reusable roles draw from the backend permission catalog, then administrators assign roles to users or groups globally, per tenant, or per server. Global-only permissions cannot be saved as tenant or server assignments. Grants are explicit: `Manage` never implies `View`.
+
+Tenant boundaries are an API/application access-control boundary, not OS-level process isolation: every server, regardless of tenant, runs as a plain native process under the same OS account as the GameNode service. See the [security guide](docs/security.md) before treating tenants as isolation for mutually distrusting operators.
 
 The backend is the authorization and filesystem security boundary.
 

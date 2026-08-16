@@ -168,7 +168,11 @@ func TestRBACScopesAcrossAssignmentsListingsDashboardAndCapabilities(t *testing.
 		t.Fatalf("server access list: %d %s", accessResponse.Code, accessResponse.Body.String())
 	}
 	permissionsResponse := rbacAPIRequest(handler, adminSession, http.MethodGet, "/api/v1/permissions", nil)
-	if permissionsResponse.Code != http.StatusOK || !strings.Contains(permissionsResponse.Body.String(), `"allowed_scopes":["global","server"],"category":"Server","description":"View servers","key":"Server.View"`) || !strings.Contains(permissionsResponse.Body.String(), `"allowed_scopes":["global"],"category":"Identity","description":"View users","key":"Users.View"`) {
+	if permissionsResponse.Code != http.StatusOK ||
+		!strings.Contains(permissionsResponse.Body.String(), `"allowed_scopes":["global","tenant","server"],"category":"Server","description":"View servers","key":"Server.View"`) ||
+		!strings.Contains(permissionsResponse.Body.String(), `"allowed_scopes":["global"],"category":"Identity","description":"View users","key":"Users.View"`) ||
+		!strings.Contains(permissionsResponse.Body.String(), `"allowed_scopes":["global","tenant"],"category":"Server","description":"Create servers","key":"Server.Create"`) ||
+		!strings.Contains(permissionsResponse.Body.String(), `"allowed_scopes":["global"],"category":"Tenants","description":"View tenant entities","key":"Tenants.View"`) {
 		t.Fatalf("permission scopes: %d %s", permissionsResponse.Code, permissionsResponse.Body.String())
 	}
 

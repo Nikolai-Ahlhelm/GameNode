@@ -18,6 +18,13 @@ var ErrInvalidScope = errors.New("role contains permissions that cannot be assig
 var ErrEmptyServerRole = errors.New("role has no permissions and cannot be assigned at server scope")
 var ErrRoleHasServerAssignments = errors.New("role has server-scoped assignments and must remain server-assignable")
 
+// ErrInvalidTenantScope, ErrEmptyTenantRole, and ErrRoleHasTenantAssignments
+// mirror the existing server-scope guards above for the new tenant scope
+// (see ErrInvalidScope, ErrEmptyServerRole, ErrRoleHasServerAssignments).
+var ErrInvalidTenantScope = errors.New("role contains permissions that cannot be assigned at tenant scope")
+var ErrEmptyTenantRole = errors.New("role has no permissions and cannot be assigned at tenant scope")
+var ErrRoleHasTenantAssignments = errors.New("role has tenant-scoped assignments and must remain tenant-assignable")
+
 var roleNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_. -]*$`)
 
 type Scope struct {
@@ -25,11 +32,17 @@ type Scope struct {
 	ID   *string `json:"scope_id,omitempty"`
 }
 type Role struct {
-	ID                   string    `json:"id"`
-	Name                 string    `json:"name"`
-	Description          string    `json:"description"`
-	Permissions          []string  `json:"permissions,omitempty"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Permissions []string `json:"permissions,omitempty"`
+	// ServerAssignable and TenantAssignable report whole-role suitability:
+	// every permission the role currently holds must individually support
+	// the scope (see ScopeAllowed). A role is never partially usable at a
+	// scope - see ReplacePermissions' guards, which keep this in sync with
+	// existing assignments.
 	ServerAssignable     bool      `json:"server_assignable"`
+	TenantAssignable     bool      `json:"tenant_assignable"`
 	CreatedAt, UpdatedAt time.Time `json:"-"`
 }
 type Assignment struct {
@@ -54,10 +67,10 @@ func scope(s Scope) error {
 	if s.Type == "global" && s.ID == nil {
 		return nil
 	}
-	if s.Type == "server" && s.ID != nil && *s.ID != "" {
+	if (s.Type == "tenant" || s.Type == "server") && s.ID != nil && *s.ID != "" {
 		return nil
 	}
-	return errors.New("scope must be global or a specific server")
+	return errors.New("scope must be global, tenant with an ID, or server with an ID")
 }
 func (s *Service) CreateRole(c context.Context, name, description string) (Role, error) {
 	name, e := normalizeRoleName(name)
@@ -97,6 +110,7 @@ func (s *Service) ListRoles(c context.Context) ([]Role, error) {
 			return nil, e
 		}
 		out[index].ServerAssignable = ServerAssignable(out[index].Permissions)
+		out[index].TenantAssignable = TenantAssignable(out[index].Permissions)
 	}
 	return out, nil
 }
@@ -114,6 +128,7 @@ func (s *Service) GetRole(c context.Context, role string) (Role, error) {
 		return Role{}, e
 	}
 	r.ServerAssignable = ServerAssignable(r.Permissions)
+	r.TenantAssignable = TenantAssignable(r.Permissions)
 	return r, nil
 }
 func (s *Service) UpdateRole(c context.Context, role, name, description string) (Role, error) {
@@ -203,6 +218,18 @@ func (s *Service) ReplacePermissions(c context.Context, role string, keys []stri
 			return ErrRoleHasServerAssignments
 		}
 	}
+	if !TenantAssignable(keys) {
+		if e = tx.QueryRowContext(c, `SELECT EXISTS(
+			SELECT 1 FROM user_role_assignments WHERE role_id=? AND scope_type='tenant'
+			UNION ALL
+			SELECT 1 FROM group_role_assignments WHERE role_id=? AND scope_type='tenant'
+		)`, role, role).Scan(&n); e != nil {
+			return e
+		}
+		if n != 0 {
+			return ErrRoleHasTenantAssignments
+		}
+	}
 	if _, e = tx.ExecContext(c, "DELETE FROM role_permissions WHERE role_id=?", role); e != nil {
 		return e
 	}
@@ -230,24 +257,44 @@ func (s *Service) assign(c context.Context, table, col, subject, role string, sc
 	if e := s.db.QueryRowContext(c, "SELECT COUNT(*) FROM roles WHERE id=?", role).Scan(&n); e != nil || n == 0 {
 		return sql.ErrNoRows
 	}
-	if sc.Type == "server" {
+	if sc.Type == "tenant" || sc.Type == "server" {
 		permissions, e := s.GetRolePermissions(c, role)
 		if e != nil {
 			return e
 		}
 		if len(permissions) == 0 {
+			if sc.Type == "tenant" {
+				return ErrEmptyTenantRole
+			}
 			return ErrEmptyServerRole
 		}
-		if !ServerAssignable(permissions) {
+		if !scopeSuitable(permissions, sc.Type) {
+			if sc.Type == "tenant" {
+				return ErrInvalidTenantScope
+			}
 			return ErrInvalidScope
 		}
 	}
-	if sc.Type == "server" {
+	// Resource existence is checked against the table the scope actually
+	// references: tenant scope must name an existing tenant, server scope an
+	// existing server. This is also what keeps assignments from dangling
+	// once the referenced tenant/server is later deleted (see
+	// migrations/022_rbac_tenant_scope.sql's per-scope ON DELETE CASCADE
+	// columns).
+	var serverScopeID, tenantScopeID any
+	switch sc.Type {
+	case "tenant":
+		if e := s.db.QueryRowContext(c, "SELECT COUNT(*) FROM tenants WHERE id=?", *sc.ID).Scan(&n); e != nil || n == 0 {
+			return sql.ErrNoRows
+		}
+		tenantScopeID = *sc.ID
+	case "server":
 		if e := s.db.QueryRowContext(c, "SELECT COUNT(*) FROM servers WHERE id=?", *sc.ID).Scan(&n); e != nil || n == 0 {
 			return sql.ErrNoRows
 		}
+		serverScopeID = *sc.ID
 	}
-	_, e := s.db.ExecContext(c, "INSERT INTO "+table+"(id,"+col+",role_id,scope_type,scope_id) VALUES(?,?,?,?,?)", id(), subject, role, sc.Type, sc.ID)
+	_, e := s.db.ExecContext(c, "INSERT INTO "+table+"(id,"+col+",role_id,scope_type,scope_id,tenant_scope_id) VALUES(?,?,?,?,?,?)", id(), subject, role, sc.Type, serverScopeID, tenantScopeID)
 	if e != nil && strings.Contains(e.Error(), "constraint") {
 		return ErrDuplicateAssignment
 	}
@@ -275,6 +322,32 @@ func (s *Service) ListServerAssignments(c context.Context, server string) ([]Sub
 	}
 	return out, rows.Err()
 }
+
+// ListTenantAssignments mirrors ListServerAssignments for tenant scope: it
+// exposes the existing assignment tables in a tenant context and does not
+// compute or persist effective permissions. This is the read side of "reuse
+// existing role assignment infrastructure" - tenant access mutations still
+// go through the same AssignUser/AssignGroup/RemoveUserAssignmentFor/
+// RemoveGroupAssignmentFor used for global and server scope.
+func (s *Service) ListTenantAssignments(c context.Context, tenant string) ([]SubjectAssignment, error) {
+	const q = `SELECT a.id,a.role_id,r.name,a.scope_type,a.tenant_scope_id,'user',u.id,u.username FROM user_role_assignments a JOIN roles r ON r.id=a.role_id JOIN users u ON u.id=a.user_id WHERE a.scope_type='tenant' AND a.tenant_scope_id=? UNION ALL SELECT a.id,a.role_id,r.name,a.scope_type,a.tenant_scope_id,'group',g.id,g.name FROM group_role_assignments a JOIN roles r ON r.id=a.role_id JOIN groups g ON g.id=a.group_id WHERE a.scope_type='tenant' AND a.tenant_scope_id=? ORDER BY 8 COLLATE NOCASE`
+	rows, e := s.db.QueryContext(c, q, tenant, tenant)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	var out []SubjectAssignment
+	for rows.Next() {
+		var item SubjectAssignment
+		var scopeID string
+		if e = rows.Scan(&item.ID, &item.RoleID, &item.RoleName, &item.Scope.Type, &scopeID, &item.SubjectType, &item.SubjectID, &item.SubjectName); e != nil {
+			return nil, e
+		}
+		item.Scope.ID = &scopeID
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
 func (s *Service) ListUserAssignments(c context.Context, user string) ([]Assignment, error) {
 	return s.list(c, "user_role_assignments", "user_id", user)
 }
@@ -282,7 +355,7 @@ func (s *Service) ListGroupAssignments(c context.Context, g string) ([]Assignmen
 	return s.list(c, "group_role_assignments", "group_id", g)
 }
 func (s *Service) list(c context.Context, table, col, subject string) ([]Assignment, error) {
-	rows, e := s.db.QueryContext(c, "SELECT a.id,a.role_id,r.name,a.scope_type,a.scope_id FROM "+table+" a JOIN roles r ON r.id=a.role_id WHERE a."+col+"=? ORDER BY r.name", subject)
+	rows, e := s.db.QueryContext(c, "SELECT a.id,a.role_id,r.name,a.scope_type,a.scope_id,a.tenant_scope_id FROM "+table+" a JOIN roles r ON r.id=a.role_id WHERE a."+col+"=? ORDER BY r.name", subject)
 	if e != nil {
 		return nil, e
 	}
@@ -290,12 +363,14 @@ func (s *Service) list(c context.Context, table, col, subject string) ([]Assignm
 	var out []Assignment
 	for rows.Next() {
 		var a Assignment
-		var sid sql.NullString
-		if e = rows.Scan(&a.ID, &a.RoleID, &a.RoleName, &a.Scope.Type, &sid); e != nil {
+		var serverID, tenantID sql.NullString
+		if e = rows.Scan(&a.ID, &a.RoleID, &a.RoleName, &a.Scope.Type, &serverID, &tenantID); e != nil {
 			return nil, e
 		}
-		if sid.Valid {
-			a.Scope.ID = &sid.String
+		if serverID.Valid {
+			a.Scope.ID = &serverID.String
+		} else if tenantID.Valid {
+			a.Scope.ID = &tenantID.String
 		}
 		out = append(out, a)
 	}
@@ -341,6 +416,21 @@ func (s *Service) remove(c context.Context, table, id string) error {
 	}
 	return nil
 }
+
+// Allowed evaluates whether user has permission at requested. For a
+// requested.Type of "server", this also automatically resolves and checks
+// the server's own tenant, so a permission is effective when:
+//
+//	enabled admin bypass
+//	OR direct/group global assignment
+//	OR direct/group tenant assignment for the server's tenant
+//	OR direct/group server assignment for the server itself
+//
+// (a requested.Type of "tenant" only evaluates the first two of those). A
+// disabled user is always denied before the admin bypass. There is no deny
+// rule, no role-permission inheritance (Manage never implies View), and no
+// second evaluation code path: every scope combination is expressed as one
+// SQL query against the same assignment tables.
 func (s *Service) Allowed(c context.Context, user, permission string, requested Scope) (bool, error) {
 	if !Known(permission) {
 		return false, ErrUnknownPermission
@@ -348,7 +438,7 @@ func (s *Service) Allowed(c context.Context, user, permission string, requested 
 	if e := scope(requested); e != nil {
 		return false, e
 	}
-	if GlobalOnly(permission) && requested.Type != "global" {
+	if !ScopeAllowed(permission, requested.Type) {
 		return false, nil
 	}
 	var admin, disabled int
@@ -362,34 +452,62 @@ func (s *Service) Allowed(c context.Context, user, permission string, requested 
 	if admin != 0 {
 		return true, nil
 	}
-	q := `SELECT 1 FROM role_permissions rp JOIN roles r ON r.id=rp.role_id JOIN (SELECT role_id,scope_type,scope_id FROM user_role_assignments WHERE user_id=? UNION SELECT gra.role_id,gra.scope_type,gra.scope_id FROM group_role_assignments gra JOIN group_memberships gm ON gm.group_id=gra.group_id WHERE gm.user_id=?) a ON a.role_id=r.id WHERE rp.permission_key=? AND (a.scope_type='global' OR (a.scope_type=? AND a.scope_id=?)) LIMIT 1`
-	var one int
-	var idv any = nil
-	if requested.ID != nil {
-		idv = *requested.ID
+	where := "a.scope_type='global'"
+	args := []any{user, user, permission}
+	switch requested.Type {
+	case "tenant":
+		where += " OR (a.scope_type='tenant' AND a.tenant_scope_id=?)"
+		args = append(args, *requested.ID)
+	case "server":
+		var tenantID string
+		switch e = s.db.QueryRowContext(c, "SELECT tenant_id FROM servers WHERE id=?", *requested.ID).Scan(&tenantID); {
+		case e == nil:
+			where += " OR (a.scope_type='tenant' AND a.tenant_scope_id=?)"
+			args = append(args, tenantID)
+		case errors.Is(e, sql.ErrNoRows):
+			// Unknown server: only a global or exact-server-id assignment
+			// could ever match; there is no tenant to also check. This
+			// mirrors the existing behavior for a bogus server ID and never
+			// leaks its existence through an error.
+		default:
+			return false, e
+		}
+		where += " OR (a.scope_type='server' AND a.scope_id=?)"
+		args = append(args, *requested.ID)
 	}
-	e = s.db.QueryRowContext(c, q, user, user, permission, requested.Type, idv).Scan(&one)
+	q := `SELECT 1 FROM role_permissions rp JOIN roles r ON r.id=rp.role_id JOIN (SELECT role_id,scope_type,scope_id,tenant_scope_id FROM user_role_assignments WHERE user_id=? UNION SELECT gra.role_id,gra.scope_type,gra.scope_id,gra.tenant_scope_id FROM group_role_assignments gra JOIN group_memberships gm ON gm.group_id=gra.group_id WHERE gm.user_id=?) a ON a.role_id=r.id WHERE rp.permission_key=? AND (` + where + `) LIMIT 1`
+	var one int
+	e = s.db.QueryRowContext(c, q, args...).Scan(&one)
 	if errors.Is(e, sql.ErrNoRows) {
 		return false, nil
 	}
 	return e == nil, e
 }
 
-// ServerAssignable reports whether a role definition can be used by a
-// server-scoped assignment. Empty roles are deliberately excluded because
-// such an assignment can never grant access. Every selected permission must
-// include server in its catalog-defined allowed scopes.
-func ServerAssignable(permissions []string) bool {
+// scopeSuitable reports whether every permission in a role definition
+// supports the given scope type. Empty roles are deliberately excluded
+// because such an assignment can never grant access. This is whole-role
+// validation: a role is never partially applied at a scope, so one
+// unsuitable permission makes the entire role unsuitable.
+func scopeSuitable(permissions []string, scopeType string) bool {
 	if len(permissions) == 0 {
 		return false
 	}
 	for _, permission := range permissions {
-		if GlobalOnly(permission) {
+		if !ScopeAllowed(permission, scopeType) {
 			return false
 		}
 	}
 	return true
 }
+
+// ServerAssignable reports whether a role definition can be used by a
+// server-scoped assignment.
+func ServerAssignable(permissions []string) bool { return scopeSuitable(permissions, "server") }
+
+// TenantAssignable reports whether a role definition can be used by a
+// tenant-scoped assignment.
+func TenantAssignable(permissions []string) bool { return scopeSuitable(permissions, "tenant") }
 func id() string {
 	b := make([]byte, 16)
 	if _, e := rand.Read(b); e != nil {

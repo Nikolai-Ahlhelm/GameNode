@@ -21,6 +21,7 @@ import (
 	"gamenode/internal/monitoring"
 	"gamenode/internal/ports"
 	"gamenode/internal/runtime"
+	"gamenode/internal/tenants"
 )
 
 const (
@@ -50,10 +51,20 @@ var (
 	ErrInvalidProvisionedPort   = errors.New("invalid provisioned port")
 	ErrProvisionedPortsConflict = errors.New("provisioned ports conflict")
 	ErrProvisionedConfigAdapter = errors.New("provisioned configuration adapter could not be stored")
+	// ErrInvalidTenant is returned when a server references a tenant ID that
+	// does not exist. Server.TenantID is otherwise immutable once created;
+	// moving a server between tenants is out of scope for this milestone.
+	ErrInvalidTenant = errors.New("invalid tenant")
 )
 
 type Server struct {
-	ID                            string            `json:"id"`
+	ID string `json:"id"`
+	// TenantID is the server's owning tenant. Every server belongs to
+	// exactly one tenant (see internal/tenants and
+	// migrations/020_tenants.sql). It defaults to tenants.DefaultTenantID
+	// when left empty at creation and is immutable afterward; Store.Update
+	// never changes it.
+	TenantID                      string            `json:"tenant_id"`
 	CreationMode                  string            `json:"creation_mode"`
 	Name                          string            `json:"name"`
 	Description                   string            `json:"description"`
@@ -110,6 +121,20 @@ func (s *Server) Validate() error {
 	s.Executable = strings.TrimSpace(s.Executable)
 	if len(s.Name) < 1 || len(s.Name) > 100 {
 		return errors.New("name must be 1 to 100 characters")
+	}
+	s.TenantID = strings.TrimSpace(s.TenantID)
+	if s.TenantID == "" {
+		// Matching this function's existing style of defaulting an unset
+		// field (CreationMode, RuntimeType, RestartPolicy, StopMethod
+		// below), a server with no explicit tenant belongs to the default
+		// tenant rather than staying tenantless. This keeps every existing
+		// construction path - the direct Create Server API, Adopt Existing,
+		// and template/provisioning's buildServer - working unchanged until
+		// a later Tenant Foundation step adds real tenant selection.
+		s.TenantID = tenants.DefaultTenantID
+	}
+	if len(s.TenantID) > 100 || strings.ContainsRune(s.TenantID, 0) {
+		return errors.New("invalid tenant")
 	}
 	if s.CreationMode == "" {
 		s.CreationMode = CreationCustom
@@ -202,6 +227,23 @@ func (s *Server) Validate() error {
 	}
 	return nil
 }
+
+// requireTenant translates a missing tenant into the controlled
+// ErrInvalidTenant instead of letting a raw foreign key constraint failure
+// reach callers. internal/servers deliberately queries the tenants table
+// directly rather than importing internal/tenants' Service, matching the
+// existing cross-domain read convention (see identity.ListGroupSummaries).
+func (store *Store) requireTenant(ctx context.Context, tenantID string) error {
+	var exists int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tenants WHERE id=?`, tenantID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return ErrInvalidTenant
+	}
+	return nil
+}
+
 func (s Server) ResolvedExecutable() string {
 	if filepath.IsAbs(s.Executable) {
 		return filepath.Clean(s.Executable)
@@ -217,6 +259,9 @@ func (store *Store) Create(ctx context.Context, server Server) (Record, error) {
 	if err := server.Validate(); err != nil {
 		return Record{}, err
 	}
+	if err := store.requireTenant(ctx, server.TenantID); err != nil {
+		return Record{}, err
+	}
 	id, err := newID()
 	if err != nil {
 		return Record{}, err
@@ -227,7 +272,7 @@ func (store *Store) Create(ctx context.Context, server Server) (Record, error) {
 	server.UpdatedAt = now
 	args, _ := json.Marshal(server.Arguments)
 	env, _ := json.Marshal(server.EnvironmentVariables)
-	_, err = store.db.ExecContext(ctx, `INSERT INTO servers(id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
+	_, err = store.db.ExecContext(ctx, `INSERT INTO servers(id,tenant_id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.TenantID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
 	if err != nil {
 		return Record{}, fmt.Errorf("create server: %w", err)
 	}
@@ -290,7 +335,14 @@ func (store *Store) CreateProvisioned(ctx context.Context, server Server, templa
 		return Record{}, err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO servers(id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
+	var tenantExists int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tenants WHERE id=?`, server.TenantID).Scan(&tenantExists); err != nil {
+		return Record{}, err
+	}
+	if tenantExists == 0 {
+		return Record{}, ErrInvalidTenant
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO servers(id,tenant_id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.TenantID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
 	if err != nil {
 		return Record{}, fmt.Errorf("create provisioned server: %w", err)
 	}
@@ -414,6 +466,9 @@ func (store *Store) Update(ctx context.Context, id string, server Server) (Recor
 	}
 	server.ID = id
 	server.CreatedAt = existing.Server.CreatedAt
+	// TenantID is immutable after creation for this milestone (see
+	// ErrInvalidTenant doc comment); ignore whatever the caller supplied.
+	server.TenantID = existing.Server.TenantID
 	sensitive, err := store.SensitiveEnvironmentKeys(ctx, id)
 	if err != nil {
 		return Record{}, err
@@ -465,7 +520,7 @@ func (store *Store) SaveRuntime(ctx context.Context, id string, state RuntimeSta
 	return err
 }
 
-const selectSQL = `SELECT s.id,s.creation_mode,s.name,s.description,s.working_directory,s.executable,s.arguments_json,s.environment_json,s.runtime_type,s.auto_start,s.restart_policy,s.stop_method,s.stop_command,s.stop_timeout_seconds,s.auto_restart_enabled,s.auto_restart_max_attempts,s.auto_restart_window_seconds,s.auto_restart_delay_seconds,s.created_at,s.updated_at,r.pid,r.process_start_key,r.process_started_at,r.last_start_at,r.last_stop_at,r.last_exit_at,r.exit_code,r.last_crash_at,r.crash_count,r.restart_count,r.last_error,r.current_state FROM servers s JOIN server_runtime_state r ON r.server_id=s.id`
+const selectSQL = `SELECT s.id,s.tenant_id,s.creation_mode,s.name,s.description,s.working_directory,s.executable,s.arguments_json,s.environment_json,s.runtime_type,s.auto_start,s.restart_policy,s.stop_method,s.stop_command,s.stop_timeout_seconds,s.auto_restart_enabled,s.auto_restart_max_attempts,s.auto_restart_window_seconds,s.auto_restart_delay_seconds,s.created_at,s.updated_at,r.pid,r.process_start_key,r.process_started_at,r.last_start_at,r.last_stop_at,r.last_exit_at,r.exit_code,r.last_crash_at,r.crash_count,r.restart_count,r.last_error,r.current_state FROM servers s JOIN server_runtime_state r ON r.server_id=s.id`
 
 type scanner interface{ Scan(...any) error }
 
@@ -478,7 +533,7 @@ func scan(row scanner) (Record, error) {
 	var processStart, lastStart, lastStop, lastExit, lastCrash sql.NullString
 	var exit sql.NullInt64
 	var created, updated string
-	err := row.Scan(&r.Server.ID, &r.Server.CreationMode, &r.Server.Name, &r.Server.Description, &r.Server.WorkingDirectory, &r.Server.Executable, &args, &env, &r.Server.RuntimeType, &auto, &r.Server.RestartPolicy, &r.Server.StopMethod, &r.Server.StopCommand, &r.Server.StopTimeoutSeconds, &autoRestart, &r.Server.AutoRestartMaxAttempts, &r.Server.AutoRestartWindowSeconds, &r.Server.AutoRestartDelaySeconds, &created, &updated, &pid, &key, &processStart, &lastStart, &lastStop, &lastExit, &exit, &lastCrash, &r.Runtime.CrashCount, &r.Runtime.RestartCount, &r.Runtime.LastError, &r.Runtime.CurrentState)
+	err := row.Scan(&r.Server.ID, &r.Server.TenantID, &r.Server.CreationMode, &r.Server.Name, &r.Server.Description, &r.Server.WorkingDirectory, &r.Server.Executable, &args, &env, &r.Server.RuntimeType, &auto, &r.Server.RestartPolicy, &r.Server.StopMethod, &r.Server.StopCommand, &r.Server.StopTimeoutSeconds, &autoRestart, &r.Server.AutoRestartMaxAttempts, &r.Server.AutoRestartWindowSeconds, &r.Server.AutoRestartDelaySeconds, &created, &updated, &pid, &key, &processStart, &lastStart, &lastStop, &lastExit, &exit, &lastCrash, &r.Runtime.CrashCount, &r.Runtime.RestartCount, &r.Runtime.LastError, &r.Runtime.CurrentState)
 	if err != nil {
 		return Record{}, err
 	}

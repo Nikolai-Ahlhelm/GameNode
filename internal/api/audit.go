@@ -47,7 +47,7 @@ func (s *Server) auditHandler(w http.ResponseWriter, r *http.Request) {
 		bad(w, "invalid result")
 		return
 	}
-	validResource := map[string]bool{audit.Auth: true, audit.Server: true, audit.Port: true, audit.File: true, audit.Console: true, audit.User: true, audit.Group: true, audit.Role: true, audit.Settings: true, audit.System: true, audit.Template: true}
+	validResource := map[string]bool{audit.Auth: true, audit.Server: true, audit.Port: true, audit.File: true, audit.Console: true, audit.User: true, audit.Group: true, audit.Role: true, audit.Tenant: true, audit.Settings: true, audit.System: true, audit.Template: true}
 	if f.ResourceType != "" && !validResource[f.ResourceType] {
 		bad(w, "invalid resource type")
 		return

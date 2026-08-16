@@ -7,7 +7,7 @@ import './audit.css';
 export { auditActionLabel, auditActor } from './audit-helpers';
 
 const pageSize = 100;
-const resourceTypes = ['', 'auth', 'server', 'console', 'file', 'port', 'user', 'group', 'role', 'settings', 'system', 'template'];
+const resourceTypes = ['', 'auth', 'server', 'console', 'file', 'port', 'user', 'group', 'role', 'tenant', 'settings', 'system', 'template'];
 
 function AuditDetails({ item }: { item: AuditEvent }) {
   const timestamp = auditTimestamp(item.timestamp);

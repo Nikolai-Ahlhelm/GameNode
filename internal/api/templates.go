@@ -39,6 +39,11 @@ func (s *Server) neoForgeTemplateAction(w http.ResponseWriter, r *http.Request, 
 	if _, _, ok := s.requireGlobalPermission(w, r, "Templates.View", action == "adopt"); !ok {
 		return
 	}
+	// NeoForge "adopt" resolves input.ServerRoot, an arbitrary admin-supplied
+	// host path, exactly like the raw Custom Application/Adopt Existing path
+	// in serversHandler's POST /servers. It deliberately stays global
+	// Server.Create only for the same reason: a tenant-scoped Server.Create
+	// grant must never be able to point a server at an arbitrary host path.
 	actor, _, ok := s.requirePermission(w, r, "Server.Create", rbac.Scope{Type: "global"}, action == "adopt")
 	if !ok {
 		return

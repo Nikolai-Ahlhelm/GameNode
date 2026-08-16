@@ -19,6 +19,7 @@ import (
 	"gamenode/internal/database"
 	"gamenode/internal/ports"
 	"gamenode/internal/runtime"
+	"gamenode/internal/tenants"
 )
 
 type fakeRuntime struct {
@@ -140,7 +141,7 @@ func testServer(t *testing.T) Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Server{Name: "test", CreationMode: CreationCustom, WorkingDirectory: filepath.Dir(exe), Executable: exe, Arguments: []string{}, EnvironmentVariables: map[string]string{"GAME_NODE_TEST": "1"}, StopTimeoutSeconds: 1}
+	return Server{TenantID: tenants.DefaultTenantID, Name: "test", CreationMode: CreationCustom, WorkingDirectory: filepath.Dir(exe), Executable: exe, Arguments: []string{}, EnvironmentVariables: map[string]string{"GAME_NODE_TEST": "1"}, StopTimeoutSeconds: 1}
 }
 
 func TestServerValidationRejectsEscapingExecutable(t *testing.T) {
@@ -930,5 +931,102 @@ func TestRediscoveryStatusErrorDoesNotRetainRunningOrAllowDuplicateStart(t *test
 	}
 	if _, err = service.Start(context.Background(), record.Server.ID); err == nil {
 		t.Fatal("unverified process allowed a duplicate start")
+	}
+}
+
+func TestCreateDefaultsToDefaultTenantAndPersistsIt(t *testing.T) {
+	service, _, _, db := testService(t)
+	defer db.Close()
+	input := testServer(t)
+	input.TenantID = ""
+	record, err := service.Create(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Server.TenantID != tenants.DefaultTenantID {
+		t.Fatalf("tenant_id = %q, want %q", record.Server.TenantID, tenants.DefaultTenantID)
+	}
+	var stored string
+	if err = db.QueryRow("SELECT tenant_id FROM servers WHERE id=?", record.Server.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != tenants.DefaultTenantID {
+		t.Fatalf("persisted tenant_id = %q, want %q", stored, tenants.DefaultTenantID)
+	}
+	fetched, err := service.Get(context.Background(), record.Server.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched.Server.TenantID != tenants.DefaultTenantID {
+		t.Fatalf("fetched tenant_id = %q, want %q", fetched.Server.TenantID, tenants.DefaultTenantID)
+	}
+}
+
+func TestCreateRejectsUnknownTenant(t *testing.T) {
+	service, _, _, db := testService(t)
+	defer db.Close()
+	input := testServer(t)
+	input.TenantID = "does-not-exist"
+	if _, err := service.Create(context.Background(), input); !errors.Is(err, ErrInvalidTenant) {
+		t.Fatalf("Create with unknown tenant error = %v, want ErrInvalidTenant", err)
+	}
+}
+
+func TestUpdateNeverChangesTenant(t *testing.T) {
+	service, _, _, db := testService(t)
+	defer db.Close()
+	tenantService := tenants.New(db)
+	other, err := tenantService.Create(context.Background(), tenants.CreateInput{Name: "Other Tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := service.Create(context.Background(), testServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	update := record.Server
+	update.TenantID = other.ID
+	updated, err := service.store.Update(context.Background(), record.Server.ID, update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Server.TenantID != tenants.DefaultTenantID {
+		t.Fatalf("tenant_id changed via update: got %q, want unchanged %q", updated.Server.TenantID, tenants.DefaultTenantID)
+	}
+}
+
+// TestAdoptedExternalServerKeepsTenantOwnershipWithoutManagedStorage proves
+// Tenant Foundation Step 2 does not change Adopt Existing: an admin may still
+// register a server whose WorkingDirectory lives entirely outside any
+// tenant's managed storage tree. It still becomes logically owned by the
+// selected tenant, but Store.Create never rewrites, moves, or otherwise
+// touches the supplied external path.
+func TestAdoptedExternalServerKeepsTenantOwnershipWithoutManagedStorage(t *testing.T) {
+	service, _, _, db := testService(t)
+	defer db.Close()
+	tenant, err := tenants.New(db).Create(context.Background(), tenants.CreateInput{Name: "Customer A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adopted := testServer(t)
+	adopted.CreationMode = CreationAdopt
+	adopted.TenantID = tenant.ID
+	externalWorkingDirectory := adopted.WorkingDirectory
+	record, err := service.Create(context.Background(), adopted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Server.TenantID != tenant.ID {
+		t.Fatalf("adopted server tenant_id = %q, want %q", record.Server.TenantID, tenant.ID)
+	}
+	if record.Server.WorkingDirectory != externalWorkingDirectory {
+		t.Fatalf("adopted server working_directory changed: got %q, want unchanged %q", record.Server.WorkingDirectory, externalWorkingDirectory)
+	}
+	fetched, err := service.Get(context.Background(), record.Server.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched.Server.TenantID != tenant.ID || fetched.Server.WorkingDirectory != externalWorkingDirectory {
+		t.Fatalf("persisted adopted server = %#v", fetched.Server)
 	}
 }
