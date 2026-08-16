@@ -1,0 +1,35 @@
+# 0006. Tenant domain and isolation model
+
+## Problem
+
+GameNode was single-tenant: every user with a permission saw every server. Operators managing multiple customers or organizations on one node needed a way to keep those servers, their access, and their storage logically separate, without turning GameNode into a cluster controller, a billing system, or a hard multi-tenant hosting platform.
+
+## Options considered
+
+1. **YAML/config-file tenants.** Define tenants in `config.yaml` alongside the listener and storage settings. Rejected: server definitions already live in SQLite, not YAML, specifically so they can be created, renamed, and deleted at runtime through the API; a tenant is exactly the same kind of entity and belongs in the same place. A config-file tenant would also need a separate reload/validation path and could not be created by an in-product administrator.
+2. **A new global-only "tenant tag" on servers, enforced only at the UI layer.** Add a `tenant` string field to `servers`, let the frontend filter by it, but keep RBAC exactly as-is (global/server). Rejected: this gives operators a labeling convenience with no actual access boundary - any user with `Server.View` would still see every server regardless of tag, which does not satisfy "customers should not see each other's servers".
+3. **A third RBAC scope (`tenant`), a persisted `tenants` table, and a mandatory, immutable `servers.tenant_id`.** The evaluator gains one more branch (global-or-tenant-or-server) instead of a second evaluator; membership stays separate from authorization. Chosen.
+4. **Full multi-node/cluster model where a "tenant" maps to a dedicated node or container.** Rejected as far out of scope for a self-contained single-node platform; revisit only if GameNode ever grows a controller.
+
+## Trade-offs
+
+Option 3 costs a genuinely bigger surface than option 2: a new domain package (`internal/tenants`), a mandatory FK on `servers`, a widened `scope_type` CHECK plus a new `tenant_scope_id` column on both assignment tables (table rebuilds, not simple `ALTER`s, since SQLite cannot alter a CHECK constraint or add a `REFERENCES` column with a non-`NULL` default), a new managed storage layout, and a full Tenant REST API and UI. In exchange, it is the only option that gives tenant isolation real teeth: every server-scoped permission check already resolves the server's own tenant and denies a mismatched tenant assignment, structurally, in the same evaluator query used everywhere else - not a parallel check that could be forgotten on a new route. It also keeps roles scope-neutral (a role is just permissions; scope lives only on the assignment), so the existing server-scope UX and RBAC catalog needed almost no conceptual change, only a third branch.
+
+## Decision
+
+- A **Tenant** is a first-class SQLite domain entity (`internal/tenants`), not YAML configuration: `{id, name, slug, created_at, updated_at}`, with `id` immutable once issued and `slug` a display/URL convenience only, never a filesystem or security identifier.
+- Every server belongs to **exactly one tenant**, recorded as a mandatory, immutable `servers.tenant_id`. There is no server-move-between-tenants operation in this milestone; `Store.Update` force-preserves the existing tenant regardless of the request body.
+- **Tenant membership grants no permission by itself.** `internal/tenants.Membership` is a plain roster; only an RBAC role assignment (direct or via group, at global, tenant, or server scope) makes a permission effective. This mirrors the existing group-membership-is-not-authorization rule and avoids a second, competing authorization concept.
+- RBAC gains a third scope: **global, tenant, server** - one evaluator, one `Allowed` query, extended rather than duplicated. Roles remain scope-neutral; only assignments carry scope. `Server.Create` is the sole permission that is global-or-tenant but never server-scoped (a server does not exist yet when it is evaluated); nearly every other server-family permission is global-or-tenant-or-server; entity-management permissions (`Users.*`, `Groups.*`, `Roles.*`, `Settings.*`, `Templates.*`, `Audit.View`, and the new `Tenants.View`/`Tenants.Manage`) remain global-only.
+- New managed/provisioned servers get a tenant-scoped storage layout: `<data>/tenants/<tenant-id>/servers/<directory>`, resolved by a single revalidating function (`tenants.TenantServerRoot`) that never trusts an earlier caller's checks and never accepts a free-form host path.
+- **Legacy and adopted servers may remain physically external** to that layout. Custom Application and Adopt Existing continue to accept an admin-supplied `working_directory` taken as-is; such a server still carries a logical `tenant_id`, but GameNode makes no managed-storage-isolation guarantee for it, and creating one requires *global* `Server.Create` specifically so a tenant-scoped grant can never point a server at an arbitrary host path.
+- **Isolation is application-level only.** A tenant boundary controls which authenticated users can reach a server's records, files, console, ports, and monitoring through GameNode's own API and UI. It is explicitly **not** an OS-account, container, VM, or other kernel-level sandbox: every server process GameNode manages, regardless of tenant, runs under the same OS account and privileges as the GameNode service itself. A compromised game process can, at the OS level, affect the host and any process reachable by that service account - including other tenants' servers - independent of GameNode's own tenant bookkeeping. GameNode's tenants must never be presented as secure multi-tenant hosting for mutually distrusting operators.
+- **No quotas, billing, or resource accounting** in this milestone: no CPU/RAM limits, no storage accounting, no per-tenant server count caps, no template allowlists per tenant. Tenants organize *access and storage location*, not *resource consumption*.
+- **No multi-node/cluster semantics**: a tenant is a logical partition within one GameNode node's own database and filesystem, not a unit of placement across nodes.
+
+## Consequences
+
+- Every future server-scoped feature must authorize through the existing `rbac.Service.Allowed(ctx, user, permission, scope)` evaluator rather than adding an ad hoc tenant check, or it will silently bypass tenant isolation.
+- A server's tenant is a one-time decision made at creation time; any future "move a server between tenants" feature is a new, deliberate, and separately-reviewed capability, not an incidental side effect of a PATCH.
+- Operators who need genuine workload isolation between tenants (mutually distrusting customers, hostile-code risk) must provide it themselves outside GameNode - separate OS accounts, containers, VMs, or separate hosts per tenant - since GameNode's tenant boundary stops at its own API.
+- Quotas, billing, per-tenant resource limits, and multi-node placement remain open, separately-scoped future milestones; nothing in this decision blocks adding them later, since tenant identity and boundary already exist independently of any resource-accounting concept.

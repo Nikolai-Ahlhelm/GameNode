@@ -1,8 +1,10 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -39,10 +41,44 @@ func Migrate(db *sql.DB, files embed.FS) error {
 	if err != nil {
 		return fmt.Errorf("read migrations: %w", err)
 	}
+
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	defer conn.Close()
+
+	// A table rebuild (see 020_tenants.sql) may need to DROP a table that
+	// other, unrelated tables still reference by foreign key with ON DELETE
+	// CASCADE. SQLite performs an implicit cascading DELETE across those
+	// foreign keys when the referenced table is dropped while enforcement is
+	// on, which would destroy live child rows the migration never intended
+	// to touch. Disabling enforcement for this migration's dedicated
+	// connection - and only this connection - avoids that; PRAGMA
+	// foreign_keys can only be changed outside a transaction, so this must
+	// happen before any migration's BEGIN below. PRAGMA foreign_key_check
+	// below verifies referential integrity is intact before enforcement is
+	// restored.
+	if _, err = conn.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("disable foreign keys for migration: %w", err)
+	}
+
+	applyErr := applyPendingMigrations(ctx, conn, files, entries)
+	if applyErr == nil {
+		applyErr = verifyForeignKeys(ctx, conn)
+	}
+	if _, err = conn.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil && applyErr == nil {
+		applyErr = fmt.Errorf("re-enable foreign keys after migration: %w", err)
+	}
+	return applyErr
+}
+
+func applyPendingMigrations(ctx context.Context, conn *sql.Conn, files embed.FS, entries []fs.DirEntry) error {
 	for _, entry := range entries {
 		version := entry.Name()
 		var exists int
-		if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE version = ?", version).Scan(&exists); err != nil {
+		if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations WHERE version = ?", version).Scan(&exists); err != nil {
 			return err
 		}
 		if exists > 0 {
@@ -52,12 +88,12 @@ func Migrate(db *sql.DB, files embed.FS) error {
 		if err != nil {
 			return err
 		}
-		tx, err := db.Begin()
+		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
-		if _, err = tx.Exec(string(b)); err == nil {
-			_, err = tx.Exec("INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)", version, time.Now().UTC().Format(time.RFC3339Nano))
+		if _, err = tx.ExecContext(ctx, string(b)); err == nil {
+			_, err = tx.ExecContext(ctx, "INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)", version, time.Now().UTC().Format(time.RFC3339Nano))
 		}
 		if err != nil {
 			tx.Rollback()
@@ -68,6 +104,22 @@ func Migrate(db *sql.DB, files embed.FS) error {
 		}
 	}
 	return nil
+}
+
+// verifyForeignKeys runs after every pending migration has been applied with
+// foreign key enforcement disabled. It fails the migration rather than
+// silently re-enabling enforcement over a database left with dangling
+// foreign key references.
+func verifyForeignKeys(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("verify foreign keys after migration: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return errors.New("migration left dangling foreign key references")
+	}
+	return rows.Err()
 }
 
 // BackupIfMigrationPending creates a consistent SQLite copy before applying

@@ -70,7 +70,7 @@
         "executable": {"type": "string", "minLength": 1, "maxLength": 240}, "arguments": {"type": "array", "maxItems": 128, "items": {"type": "string", "maxLength": 16384}},
         "working_root": {"const": "server_root"}, "working_directory": {"type": "string", "maxLength": 240},
         "environment": {"type": "object", "maxProperties": 64, "propertyNames": {"pattern": "^[A-Z][A-Z0-9_]{0,63}$"}, "additionalProperties": {"type": "string", "maxLength": 16384}},
-        "stop_method": {"enum": ["terminate", "stdin_command"]}, "stop_command": {"type": "string", "maxLength": 256},
+        "stop_method": {"enum": ["terminate", "stdin_command", "console_interrupt"]}, "stop_command": {"type": "string", "maxLength": 256},
         "stop_timeout_seconds": {"type": "integer", "minimum": 0, "maximum": 300}, "resolver": {"enum": ["java", "neoforge"]}
       }
     },

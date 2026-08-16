@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,5 +43,37 @@ func TestNativeRuntimeStartStatusKill(t *testing.T) {
 	}
 	if status.Running {
 		t.Fatal("process remained running after kill")
+	}
+}
+
+// TestNativeRuntimeStartRefusesConsoleInterruptCapable covers the
+// non-Windows half of the console_interrupt platform contract: there is no
+// console-control-event concept here, so Start must refuse a
+// ConsoleInterruptCapable request defensively (and never start the process)
+// instead of silently ignoring the flag and only failing much later at stop
+// time. Official templates already reject console_interrupt for any
+// non-Windows platform launch at validation time; this is the runtime-side
+// backstop for the same invariant, also covering custom/adopted servers.
+func TestNativeRuntimeStartRefusesConsoleInterruptCapable(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewNative()
+	identity, exits, err := r.Start(context.Background(), StartOptions{
+		Executable:              exe,
+		Arguments:               []string{"-test.run=TestHelperProcess", "--"},
+		WorkingDirectory:        filepath.Dir(exe),
+		Environment:             map[string]string{"GAMENODE_RUNTIME_HELPER": "1"},
+		ConsoleInterruptCapable: true,
+	})
+	if !errors.Is(err, ErrConsoleInterruptUnsupported) {
+		t.Fatalf("expected ErrConsoleInterruptUnsupported, got %v", err)
+	}
+	if exits != nil {
+		t.Fatal("a refused start must not return an exit channel")
+	}
+	if identity != (Identity{}) {
+		t.Fatalf("a refused start must not return a process identity: %#v", identity)
 	}
 }

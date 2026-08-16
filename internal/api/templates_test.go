@@ -168,7 +168,7 @@ func TestTemplatePermissionsAreIndependentAndGlobalOnly(t *testing.T) {
 		}
 		assignment := rbac.Scope{Type: scope}
 		if scope == "server" {
-			if _, err = db.Exec(`INSERT INTO servers(id,name,description,creation_mode,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, name+"-server", "server", "", "custom", "C:/", "test.exe", "[]", "{}", "native", 0, "never", "terminate", "", 15, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+			if _, err = db.Exec(`INSERT INTO servers(id,tenant_id,name,description,creation_mode,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, name+"-server", "default", "server", "", "custom", "C:/", "test.exe", "[]", "{}", "native", 0, "never", "terminate", "", 15, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
 				t.Fatal(err)
 			}
 			id := name + "-server"

@@ -36,6 +36,13 @@ import (
 var webAssets embed.FS
 
 func main() {
+	// A disposable console-signal helper invocation never performs normal
+	// GameNode startup. See internal/runtime.RunConsoleSignalHelper and
+	// docs/runtime.md for why this compiled binary re-execs itself instead of
+	// shelling out to a script or introducing a second service.
+	if code, ok := runtime.RunConsoleSignalHelper(); ok {
+		os.Exit(code)
+	}
 	configPath := flag.String("config", "", "Path to YAML configuration (defaults to config.yaml beside the executable)")
 	flag.Parse()
 	path := *configPath
@@ -132,6 +139,9 @@ func main() {
 	steamManager.SetLogger(log)
 	provisioner := provisioning.NewWithOptions(db, templateService, steamManager, serverService, cfg.Data.Directory, provisioning.Options{Log: log})
 	gameConfigService := gameconfig.New(db, serverService)
+	// The server service stays the lifecycle authority; it only asks the
+	// configuration service to expand the persisted base launch before start.
+	serverService.SetLaunchResolver(gameConfigService)
 	defer provisioner.Close()
 	if err = provisioner.Initialize(context.Background()); err != nil {
 		log.Error("provisioning recovery failed", "error", err.Error())

@@ -21,6 +21,7 @@ import (
 	"gamenode/internal/monitoring"
 	"gamenode/internal/ports"
 	"gamenode/internal/runtime"
+	"gamenode/internal/tenants"
 )
 
 const (
@@ -34,6 +35,13 @@ const (
 	StateStopping    = "stopping"
 	StateCrashed     = "crashed"
 	StateUnknown     = "unknown"
+
+	// StopMethodConsoleInterrupt is a compiled, Windows-only stop type. A
+	// process started with this stop method receives a targeted Windows
+	// console control event instead of being terminated outright; there is no
+	// free-form stop string or template-defined signal number behind it. See
+	// internal/runtime.Interrupt and docs/runtime.md.
+	StopMethodConsoleInterrupt = "console_interrupt"
 )
 
 var (
@@ -43,10 +51,20 @@ var (
 	ErrInvalidProvisionedPort   = errors.New("invalid provisioned port")
 	ErrProvisionedPortsConflict = errors.New("provisioned ports conflict")
 	ErrProvisionedConfigAdapter = errors.New("provisioned configuration adapter could not be stored")
+	// ErrInvalidTenant is returned when a server references a tenant ID that
+	// does not exist. Server.TenantID is otherwise immutable once created;
+	// moving a server between tenants is out of scope for this milestone.
+	ErrInvalidTenant = errors.New("invalid tenant")
 )
 
 type Server struct {
-	ID                            string            `json:"id"`
+	ID string `json:"id"`
+	// TenantID is the server's owning tenant. Every server belongs to
+	// exactly one tenant (see internal/tenants and
+	// migrations/020_tenants.sql). It defaults to tenants.DefaultTenantID
+	// when left empty at creation and is immutable afterward; Store.Update
+	// never changes it.
+	TenantID                      string            `json:"tenant_id"`
 	CreationMode                  string            `json:"creation_mode"`
 	Name                          string            `json:"name"`
 	Description                   string            `json:"description"`
@@ -104,6 +122,20 @@ func (s *Server) Validate() error {
 	if len(s.Name) < 1 || len(s.Name) > 100 {
 		return errors.New("name must be 1 to 100 characters")
 	}
+	s.TenantID = strings.TrimSpace(s.TenantID)
+	if s.TenantID == "" {
+		// Matching this function's existing style of defaulting an unset
+		// field (CreationMode, RuntimeType, RestartPolicy, StopMethod
+		// below), a server with no explicit tenant belongs to the default
+		// tenant rather than staying tenantless. This keeps every existing
+		// construction path - the direct Create Server API, Adopt Existing,
+		// and template/provisioning's buildServer - working unchanged until
+		// a later Tenant Foundation step adds real tenant selection.
+		s.TenantID = tenants.DefaultTenantID
+	}
+	if len(s.TenantID) > 100 || strings.ContainsRune(s.TenantID, 0) {
+		return errors.New("invalid tenant")
+	}
 	if s.CreationMode == "" {
 		s.CreationMode = CreationCustom
 	}
@@ -143,8 +175,8 @@ func (s *Server) Validate() error {
 	if s.StopMethod == "" {
 		s.StopMethod = "terminate"
 	}
-	if s.StopMethod != "terminate" && s.StopMethod != "stdin_command" {
-		return errors.New("stop method must be terminate or stdin_command")
+	if s.StopMethod != "terminate" && s.StopMethod != "stdin_command" && s.StopMethod != StopMethodConsoleInterrupt {
+		return errors.New("stop method must be terminate, stdin_command, or console_interrupt")
 	}
 	if s.StopMethod == "stdin_command" {
 		if strings.TrimSpace(s.StopCommand) == "" || len(s.StopCommand) > 256 || strings.ContainsAny(s.StopCommand, "\r\n\x00") {
@@ -195,6 +227,23 @@ func (s *Server) Validate() error {
 	}
 	return nil
 }
+
+// requireTenant translates a missing tenant into the controlled
+// ErrInvalidTenant instead of letting a raw foreign key constraint failure
+// reach callers. internal/servers deliberately queries the tenants table
+// directly rather than importing internal/tenants' Service, matching the
+// existing cross-domain read convention (see identity.ListGroupSummaries).
+func (store *Store) requireTenant(ctx context.Context, tenantID string) error {
+	var exists int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tenants WHERE id=?`, tenantID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return ErrInvalidTenant
+	}
+	return nil
+}
+
 func (s Server) ResolvedExecutable() string {
 	if filepath.IsAbs(s.Executable) {
 		return filepath.Clean(s.Executable)
@@ -210,6 +259,9 @@ func (store *Store) Create(ctx context.Context, server Server) (Record, error) {
 	if err := server.Validate(); err != nil {
 		return Record{}, err
 	}
+	if err := store.requireTenant(ctx, server.TenantID); err != nil {
+		return Record{}, err
+	}
 	id, err := newID()
 	if err != nil {
 		return Record{}, err
@@ -220,7 +272,7 @@ func (store *Store) Create(ctx context.Context, server Server) (Record, error) {
 	server.UpdatedAt = now
 	args, _ := json.Marshal(server.Arguments)
 	env, _ := json.Marshal(server.EnvironmentVariables)
-	_, err = store.db.ExecContext(ctx, `INSERT INTO servers(id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
+	_, err = store.db.ExecContext(ctx, `INSERT INTO servers(id,tenant_id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.TenantID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
 	if err != nil {
 		return Record{}, fmt.Errorf("create server: %w", err)
 	}
@@ -245,6 +297,16 @@ type ProvisionedConfigAdapter struct {
 	TemplateID      string
 	TemplateVersion string
 	DefinitionJSON  []byte
+	Values          []ProvisionedConfigValue
+}
+
+// ProvisionedConfigValue is an initial managed configuration value. Values are
+// persisted in the same transaction as the server so a failed registration
+// cannot leave a partially configured server behind.
+type ProvisionedConfigValue struct {
+	Key       string
+	Value     string
+	Sensitive bool
 }
 
 // CreateProvisioned atomically publishes a fully installed native server and
@@ -273,7 +335,14 @@ func (store *Store) CreateProvisioned(ctx context.Context, server Server, templa
 		return Record{}, err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO servers(id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
+	var tenantExists int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tenants WHERE id=?`, server.TenantID).Scan(&tenantExists); err != nil {
+		return Record{}, err
+	}
+	if tenantExists == 0 {
+		return Record{}, ErrInvalidTenant
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO servers(id,tenant_id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.TenantID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
 	if err != nil {
 		return Record{}, fmt.Errorf("create provisioned server: %w", err)
 	}
@@ -331,11 +400,21 @@ func (store *Store) CreateProvisioned(ctx context.Context, server Server, templa
 		}
 	}
 	for _, adapter := range configAdapters {
-		if !environmentKey.MatchString(strings.ReplaceAll(adapter.ID, "-", "_")) || adapter.SchemaVersion != 1 || adapter.Version == "" || adapter.TemplateID != templateID || len(adapter.DefinitionJSON) == 0 || len(adapter.DefinitionJSON) > 128<<10 || !json.Valid(adapter.DefinitionJSON) {
+		if !environmentKey.MatchString(strings.ReplaceAll(adapter.ID, "-", "_")) || (adapter.SchemaVersion != 1 && adapter.SchemaVersion != 2) || adapter.Version == "" || adapter.TemplateID != templateID || len(adapter.DefinitionJSON) == 0 || len(adapter.DefinitionJSON) > 128<<10 || !json.Valid(adapter.DefinitionJSON) {
 			return Record{}, ErrProvisionedConfigAdapter
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO server_config_adapters(server_id,adapter_id,adapter_schema_version,adapter_version,template_id,template_version,definition_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, server.ID, adapter.ID, adapter.SchemaVersion, adapter.Version, adapter.TemplateID, adapter.TemplateVersion, string(adapter.DefinitionJSON), stamp(now), stamp(now)); err != nil {
 			return Record{}, fmt.Errorf("%w: %v", ErrProvisionedConfigAdapter, err)
+		}
+		seenValues := map[string]bool{}
+		for _, value := range adapter.Values {
+			if !environmentKey.MatchString(value.Key) || seenValues[value.Key] || len(value.Value) > 16<<10 || strings.ContainsRune(value.Value, 0) {
+				return Record{}, ErrProvisionedConfigAdapter
+			}
+			seenValues[value.Key] = true
+			if _, err = tx.ExecContext(ctx, `INSERT INTO server_config_values(server_id,adapter_id,field_key,value,sensitive,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, server.ID, adapter.ID, value.Key, value.Value, value.Sensitive, stamp(now), stamp(now)); err != nil {
+				return Record{}, fmt.Errorf("%w: %v", ErrProvisionedConfigAdapter, err)
+			}
 		}
 	}
 	if err = tx.Commit(); err != nil {
@@ -387,6 +466,9 @@ func (store *Store) Update(ctx context.Context, id string, server Server) (Recor
 	}
 	server.ID = id
 	server.CreatedAt = existing.Server.CreatedAt
+	// TenantID is immutable after creation for this milestone (see
+	// ErrInvalidTenant doc comment); ignore whatever the caller supplied.
+	server.TenantID = existing.Server.TenantID
 	sensitive, err := store.SensitiveEnvironmentKeys(ctx, id)
 	if err != nil {
 		return Record{}, err
@@ -438,7 +520,7 @@ func (store *Store) SaveRuntime(ctx context.Context, id string, state RuntimeSta
 	return err
 }
 
-const selectSQL = `SELECT s.id,s.creation_mode,s.name,s.description,s.working_directory,s.executable,s.arguments_json,s.environment_json,s.runtime_type,s.auto_start,s.restart_policy,s.stop_method,s.stop_command,s.stop_timeout_seconds,s.auto_restart_enabled,s.auto_restart_max_attempts,s.auto_restart_window_seconds,s.auto_restart_delay_seconds,s.created_at,s.updated_at,r.pid,r.process_start_key,r.process_started_at,r.last_start_at,r.last_stop_at,r.last_exit_at,r.exit_code,r.last_crash_at,r.crash_count,r.restart_count,r.last_error,r.current_state FROM servers s JOIN server_runtime_state r ON r.server_id=s.id`
+const selectSQL = `SELECT s.id,s.tenant_id,s.creation_mode,s.name,s.description,s.working_directory,s.executable,s.arguments_json,s.environment_json,s.runtime_type,s.auto_start,s.restart_policy,s.stop_method,s.stop_command,s.stop_timeout_seconds,s.auto_restart_enabled,s.auto_restart_max_attempts,s.auto_restart_window_seconds,s.auto_restart_delay_seconds,s.created_at,s.updated_at,r.pid,r.process_start_key,r.process_started_at,r.last_start_at,r.last_stop_at,r.last_exit_at,r.exit_code,r.last_crash_at,r.crash_count,r.restart_count,r.last_error,r.current_state FROM servers s JOIN server_runtime_state r ON r.server_id=s.id`
 
 type scanner interface{ Scan(...any) error }
 
@@ -451,7 +533,7 @@ func scan(row scanner) (Record, error) {
 	var processStart, lastStart, lastStop, lastExit, lastCrash sql.NullString
 	var exit sql.NullInt64
 	var created, updated string
-	err := row.Scan(&r.Server.ID, &r.Server.CreationMode, &r.Server.Name, &r.Server.Description, &r.Server.WorkingDirectory, &r.Server.Executable, &args, &env, &r.Server.RuntimeType, &auto, &r.Server.RestartPolicy, &r.Server.StopMethod, &r.Server.StopCommand, &r.Server.StopTimeoutSeconds, &autoRestart, &r.Server.AutoRestartMaxAttempts, &r.Server.AutoRestartWindowSeconds, &r.Server.AutoRestartDelaySeconds, &created, &updated, &pid, &key, &processStart, &lastStart, &lastStop, &lastExit, &exit, &lastCrash, &r.Runtime.CrashCount, &r.Runtime.RestartCount, &r.Runtime.LastError, &r.Runtime.CurrentState)
+	err := row.Scan(&r.Server.ID, &r.Server.TenantID, &r.Server.CreationMode, &r.Server.Name, &r.Server.Description, &r.Server.WorkingDirectory, &r.Server.Executable, &args, &env, &r.Server.RuntimeType, &auto, &r.Server.RestartPolicy, &r.Server.StopMethod, &r.Server.StopCommand, &r.Server.StopTimeoutSeconds, &autoRestart, &r.Server.AutoRestartMaxAttempts, &r.Server.AutoRestartWindowSeconds, &r.Server.AutoRestartDelaySeconds, &created, &updated, &pid, &key, &processStart, &lastStart, &lastStop, &lastExit, &exit, &lastCrash, &r.Runtime.CrashCount, &r.Runtime.RestartCount, &r.Runtime.LastError, &r.Runtime.CurrentState)
 	if err != nil {
 		return Record{}, err
 	}
@@ -533,7 +615,22 @@ type Service struct {
 	autoAttempts sync.Map
 	autoMu       sync.Mutex
 	log          *slog.Logger
+	launch       LaunchResolver
 }
+
+// LaunchResolver expands the persisted base launch with reviewed managed
+// configuration immediately before the process starts. It is optional; a nil
+// resolver leaves the persisted executable, arguments, and environment
+// untouched. Implementations must return a complete argv/environment pair and
+// must never be given the opportunity to persist secret values.
+type LaunchResolver interface {
+	ResolveLaunch(ctx context.Context, serverID string, arguments []string, environment map[string]string) ([]string, map[string]string, error)
+}
+
+// SetLaunchResolver installs the managed configuration resolver. The
+// composition root owns this wiring so internal/servers keeps no dependency on
+// the configuration package.
+func (s *Service) SetLaunchResolver(resolver LaunchResolver) { s.launch = resolver }
 
 // processInstance binds one native process identity to the console session
 // created for it. Its finalizer is the sole owner of exit cleanup.
@@ -823,6 +920,21 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 		s.log.Error("server port preflight failed", "module", "Server.Start", "server_id", id, "error", preflight)
 		return Record{}, preflight
 	}
+	// Managed configuration is expanded after preflight but before any state
+	// mutation, console session, or process start, so an incomplete or invalid
+	// configuration fails like a preflight error rather than a crash. The
+	// resolved values stay in memory and are never persisted.
+	arguments, environment := record.Server.Arguments, record.Server.EnvironmentVariables
+	if s.launch != nil {
+		arguments, environment, err = s.launch.ResolveLaunch(ctx, id, arguments, environment)
+		if err != nil {
+			resolution := fmt.Errorf("managed configuration: %w", err)
+			record.Runtime.LastError = resolution.Error()
+			_ = s.store.SaveRuntime(context.Background(), id, record.Runtime)
+			s.log.Error("managed game configuration could not be resolved", "module", "Server.Start", "server_id", id, "error", resolution)
+			return Record{}, resolution
+		}
+	}
 	now := time.Now().UTC()
 	record.Runtime.CurrentState = StateStarting
 	record.Runtime.LastError = ""
@@ -845,14 +957,18 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 	}
 	identity, exits, err := s.runtime.Start(ctx, runtime.StartOptions{
 		Executable:       record.Server.ResolvedExecutable(),
-		Arguments:        record.Server.Arguments,
+		Arguments:        arguments,
 		WorkingDirectory: record.Server.WorkingDirectory,
-		Environment:      record.Server.EnvironmentVariables,
+		Environment:      environment,
 		IO: runtime.StartIO{
 			Stdout: session.Output("stdout"),
 			Stderr: session.Output("stderr"),
 			Stdin:  session.AttachInput,
 		},
+		// Derived from the normalized stop method, never from template or
+		// request data directly, so only a console_interrupt server changes
+		// how its process group is created.
+		ConsoleInterruptCapable: record.Server.StopMethod == StopMethodConsoleInterrupt,
 	})
 	if err != nil {
 		cleanup()
@@ -945,6 +1061,7 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 	_ = s.store.SaveRuntime(ctx, id, record.Runtime)
 	identity := runtime.Identity{PID: record.Runtime.PID, StartKey: record.Runtime.processStartKey}
 	instance, _ := s.instances.Load(id)
+	interruptSent := false
 	if kill {
 		err = s.runtime.Kill(ctx, identity)
 	} else if record.Server.StopMethod == "stdin_command" {
@@ -953,6 +1070,20 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 			err = errors.New("console input is unavailable for the detached process")
 		} else {
 			err = process.session.Input(record.Server.StopCommand + "\n")
+		}
+	} else if record.Server.StopMethod == StopMethodConsoleInterrupt {
+		process, ok := instance.(*processInstance)
+		if !ok || process.identity != identity {
+			// A process rediscovered after a GameNode restart has no
+			// verifiable, safely addressable console in this GameNode
+			// lifetime (see docs/runtime.md). Do not claim a graceful
+			// interrupt was attempted; fall back to the existing bounded
+			// terminate/force-kill lifecycle instead.
+			s.log.Warn("console interrupt unavailable for detached process; falling back to terminate", "module", module, "server_id", id, "pid", identity.PID)
+			err = s.runtime.Stop(ctx, identity, time.Duration(record.Server.StopTimeoutSeconds)*time.Second)
+		} else {
+			err = s.runtime.Interrupt(ctx, identity)
+			interruptSent = err == nil
 		}
 	} else {
 		err = s.runtime.Stop(ctx, identity, time.Duration(record.Server.StopTimeoutSeconds)*time.Second)
@@ -967,7 +1098,7 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 	}
 	lock.Unlock()
 	if process, ok := instance.(*processInstance); ok && process.identity == identity {
-		if !kill && record.Server.StopMethod == "stdin_command" {
+		if !kill && (record.Server.StopMethod == "stdin_command" || interruptSent) {
 			timer := time.NewTimer(time.Duration(record.Server.StopTimeoutSeconds) * time.Second)
 			select {
 			case <-process.done:
@@ -979,12 +1110,16 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 					return Record{}, killErr
 				}
 				if errors.Is(killErr, runtime.ErrNotRunning) {
-					// The game accepted the stdin stop command and exited, but the
-					// Wait callback is delayed by inherited Windows pipe handles.
-					// Its identity is already known absent, so finish the managed
+					// The game accepted the stop signal and exited, but the Wait
+					// callback is delayed by inherited Windows pipe handles. Its
+					// identity is already known absent, so finish the managed
 					// lifecycle instead of leaving the server permanently stopping.
 					s.finalizeInstance(process, runtime.ExitResult{ExitCode: 0})
 				}
+				// A successful signal delivery is not a successful graceful stop.
+				// This is the bounded, controlled record of a timeout fallback;
+				// no argv, environment, console content, or handle values.
+				s.log.Warn("server did not exit before stop timeout; force-kill fallback used", "module", module, "server_id", id, "pid", identity.PID, "stop_method", record.Server.StopMethod)
 				<-process.done
 			case <-ctx.Done():
 				timer.Stop()

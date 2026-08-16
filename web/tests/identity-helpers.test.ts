@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { availableIdentityActions, filterMembershipCandidates, listOrEmpty, permissionScopeLabel, serverRoleSuitability, userStatusLabel, validateGroupForm, validatePasswordReset, validateUserForm } from '../src/identity-helpers.ts';
+import { availableIdentityActions, filterMembershipCandidates, listOrEmpty, permissionScopeLabel, roleScopeSuitability, serverRoleSuitability, userStatusLabel, validateGroupForm, validatePasswordReset, validateUserForm } from '../src/identity-helpers.ts';
 
 test('normalizes nullable API lists', () => {
   const entries = [{ id: 'group-1' }];
@@ -42,16 +42,19 @@ test('keeps View and Manage capabilities independent', () => {
 });
 
 test('derives permission scope labels from the backend catalog', () => {
-  assert.equal(permissionScopeLabel(['global']), 'Global only');
-  assert.equal(permissionScopeLabel(['server']), 'Server only');
-  assert.equal(permissionScopeLabel(['global', 'server']), 'Global / Server');
+  assert.equal(permissionScopeLabel(['global']), 'Global');
+  assert.equal(permissionScopeLabel(['server']), 'Server');
+  assert.equal(permissionScopeLabel(['tenant']), 'Tenant');
+  assert.equal(permissionScopeLabel(['global', 'tenant', 'server']), 'Global / Tenant / Server');
+  assert.equal(permissionScopeLabel(['global', 'tenant']), 'Global / Tenant');
   assert.equal(permissionScopeLabel([]), 'Not assignable');
 });
 
 test('explains server role suitability including empty and mixed roles', () => {
   const catalog = [
-    { key: 'Server.View', allowed_scopes: ['global', 'server'] },
-    { key: 'Console.View', allowed_scopes: ['global', 'server'] },
+    { key: 'Server.View', allowed_scopes: ['global', 'tenant', 'server'] },
+    { key: 'Console.View', allowed_scopes: ['global', 'tenant', 'server'] },
+    { key: 'Server.Create', allowed_scopes: ['global', 'tenant'] },
     { key: 'Users.View', allowed_scopes: ['global'] },
   ];
   assert.equal(serverRoleSuitability([], catalog).assignable, false);
@@ -59,4 +62,20 @@ test('explains server role suitability including empty and mixed roles', () => {
   const mixed = serverRoleSuitability(['Server.View', 'Users.View'], catalog);
   assert.equal(mixed.assignable, false);
   assert.deepEqual(mixed.incompatible, ['Users.View']);
+});
+
+test('explains tenant role suitability, including Server.Create as tenant-only-not-server', () => {
+  const catalog = [
+    { key: 'Server.View', allowed_scopes: ['global', 'tenant', 'server'] },
+    { key: 'Server.Create', allowed_scopes: ['global', 'tenant'] },
+    { key: 'Users.View', allowed_scopes: ['global'] },
+  ];
+  assert.equal(roleScopeSuitability([], catalog, 'tenant').assignable, false);
+  assert.equal(roleScopeSuitability(['Server.View', 'Server.Create'], catalog, 'tenant').assignable, true);
+  const globalOnly = roleScopeSuitability(['Users.View'], catalog, 'tenant');
+  assert.equal(globalOnly.assignable, false);
+  assert.deepEqual(globalOnly.incompatible, ['Users.View']);
+  // Server.Create is tenant-assignable but never server-assignable.
+  assert.equal(roleScopeSuitability(['Server.Create'], catalog, 'tenant').assignable, true);
+  assert.equal(roleScopeSuitability(['Server.Create'], catalog, 'server').assignable, false);
 });

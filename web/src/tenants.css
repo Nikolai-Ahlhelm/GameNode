@@ -1,0 +1,8 @@
+.tenants-table .table-head,.tenants-table .table-row{grid-template-columns:minmax(180px,1.4fr) minmax(120px,.8fr) minmax(110px,.7fr) minmax(100px,.7fr) minmax(140px,1fr)}
+.tenant-detail .segmented-tabs{margin-bottom:20px}
+.field-inline-action{min-height:auto;padding:1px 8px;font-size:10px;justify-self:end}
+label:has(>.field-inline-action){display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:6px}
+label:has(>.field-inline-action)>input{flex:1 1 100%}
+.tenant-badge{display:inline-flex;align-items:center;gap:5px;color:var(--text-muted);font-size:11px}
+.tenant-badge svg{width:13px;height:13px}
+@media(max-width:700px){.tenants-table .table-head,.tenants-table .table-row{min-width:600px}}

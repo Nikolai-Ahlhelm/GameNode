@@ -14,9 +14,17 @@ import (
 	"gamenode/internal/auth"
 	"gamenode/internal/provisioning"
 	"gamenode/internal/rbac"
+	"gamenode/internal/tenants"
 )
 
 type provisionInput struct {
+	// TenantID selects which tenant the new managed server belongs to. Left
+	// empty, it defaults to tenants.DefaultTenantID, matching
+	// servers.Server.Validate's and provisioning.Service.Start's identical
+	// default. It is only ever resolved into a managed storage path through
+	// tenants.TenantServerRoot server-side (see internal/provisioning); a
+	// client can never supply a host path here.
+	TenantID        string            `json:"tenant_id"`
 	ServerName      string            `json:"server_name"`
 	DirectoryName   string            `json:"directory_name"`
 	Variables       map[string]string `json:"variables"`
@@ -51,12 +59,20 @@ func (s *Server) requireProvisionPermission(w http.ResponseWriter, r *http.Reque
 	return actor, true
 }
 
+// startProvisioning requires global Templates.View (can this node install
+// this kind of template at all) AND Server.Create effective for the
+// requested tenant (global or tenant-scoped; see internal/rbac's evaluator).
+// Authorization is checked against the tenant from the request body, so it
+// must be decoded before the Server.Create check - unlike every other
+// provisioning route, which only ever needed the fixed global check. Tenant
+// membership alone never satisfies this: internal/tenants.Membership carries
+// no RBAC weight, only a role assignment does.
 func (s *Server) startProvisioning(w http.ResponseWriter, r *http.Request, templateID string) {
 	if r.Method != http.MethodPost {
 		method(w)
 		return
 	}
-	actor, ok := s.requireProvisionPermission(w, r, true)
+	actor, _, ok := s.requireGlobalPermission(w, r, "Templates.View", true)
 	if !ok {
 		return
 	}
@@ -68,14 +84,27 @@ func (s *Server) startProvisioning(w http.ResponseWriter, r *http.Request, templ
 	if !decodeProvisionInput(w, r, &input) {
 		return
 	}
-	job, err := s.provisioning.Start(r.Context(), provisioning.Request{TemplateID: templateID, ServerName: input.ServerName, DirectoryName: input.DirectoryName, Values: input.Variables, ActorUserID: actor.ID, ActorUsername: actor.Username, RecoverExisting: input.RecoverExisting})
+	tenantID := strings.TrimSpace(input.TenantID)
+	if tenantID == "" {
+		tenantID = tenants.DefaultTenantID
+	}
+	allowed, err := s.allowed(r.Context(), actor, "Server.Create", rbac.Scope{Type: "tenant", ID: &tenantID})
 	if err != nil {
-		s.log.With("module", "Provisioning.Start").Warn("provisioning request rejected", "template_id", templateID, "actor_user_id", actor.ID, "failure", provisioningFailure(err))
+		internal(w)
+		return
+	}
+	if !allowed {
+		forbidden(w, "permission denied")
+		return
+	}
+	job, err := s.provisioning.Start(r.Context(), provisioning.Request{TemplateID: templateID, ServerName: input.ServerName, DirectoryName: input.DirectoryName, Values: input.Variables, ActorUserID: actor.ID, ActorUsername: actor.Username, RecoverExisting: input.RecoverExisting, TenantID: tenantID})
+	if err != nil {
+		s.log.With("module", "Provisioning.Start").Warn("provisioning request rejected", "template_id", templateID, "tenant_id", tenantID, "actor_user_id", actor.ID, "failure", provisioningFailure(err))
 		provisioningError(w, err)
 		return
 	}
-	s.log.With("module", "Provisioning.Start").Info("provisioning job created", "job_id", job.ID, "template_id", job.TemplateID, "app_id", job.AppID, "actor_user_id", actor.ID)
-	metadata, _ := json.Marshal(map[string]any{"template_id": job.TemplateID, "job_id": job.ID, "installer_type": job.InstallerType, "app_id": job.AppID})
+	s.log.With("module", "Provisioning.Start").Info("provisioning job created", "job_id", job.ID, "template_id", job.TemplateID, "tenant_id", job.TenantID, "app_id", job.AppID, "actor_user_id", actor.ID)
+	metadata, _ := json.Marshal(map[string]any{"template_id": job.TemplateID, "job_id": job.ID, "installer_type": job.InstallerType, "app_id": job.AppID, "tenant_id": job.TenantID})
 	s.recordAudit(r, auditInput{action: audit.ServerProvisionStart, resourceType: audit.Server, resourceName: job.ServerName, result: audit.Success, metadata: metadata, actor: &actor})
 	jsonOut(w, http.StatusAccepted, job)
 }
@@ -88,6 +117,8 @@ func provisioningFailure(err error) string {
 		return "target_conflict"
 	case errors.Is(err, provisioning.ErrRecoveryUnavailable):
 		return "recovery_unavailable"
+	case errors.Is(err, provisioning.ErrInvalidTenant):
+		return "invalid_tenant"
 	case errors.Is(err, sql.ErrNoRows):
 		return "template_not_found"
 	default:
@@ -188,7 +219,7 @@ func (s *Server) provisioningJobHandler(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) recordProvisioningCompletion(event provisioning.Event) {
-	metadata, _ := json.Marshal(map[string]any{"template_id": event.Job.TemplateID, "job_id": event.Job.ID, "installer_type": event.Job.InstallerType, "app_id": event.Job.AppID, "duration_seconds": int64(event.Duration / time.Second), "failure_phase": event.Job.FailurePhase, "failure_code": event.Job.FailureCode, "files_may_remain": event.Job.FilesMayRemain})
+	metadata, _ := json.Marshal(map[string]any{"template_id": event.Job.TemplateID, "job_id": event.Job.ID, "tenant_id": event.Job.TenantID, "installer_type": event.Job.InstallerType, "app_id": event.Job.AppID, "duration_seconds": int64(event.Duration / time.Second), "failure_phase": event.Job.FailurePhase, "failure_code": event.Job.FailureCode, "files_may_remain": event.Job.FilesMayRemain})
 	var resourceID *string
 	var serverID *string
 	if event.Job.ServerID != "" {
@@ -220,6 +251,8 @@ func provisioningError(w http.ResponseWriter, err error) {
 		errorOut(w, http.StatusConflict, "target_conflict", "server target is already populated or in use")
 	case errors.Is(err, provisioning.ErrRecoveryUnavailable):
 		errorOut(w, http.StatusConflict, "recovery_unavailable", "the installed server cannot be safely recovered")
+	case errors.Is(err, provisioning.ErrInvalidTenant):
+		errorOut(w, http.StatusBadRequest, "invalid_tenant", "tenant does not exist")
 	default:
 		errorOut(w, http.StatusBadRequest, "invalid_provision_request", "provisioning request is invalid")
 	}

@@ -24,6 +24,7 @@ import (
 	"gamenode/internal/servers"
 	"gamenode/internal/steamcmd"
 	"gamenode/internal/templates"
+	"gamenode/internal/tenants"
 )
 
 const (
@@ -52,11 +53,16 @@ var (
 	ErrTargetConflict      = errors.New("server target is already populated or reserved")
 	ErrRecoveryUnavailable = errors.New("installed server cannot be recovered")
 	ErrJobNotActive        = errors.New("provisioning job is not active")
-	directoryPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	// ErrInvalidTenant is returned when a provisioning request references a
+	// tenant ID that does not exist. It is never inferred from a raw host
+	// path or from client-supplied tenant name/slug text.
+	ErrInvalidTenant = errors.New("invalid tenant")
+	directoryPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 )
 
 type Job struct {
 	ID                      string     `json:"id"`
+	TenantID                string     `json:"tenant_id"`
 	TemplateID              string     `json:"template_id"`
 	TemplateName            string     `json:"template_name"`
 	ServerName              string     `json:"server_name"`
@@ -95,6 +101,14 @@ type Request struct {
 	Values                                map[string]string
 	ActorUserID, ActorUsername            string
 	RecoverExisting                       bool
+	// TenantID is the tenant the new managed server belongs to. Left empty,
+	// Start defaults it to tenants.DefaultTenantID, matching
+	// servers.Server.Validate's identical default so this technical
+	// interface is ready without a caller having to select a tenant yet; see
+	// docs/architecture.md's Tenant Foundation Step 2 section. It is never
+	// taken from a raw host path, so a normal user reaching this request
+	// cannot inject an arbitrary filesystem location through it.
+	TenantID string
 }
 type Event struct {
 	Action   string
@@ -127,7 +141,7 @@ type Store struct{ db *sql.DB }
 
 func NewStore(db *sql.DB) *Store { return &Store{db} }
 func (s *Store) Create(ctx context.Context, j Job) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO provisioning_jobs(id,actor_user_id,actor_username,template_id,template_name,server_name,directory_name,installer_type,app_id,status,summary,error_summary,files_may_remain,server_id,created_at,started_at,completed_at,updated_at,current_phase,last_successful_phase,failure_phase,failure_code,installation_completed,registration_recoverable) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, j.ID, j.ActorUserID, j.ActorUsername, j.TemplateID, j.TemplateName, j.ServerName, j.DirectoryName, j.InstallerType, j.AppID, j.Status, j.Summary, j.ErrorSummary, j.FilesMayRemain, nil, stamp(j.CreatedAt), nil, nil, stamp(j.UpdatedAt), j.CurrentPhase, j.LastSuccessfulPhase, j.FailurePhase, j.FailureCode, j.InstallationCompleted, j.RegistrationRecoverable)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO provisioning_jobs(id,tenant_id,actor_user_id,actor_username,template_id,template_name,server_name,directory_name,installer_type,app_id,status,summary,error_summary,files_may_remain,server_id,created_at,started_at,completed_at,updated_at,current_phase,last_successful_phase,failure_phase,failure_code,installation_completed,registration_recoverable) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, j.ID, j.TenantID, j.ActorUserID, j.ActorUsername, j.TemplateID, j.TemplateName, j.ServerName, j.DirectoryName, j.InstallerType, j.AppID, j.Status, j.Summary, j.ErrorSummary, j.FilesMayRemain, nil, stamp(j.CreatedAt), nil, nil, stamp(j.UpdatedAt), j.CurrentPhase, j.LastSuccessfulPhase, j.FailurePhase, j.FailureCode, j.InstallationCompleted, j.RegistrationRecoverable)
 	return err
 }
 func (s *Store) Update(ctx context.Context, j Job) error {
@@ -177,7 +191,7 @@ func (s *Store) Get(ctx context.Context, id string) (Job, error) {
 	var created, updated string
 	var started, completed, server sql.NullString
 	var remains int
-	err := s.db.QueryRowContext(ctx, `SELECT id,actor_user_id,actor_username,template_id,template_name,server_name,directory_name,installer_type,app_id,status,summary,error_summary,files_may_remain,server_id,created_at,started_at,completed_at,updated_at,current_phase,last_successful_phase,failure_phase,failure_code,installation_completed,registration_recoverable FROM provisioning_jobs WHERE id=?`, id).Scan(&j.ID, &j.ActorUserID, &j.ActorUsername, &j.TemplateID, &j.TemplateName, &j.ServerName, &j.DirectoryName, &j.InstallerType, &j.AppID, &j.Status, &j.Summary, &j.ErrorSummary, &remains, &server, &created, &started, &completed, &updated, &j.CurrentPhase, &j.LastSuccessfulPhase, &j.FailurePhase, &j.FailureCode, &j.InstallationCompleted, &j.RegistrationRecoverable)
+	err := s.db.QueryRowContext(ctx, `SELECT id,tenant_id,actor_user_id,actor_username,template_id,template_name,server_name,directory_name,installer_type,app_id,status,summary,error_summary,files_may_remain,server_id,created_at,started_at,completed_at,updated_at,current_phase,last_successful_phase,failure_phase,failure_code,installation_completed,registration_recoverable FROM provisioning_jobs WHERE id=?`, id).Scan(&j.ID, &j.TenantID, &j.ActorUserID, &j.ActorUsername, &j.TemplateID, &j.TemplateName, &j.ServerName, &j.DirectoryName, &j.InstallerType, &j.AppID, &j.Status, &j.Summary, &j.ErrorSummary, &remains, &server, &created, &started, &completed, &updated, &j.CurrentPhase, &j.LastSuccessfulPhase, &j.FailurePhase, &j.FailureCode, &j.InstallationCompleted, &j.RegistrationRecoverable)
 	if err != nil {
 		return Job{}, err
 	}
@@ -203,12 +217,27 @@ func (s *Store) ServerExists(ctx context.Context, id string) (bool, error) {
 	return count == 1, nil
 }
 
+// TenantExists reads the tenants table directly rather than importing
+// internal/tenants' Service, matching the existing cross-domain read
+// convention (see identity.ListGroupSummaries and servers.Store.requireTenant).
+func (s *Store) TenantExists(ctx context.Context, id string) (bool, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tenants WHERE id=?`, id).Scan(&count); err != nil {
+		return false, err
+	}
+	return count == 1, nil
+}
+
 type Service struct {
-	store       *Store
-	templates   TemplateSource
-	installer   Installer
-	servers     ServerCreator
-	serverBase  string
+	store     *Store
+	templates TemplateSource
+	installer Installer
+	servers   ServerCreator
+	// dataRoot is the GameNode data directory. Managed/provisioned server
+	// storage is always resolved from it through tenants.TenantServerRoot;
+	// this field alone is never joined with a caller-controlled path
+	// fragment.
+	dataRoot    string
 	hostOS      string
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -231,6 +260,11 @@ type run struct {
 	// finalizing closes cancellation before the transactional server insert.
 	finalizing bool
 	recovering bool
+	// managedSecrets records that this registration carries managed secret
+	// values. They are deliberately never written to job state, so a retry
+	// could only create a server with silently missing configuration. Such a
+	// registration is therefore not recoverable.
+	managedSecrets bool
 }
 type registrationSnapshot struct {
 	Server         servers.Server                     `json:"server"`
@@ -263,7 +297,7 @@ func NewWithOptions(db *sql.DB, source TemplateSource, installer Installer, crea
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &Service{store: NewStore(db), templates: source, installer: installer, servers: creator, serverBase: filepath.Join(filepath.Clean(dataDirectory), "servers"), hostOS: host, ctx: ctx, cancel: cancel, active: map[string]*run{}, roots: map[string]string{}, outputs: map[string]*installerOutput{}, now: func() time.Time { return time.Now().UTC() }, log: log}
+	return &Service{store: NewStore(db), templates: source, installer: installer, servers: creator, dataRoot: filepath.Clean(dataDirectory), hostOS: host, ctx: ctx, cancel: cancel, active: map[string]*run{}, roots: map[string]string{}, outputs: map[string]*installerOutput{}, now: func() time.Time { return time.Now().UTC() }, log: log}
 }
 func (s *Service) SetObserver(observer Observer) {
 	s.mu.Lock()
@@ -322,12 +356,26 @@ func (s *Service) Start(ctx context.Context, request Request) (Job, error) {
 	if err != nil {
 		return Job{}, err
 	}
-	root := filepath.Join(s.serverBase, request.DirectoryName)
-	if !inside(s.serverBase, root) {
-		return Job{}, errors.New("server target escapes managed storage")
+	tenantID := strings.TrimSpace(request.TenantID)
+	if tenantID == "" {
+		// Matching servers.Server.Validate's identical default, this keeps
+		// every existing caller working without a tenant selection surface;
+		// see the Request.TenantID doc comment.
+		tenantID = tenants.DefaultTenantID
+	}
+	tenantExists, err := s.store.TenantExists(ctx, tenantID)
+	if err != nil {
+		return Job{}, err
+	}
+	if !tenantExists {
+		return Job{}, ErrInvalidTenant
+	}
+	root, err := tenants.TenantServerRoot(s.dataRoot, tenantID, request.DirectoryName)
+	if err != nil {
+		return Job{}, err
 	}
 	if request.RecoverExisting {
-		if err = recoverableTarget(ctx, s.store, root, template.ID, request.DirectoryName, request.ActorUserID); err != nil {
+		if err = recoverableTarget(ctx, s.store, root, template.ID, request.DirectoryName, tenantID, request.ActorUserID); err != nil {
 			return Job{}, err
 		}
 	} else if err = targetAvailable(root); err != nil {
@@ -348,7 +396,7 @@ func (s *Service) Start(ctx context.Context, request Request) (Job, error) {
 		return Job{}, err
 	}
 	now := s.now()
-	job := Job{ID: id, TemplateID: template.ID, TemplateName: template.Name, ServerName: strings.TrimSpace(request.ServerName), DirectoryName: request.DirectoryName, InstallerType: template.Installer.Type, AppID: plan.AppID, Status: Pending, CurrentPhase: Pending, Summary: "Provisioning is queued", CreatedAt: now, UpdatedAt: now, ActorUserID: request.ActorUserID, ActorUsername: request.ActorUsername}
+	job := Job{ID: id, TenantID: tenantID, TemplateID: template.ID, TemplateName: template.Name, ServerName: strings.TrimSpace(request.ServerName), DirectoryName: request.DirectoryName, InstallerType: template.Installer.Type, AppID: plan.AppID, Status: Pending, CurrentPhase: Pending, Summary: "Provisioning is queued", CreatedAt: now, UpdatedAt: now, ActorUserID: request.ActorUserID, ActorUsername: request.ActorUsername}
 	if job.ServerName == "" || len(job.ServerName) > 100 {
 		s.mu.Unlock()
 		return Job{}, errors.New("server name must be 1 to 100 characters")
@@ -496,6 +544,7 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 	s.phase(current, InstallationValidated, "Game installation validated")
 	s.phase(current, ResolvingLaunch, "Applying validated game configuration")
 	configSnapshots := make([]servers.ProvisionedConfigAdapter, 0, len(template.ResolvedAdapters))
+	managedKeys := map[string]bool{}
 	for _, adapter := range template.ResolvedAdapters {
 		adapterValues := map[string]string{}
 		for _, field := range adapter.Fields {
@@ -503,7 +552,25 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 				adapterValues[field.Key] = value
 			}
 		}
-		if !adapter.PostStartOnly {
+		var managedValues []servers.ProvisionedConfigValue
+		if gameconfig.ManagedLaunch(adapter) {
+			// A managed-launch adapter owns no file. Its initial values are
+			// persisted with the server and applied to argv/environment at
+			// start, so they must not also become process environment entries.
+			initial, valueErr := gameconfig.InitialValues(adapter, adapterValues)
+			if valueErr != nil {
+				s.log.With("module", "Provisioning.GameConfig").Error("managed launch configuration is invalid", "job_id", current.job.ID, "template_id", template.ID, "adapter_id", adapter.ID, "error", valueErr)
+				code, summary := gameConfigFailure(valueErr)
+				s.fail(current, ResolvingLaunch, code, "Game configuration failed", summary, true)
+				return
+			}
+			for _, value := range initial {
+				managedValues = append(managedValues, servers.ProvisionedConfigValue{Key: value.Key, Value: value.Value, Sensitive: value.Sensitive})
+			}
+			for _, field := range adapter.Fields {
+				managedKeys[field.Key] = true
+			}
+		} else if !adapter.PostStartOnly {
 			if err = gameconfig.Apply(current.root, adapter, adapterValues); err != nil {
 				s.log.With("module", "Provisioning.GameConfig").Error("game configuration could not be written", "job_id", current.job.ID, "template_id", template.ID, "adapter_id", adapter.ID, "error", err)
 				code, summary := gameConfigFailure(err)
@@ -517,7 +584,7 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 			s.fail(current, ResolvingLaunch, "LAUNCH_RESOLUTION_FAILED", "Game configuration failed", "Configuration snapshot could not be created", true)
 			return
 		}
-		configSnapshots = append(configSnapshots, servers.ProvisionedConfigAdapter{ID: adapter.ID, SchemaVersion: adapter.SchemaVersion, Version: adapter.Version, TemplateID: template.ID, TemplateVersion: template.Version, DefinitionJSON: definitionJSON})
+		configSnapshots = append(configSnapshots, servers.ProvisionedConfigAdapter{ID: adapter.ID, SchemaVersion: adapter.SchemaVersion, Version: adapter.Version, TemplateID: template.ID, TemplateVersion: template.Version, DefinitionJSON: definitionJSON, Values: managedValues})
 	}
 	resolvedLaunch, err := templates.ResolveLaunch(template, s.hostOS, values, current.root)
 	if err != nil {
@@ -525,21 +592,33 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 		s.fail(current, ResolvingLaunch, templates.ValidationCode(err), "Launch resolution failed", "Game files and configuration were validated, but GameNode could not resolve the native server launch", true)
 		return
 	}
-	server, metadata, err := buildServer(template, resolvedLaunch, current.job.ServerName, values, sensitive)
+	server, metadata, err := buildServer(template, resolvedLaunch, current.job.ServerName, current.job.TenantID, values, sensitive, managedKeys)
 	if err != nil {
 		s.log.With("module", "Provisioning.ServerConfig").Error("server configuration could not be built", "job_id", current.job.ID, "template_id", template.ID, "error", err)
 		s.fail(current, ResolvingLaunch, "LAUNCH_RESOLUTION_FAILED", "Launch resolution failed", "Game files were installed successfully, but GameNode could not resolve the native server launch", true)
 		return
 	}
-	snapshot, marshalErr := json.Marshal(registrationSnapshot{Server: server, TemplateID: template.ID, Variables: metadata, Ports: provisionedPorts, ConfigAdapters: configSnapshots})
-	snapshotErr := marshalErr
-	if snapshotErr == nil {
-		snapshotErr = s.store.SaveRegistrationSnapshot(context.Background(), current.job.ID, snapshot)
-	}
-	if snapshotErr != nil {
-		s.log.Error("registration snapshot could not be persisted", "module", "Provisioning.Registration", "job_id", current.job.ID, "phase", RegisteringServer, "error_code", "SERVER_RELATED_DATA_FAILED", "error", snapshotErr)
-		s.fail(current, RegisteringServer, "SERVER_RELATED_DATA_FAILED", "Server registration failed", "Game files were installed successfully, but GameNode could not prepare the server registration", true)
-		return
+	safeAdapters, managedSecrets := redactedAdapters(configSnapshots)
+	if managedSecrets {
+		// Managed secrets must never be written to job state, so this
+		// registration cannot be replayed from a snapshot. Persisting a
+		// redacted snapshot would let a retry create a server whose managed
+		// secrets are silently missing, so no snapshot is written at all and
+		// the job is reported as not recoverable.
+		s.mu.Lock()
+		current.managedSecrets = true
+		s.mu.Unlock()
+	} else {
+		snapshot, marshalErr := json.Marshal(registrationSnapshot{Server: server, TemplateID: template.ID, Variables: metadata, Ports: provisionedPorts, ConfigAdapters: safeAdapters})
+		snapshotErr := marshalErr
+		if snapshotErr == nil {
+			snapshotErr = s.store.SaveRegistrationSnapshot(context.Background(), current.job.ID, snapshot)
+		}
+		if snapshotErr != nil {
+			s.log.Error("registration snapshot could not be persisted", "module", "Provisioning.Registration", "job_id", current.job.ID, "phase", RegisteringServer, "error_code", "SERVER_RELATED_DATA_FAILED", "error", snapshotErr)
+			s.fail(current, RegisteringServer, "SERVER_RELATED_DATA_FAILED", "Server registration failed", "Game files were installed successfully, but GameNode could not prepare the server registration", true)
+			return
+		}
 	}
 	s.phase(current, RegisteringServer, "Registering the GameNode server")
 	s.mu.Lock()
@@ -553,6 +632,9 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 	record, err := s.servers.CreateProvisioned(ctx, server, template.ID, metadata, provisionedPorts, configSnapshots)
 	if err != nil {
 		failure, summary := serverCreationFailure(err)
+		if managedSecrets {
+			summary = "Game files were installed successfully, but the server definition could not be saved. This template has managed secret settings, which GameNode never stores in provisioning job data, so this registration cannot be retried; provision the server again."
+		}
 		s.log.With("module", "Server.Create").Error("provisioned server could not be created", "job_id", current.job.ID, "template_id", template.ID, "failure", failure, "error", err)
 		s.fail(current, RegisteringServer, failure, "Server registration failed", summary, true)
 		return
@@ -584,7 +666,11 @@ func (s *Service) RetryRegistration(ctx context.Context, id, actorID string) (Jo
 		return Job{}, err
 	}
 	var snapshot registrationSnapshot
-	if err = json.Unmarshal(snapshotJSON, &snapshot); err != nil || snapshot.TemplateID != job.TemplateID {
+	if err = json.Unmarshal(snapshotJSON, &snapshot); err != nil || snapshot.TemplateID != job.TemplateID || snapshot.Server.TenantID != job.TenantID {
+		return Job{}, ErrRecoveryUnavailable
+	}
+	root, err := tenants.TenantServerRoot(s.dataRoot, job.TenantID, job.DirectoryName)
+	if err != nil {
 		return Job{}, ErrRecoveryUnavailable
 	}
 	s.mu.Lock()
@@ -596,7 +682,7 @@ func (s *Service) RetryRegistration(ctx context.Context, id, actorID string) (Jo
 		s.mu.Unlock()
 		return Job{}, ErrJobNotActive
 	}
-	current := &run{job: job, root: filepath.Join(s.serverBase, job.DirectoryName)}
+	current := &run{job: job, root: root}
 	s.active[id] = current
 	s.mu.Unlock()
 	defer s.release(current)
@@ -721,7 +807,9 @@ func (s *Service) fail(current *run, phase, code, summary, errorSummary string, 
 	s.mu.Lock()
 	current.job.FailurePhase = phase
 	current.job.FailureCode = code
-	current.job.RegistrationRecoverable = current.job.InstallationCompleted && phase == RegisteringServer
+	// A registration carrying managed secrets has no persisted snapshot, so it
+	// must never advertise a retry that would drop those values.
+	current.job.RegistrationRecoverable = current.job.InstallationCompleted && phase == RegisteringServer && !current.managedSecrets
 	s.mu.Unlock()
 	s.finish(current, Failed, summary, errorSummary, files, "")
 }
@@ -834,10 +922,40 @@ func CheckProvisionable(template templates.Template, values map[string]string, h
 	return plan, nil
 }
 
-func buildServer(template templates.Template, launch templates.ResolvedLaunch, name string, values map[string]string, sensitive map[string]bool) (servers.Server, []servers.ProvisionedVariable, error) {
+// redactedAdapters strips managed secret values from the persisted job
+// registration snapshot and reports whether anything was removed. Secrets must
+// never enter job state, so a registration that carries them cannot be replayed
+// from a snapshot; the caller marks it non-recoverable instead of creating a
+// server whose managed secrets would be silently missing.
+func redactedAdapters(adapters []servers.ProvisionedConfigAdapter) ([]servers.ProvisionedConfigAdapter, bool) {
+	result := make([]servers.ProvisionedConfigAdapter, 0, len(adapters))
+	redacted := false
+	for _, adapter := range adapters {
+		safe := adapter
+		safe.Values = nil
+		for _, value := range adapter.Values {
+			if value.Sensitive {
+				redacted = true
+				continue
+			}
+			safe.Values = append(safe.Values, value)
+		}
+		result = append(result, safe)
+	}
+	return result, redacted
+}
+
+// buildServer creates the normal native server definition. Keys owned by a
+// managed-launch adapter are deliberately excluded from the process
+// environment and from template-variable metadata: the adapter snapshot and
+// server_config_values are their single source of truth.
+func buildServer(template templates.Template, launch templates.ResolvedLaunch, name, tenantID string, values map[string]string, sensitive map[string]bool, managed map[string]bool) (servers.Server, []servers.ProvisionedVariable, error) {
 	metadata := make([]servers.ProvisionedVariable, 0, len(values))
 	environment := map[string]string{}
 	for key, value := range values {
+		if managed[key] {
+			continue
+		}
 		environment[key] = value
 		metadata = append(metadata, servers.ProvisionedVariable{Key: key, Sensitive: sensitive[key], Source: template.SourceType, Version: template.Version})
 	}
@@ -848,7 +966,7 @@ func buildServer(template templates.Template, launch templates.ResolvedLaunch, n
 	if err != nil {
 		return servers.Server{}, nil, errors.New("server identity could not be created")
 	}
-	server := servers.Server{ID: serverID, CreationMode: servers.CreationTemplate, Name: name, Description: template.Description, WorkingDirectory: launch.WorkingDirectory, Executable: launch.Executable, Arguments: launch.Arguments, EnvironmentVariables: environment, RuntimeType: "native", RestartPolicy: "never", StopMethod: launch.StopMethod, StopCommand: launch.StopCommand, StopTimeoutSeconds: launch.StopTimeout, AutoRestartMaxAttempts: 3, AutoRestartWindowSeconds: 300, AutoRestartDelaySeconds: 5}
+	server := servers.Server{ID: serverID, TenantID: tenantID, CreationMode: servers.CreationTemplate, Name: name, Description: template.Description, WorkingDirectory: launch.WorkingDirectory, Executable: launch.Executable, Arguments: launch.Arguments, EnvironmentVariables: environment, RuntimeType: "native", RestartPolicy: "never", StopMethod: launch.StopMethod, StopCommand: launch.StopCommand, StopTimeoutSeconds: launch.StopTimeout, AutoRestartMaxAttempts: 3, AutoRestartWindowSeconds: 300, AutoRestartDelaySeconds: 5}
 	if err = server.Validate(); err != nil {
 		return servers.Server{}, nil, errors.New("installed server definition is invalid")
 	}
@@ -893,7 +1011,7 @@ func targetAvailable(root string) error {
 	}
 	return nil
 }
-func recoverableTarget(ctx context.Context, store *Store, root, templateID, directory, actorID string) error {
+func recoverableTarget(ctx context.Context, store *Store, root, templateID, directory, tenantID, actorID string) error {
 	data, err := os.ReadFile(filepath.Join(root, ".gamenode-provisioning.json"))
 	if err != nil || len(data) == 0 || len(data) > 4096 {
 		return ErrRecoveryUnavailable
@@ -905,7 +1023,7 @@ func recoverableTarget(ctx context.Context, store *Store, root, templateID, dire
 		return ErrRecoveryUnavailable
 	}
 	job, err := store.Get(ctx, marker.JobID)
-	if err != nil || job.Status != Failed || !job.FilesMayRemain || job.TemplateID != templateID || job.DirectoryName != directory || job.ActorUserID != actorID {
+	if err != nil || job.Status != Failed || !job.FilesMayRemain || job.TemplateID != templateID || job.DirectoryName != directory || job.TenantID != tenantID || job.ActorUserID != actorID {
 		return ErrRecoveryUnavailable
 	}
 	return nil
@@ -932,10 +1050,6 @@ func prepareRoot(root, jobID string) (bool, error) {
 		return created, err
 	}
 	return true, nil
-}
-func inside(base, target string) bool {
-	relative, err := filepath.Rel(base, target)
-	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
 }
 
 type outputWriter struct {

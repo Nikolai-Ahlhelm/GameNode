@@ -17,9 +17,23 @@ after runtime use and use sectioned Unreal configuration, while the authoritativ
 server settings are stored in `ServerSettings.PORT.sav`. GameNode does not edit
 that binary file or call the HTTPS management API.
 
-Stop remains a known limitation. Satisfactory documents HTTPS shutdown or
-an interactive Ctrl-C as graceful paths on Windows, while GameNode currently
-provides its ordinary native terminate lifecycle. Do not describe it as graceful.
+Stop now uses GameNode's compiled `console_interrupt` runtime stop type
+(version `1.1.0`), matching the interactive Ctrl-C path Satisfactory documents
+on Windows. GameNode delivers a targeted Windows console control event
+(`CTRL_BREAK_EVENT`) scoped to `FactoryServer.exe`'s own process group — never
+a broadcast to the whole console, never stdin text, and never GameNode's
+`taskkill`-based terminate path directly. If the process does not exit before
+the configured timeout, GameNode falls back to its existing bounded
+force-kill path, exactly as it does for every other stop method.
+
+A server rediscovered after a GameNode restart cannot receive a safely
+addressed console interrupt (its original console association is gone), so
+that one stop falls back to GameNode's terminate lifecycle instead; this is a
+documented, controlled limitation, not a defect.
+
+Compatibility stays `partially_compatible` until a real Windows dedicated
+server has been observed exiting before the timeout, without a force-kill,
+through this stop path; see `compatibility.findings` in `template.json`.
 
 Upstream references used for the reviewed contract:
 

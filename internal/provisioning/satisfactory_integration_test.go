@@ -89,7 +89,7 @@ func TestSatisfactoryFullDeploymentIntegration(t *testing.T) {
 		t.Fatalf("provisioning failed: status=%s phase=%s code=%s summary=%s error=%s", job.Status, job.FailurePhase, job.FailureCode, job.Summary, job.ErrorSummary)
 	}
 	record, err := serverService.Get(context.Background(), job.ServerID)
-	if err != nil || filepath.Base(record.Server.Executable) != "FactoryServer.exe" || record.Server.StopMethod != "terminate" {
+	if err != nil || filepath.Base(record.Server.Executable) != "FactoryServer.exe" || record.Server.StopMethod != "console_interrupt" {
 		t.Fatalf("unexpected server: %#v err=%v", record, err)
 	}
 	joined := strings.Join(record.Server.Arguments, " ")
@@ -141,5 +141,5 @@ func TestSatisfactoryFullDeploymentIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Log("Windows terminate/start/stop/restart completed; this does not prove an application-level graceful save")
+	t.Log("Windows console_interrupt start/stop/restart completed; review GameNode logs for force-kill fallback usage and Satisfactory's own logs for an application-level graceful save, per CONSOLE-INTERRUPT.md section 20")
 }

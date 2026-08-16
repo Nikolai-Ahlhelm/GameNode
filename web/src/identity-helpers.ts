@@ -40,18 +40,32 @@ export function availableIdentityActions(capabilities: readonly string[] | undef
 
 export function permissionScopeLabel(allowedScopes: readonly string[]): string {
   const global = allowedScopes.includes('global');
+  const tenant = allowedScopes.includes('tenant');
   const server = allowedScopes.includes('server');
-  if (global && server) return 'Global / Server';
-  if (server) return 'Server only';
-  if (global) return 'Global only';
-  return 'Not assignable';
+  const parts = [global && 'Global', tenant && 'Tenant', server && 'Server'].filter(Boolean) as string[];
+  return parts.length ? parts.join(' / ') : 'Not assignable';
 }
 
-export function serverRoleSuitability(selectedPermissions: Iterable<string>, catalog: readonly { key: string; allowed_scopes: readonly string[] }[]): { assignable: boolean; message: string; incompatible: string[] } {
+/**
+ * roleScopeSuitability generalizes the original server-only suitability
+ * check to any of the three RBAC scopes ("tenant" | "server"; "global" is
+ * always suitable for every non-empty role since every permission allows
+ * global scope). Whole-role validation, matching the backend: one
+ * unsuitable permission makes the whole role unsuitable at that scope, and
+ * an empty role is never assignable at a narrower scope even though it can
+ * still be assigned globally.
+ */
+export function roleScopeSuitability(selectedPermissions: Iterable<string>, catalog: readonly { key: string; allowed_scopes: readonly string[] }[], scope: 'tenant' | 'server'): { assignable: boolean; message: string; incompatible: string[] } {
   const selected = [...selectedPermissions];
-  if (selected.length === 0) return { assignable: false, message: 'This role has no permissions and cannot be assigned to a server.', incompatible: [] };
+  const scopeLabel = scope === 'tenant' ? 'a tenant' : 'a server';
+  if (selected.length === 0) return { assignable: false, message: `This role has no permissions and cannot be assigned to ${scopeLabel}.`, incompatible: [] };
   const scopes = new Map(catalog.map(permission => [permission.key, permission.allowed_scopes]));
-  const incompatible = selected.filter(key => !scopes.get(key)?.includes('server'));
-  if (incompatible.length > 0) return { assignable: false, message: 'This role cannot be assigned to a server because it contains global-only permissions.', incompatible };
-  return { assignable: true, message: 'Server assignable', incompatible: [] };
+  const incompatible = selected.filter(key => !scopes.get(key)?.includes(scope));
+  if (incompatible.length > 0) return { assignable: false, message: `This role cannot be assigned to ${scopeLabel} because it contains permissions that do not support ${scope} scope.`, incompatible };
+  return { assignable: true, message: scope === 'tenant' ? 'Tenant assignable' : 'Server assignable', incompatible: [] };
+}
+
+/** @deprecated use roleScopeSuitability(selected, catalog, 'server') */
+export function serverRoleSuitability(selectedPermissions: Iterable<string>, catalog: readonly { key: string; allowed_scopes: readonly string[] }[]): { assignable: boolean; message: string; incompatible: string[] } {
+  return roleScopeSuitability(selectedPermissions, catalog, 'server');
 }

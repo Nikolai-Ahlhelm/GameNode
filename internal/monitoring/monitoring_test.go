@@ -26,6 +26,9 @@ func (f *fakeRuntime) Stop(context.Context, runtime.Identity, time.Duration) err
 	return errors.New("unused")
 }
 func (f *fakeRuntime) Kill(context.Context, runtime.Identity) error { return errors.New("unused") }
+func (f *fakeRuntime) Interrupt(context.Context, runtime.Identity) error {
+	return errors.New("unused")
+}
 func (f *fakeRuntime) Status(context.Context, runtime.Identity) (runtime.Status, error) {
 	return runtime.Status{}, errors.New("unused")
 }

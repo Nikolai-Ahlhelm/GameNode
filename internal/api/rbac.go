@@ -211,6 +211,18 @@ func rbacError(w http.ResponseWriter, e error) {
 		bad(w, "Remove the role's server assignments before making the role empty or adding global-only permissions.")
 		return
 	}
+	if errors.Is(e, rbac.ErrInvalidTenantScope) {
+		bad(w, "Role contains permissions that cannot be assigned at tenant scope.")
+		return
+	}
+	if errors.Is(e, rbac.ErrEmptyTenantRole) {
+		bad(w, "Role has no permissions and cannot be assigned at tenant scope.")
+		return
+	}
+	if errors.Is(e, rbac.ErrRoleHasTenantAssignments) {
+		bad(w, "Remove the role's tenant assignments before making the role empty or adding permissions that do not support tenant scope.")
+		return
+	}
 	if errors.Is(e, rbac.ErrDuplicateAssignment) || strings.Contains(strings.ToLower(e.Error()), "constraint") {
 		errorOut(w, http.StatusConflict, "conflict", "conflicting role data")
 		return
@@ -259,7 +271,7 @@ func (s *Server) userRolesHandler(w http.ResponseWriter, r *http.Request, user s
 			}
 			metadata := map[string]any{"subject_type": "user", "subject_id": user, "scope": in.ScopeType}
 			if in.ScopeID != nil {
-				metadata["server_id"] = *in.ScopeID
+				metadata["scope_id"] = *in.ScopeID
 			}
 			s.recordRoleAudit(r, actor, audit.RoleAssignmentAdd, audit.Success, in.RoleID, roleName, metadata, nil)
 			assignment, found := matchingAssignment(x, in.RoleID, rbac.Scope{Type: in.ScopeType, ID: in.ScopeID})
@@ -294,7 +306,7 @@ func (s *Server) userRolesHandler(w http.ResponseWriter, r *http.Request, user s
 		}
 		metadata := map[string]any{"subject_type": "user", "subject_id": user, "scope": assignment.Scope.Type}
 		if assignment.Scope.ID != nil {
-			metadata["server_id"] = *assignment.Scope.ID
+			metadata["scope_id"] = *assignment.Scope.ID
 		}
 		s.recordRoleAudit(r, actor, audit.RoleAssignmentRemove, audit.Success, assignment.RoleID, assignment.RoleName, metadata, nil)
 		w.WriteHeader(http.StatusNoContent)
@@ -344,7 +356,7 @@ func (s *Server) groupRolesHandler(w http.ResponseWriter, r *http.Request, group
 			}
 			metadata := map[string]any{"subject_type": "group", "subject_id": group, "scope": in.ScopeType}
 			if in.ScopeID != nil {
-				metadata["server_id"] = *in.ScopeID
+				metadata["scope_id"] = *in.ScopeID
 			}
 			s.recordRoleAudit(r, actor, audit.RoleAssignmentAdd, audit.Success, in.RoleID, roleName, metadata, nil)
 			assignment, found := matchingAssignment(x, in.RoleID, rbac.Scope{Type: in.ScopeType, ID: in.ScopeID})
@@ -379,7 +391,7 @@ func (s *Server) groupRolesHandler(w http.ResponseWriter, r *http.Request, group
 		}
 		metadata := map[string]any{"subject_type": "group", "subject_id": group, "scope": assignment.Scope.Type}
 		if assignment.Scope.ID != nil {
-			metadata["server_id"] = *assignment.Scope.ID
+			metadata["scope_id"] = *assignment.Scope.ID
 		}
 		s.recordRoleAudit(r, actor, audit.RoleAssignmentRemove, audit.Success, assignment.RoleID, assignment.RoleName, metadata, nil)
 		w.WriteHeader(http.StatusNoContent)

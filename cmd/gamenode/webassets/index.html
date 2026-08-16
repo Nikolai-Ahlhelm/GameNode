@@ -1,3 +1,35 @@
-<!doctype html><html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>GameNode</title>  <script type="module" crossorigin src="/assets/index-CU6-1O_I.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-CD2nQTAG.css">
+<!doctype html><html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>GameNode</title>
+<script>
+  // Pre-paint theme/wallpaper application: applies before React mounts so
+  // there is no flash of the wrong theme. This intentionally duplicates the
+  // narrow resolve/validate rules in src/theme.ts (sanitizeWallpaper,
+  // resolveTheme) in synchronous, dependency-free form; keep both in sync.
+  (function () {
+    try {
+      var root = document.documentElement;
+      var raw = window.localStorage.getItem('gamenode:ui-preferences');
+      var prefs = raw ? JSON.parse(raw) : null;
+      var mode = prefs && (prefs.theme === 'dark' || prefs.theme === 'light' || prefs.theme === 'system') ? prefs.theme : 'system';
+      var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      var resolved = mode === 'system' ? (prefersDark ? 'dark' : 'light') : mode;
+      root.dataset.theme = resolved;
+      root.style.colorScheme = resolved;
+      root.dataset.sidebar = prefs && prefs.sidebarCollapsed === true ? 'collapsed' : 'expanded';
+      var wallpaper = prefs && prefs.wallpaper;
+      var image = wallpaper && wallpaper.image;
+      var validImage = typeof image === 'string' && image.length > 0 && image.length <= 2800000 && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(image);
+      if (wallpaper && wallpaper.enabled === true && validImage) {
+        var blur = Number(wallpaper.blur); var dim = Number(wallpaper.dim);
+        root.style.setProperty('--wallpaper-image', 'url("' + image + '")');
+        root.style.setProperty('--wallpaper-blur', (isFinite(blur) ? Math.min(20, Math.max(0, blur)) : 12) + 'px');
+        root.style.setProperty('--wallpaper-dim', String((isFinite(dim) ? Math.min(90, Math.max(0, dim)) : 55) / 100));
+        root.dataset.wallpaper = 'on';
+      } else {
+        root.dataset.wallpaper = 'off';
+      }
+    } catch (e) { /* localStorage unavailable or corrupt preference: fall back to default theme */ }
+  })();
+</script>
+  <script type="module" crossorigin src="/assets/index-DP_rm7a-.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-D6SapYCL.css">
 </head><body><div id="root"></div></body></html>

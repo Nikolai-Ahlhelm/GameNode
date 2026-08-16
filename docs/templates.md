@@ -59,7 +59,7 @@ Expansion is not recursive, does not read host environment variables, and never 
 
 ## Stop behavior
 
-Stop behavior is `terminate` or a bounded `stdin_command` with a safe single-line command. After the timeout, the normal GameNode lifecycle performs its existing force-kill fallback. Stop scripts, shell commands, and template-defined signals are not supported.
+Stop behavior is `terminate`, a bounded `stdin_command` with a safe single-line command, or the compiled Windows-only `console_interrupt` (a targeted `CTRL_BREAK_EVENT`; see `docs/runtime.md`). A template declares only the stop type and a bounded `stop_timeout_seconds`; it never declares a signal number, Windows API flag, control character, helper executable, or free-form stop command. `console_interrupt` must not declare `stop_command` — that combination fails validation with `TEMPLATE_UNSUPPORTED_STOP_METHOD`, as does any stop type outside this fixed whitelist. After the timeout, the normal GameNode lifecycle performs its existing force-kill fallback. Stop scripts, shell commands, and template-defined signals are not supported.
 
 ## Variables
 
@@ -79,9 +79,40 @@ Each `expected_files` item has a relative `path`, `type` (`file` or `directory`)
 
 ### Supported configuration adapter formats
 
+Adapter schema v1 covers the three file formats. Adapter schema v2 adds `managed-launch` and keeps every v1 adapter readable and unchanged.
+
 - `xml-properties` updates approved unique XML `<property name="..." value="...">` attributes.
 - `ini-key-values` updates approved sectionless `key=value` records.
 - `section-tuple-key-values` updates approved typed key/value settings stored in one parenthesized container property inside one configured section, for example `[Server]` followed by `Settings=(Name="Test",Port=1234,Enabled=True)`.
+- `managed-launch` stores typed values in GameNode and binds each one to a reviewed launch argument or environment entry. It declares no `target`, `section`, `container_property`, `initialization`, or `post_start_only`.
+
+### Base launch and managed configuration
+
+A template's `platform_launches` entry is the **base launch**: the fixed executable and arguments that never change per server. A `managed-launch` adapter contributes the per-server settings. At start GameNode combines them:
+
+```text
+base launch  +  managed configuration  =  runtime launch
+```
+
+Nothing is edited by argument index, and the resolved launch is never persisted. A managed setting must have exactly one source of truth: a field key bound by a `managed-launch` adapter may not also appear as a `{{PLACEHOLDER}}` in any base launch executable, argument, working directory, or environment value, and validation rejects a template that does both.
+
+### Field bindings
+
+A schema-v2 field replaces `property` with a `binding`. Binding types are a closed compiled whitelist; there is no expression language, no regular-expression rewriting, and no user-supplied argument name. Argument names and environment names come only from reviewed Official adapter data.
+
+| Binding | Field types | Result |
+| --- | --- | --- |
+| `launch-value` | any non-secret type | `argument` followed by the value as exactly one argv element |
+| `launch-flag` | `boolean` only | `argument` when true, nothing when false |
+| `launch-secret` | `secret` only | `argument` followed by the secret, inserted only at process start |
+| `environment-value` | any non-secret type | `name=value` in the child environment |
+| `environment-secret` | `secret` only | `name=secret` in the child environment |
+
+`launch-value` may declare `true_value`/`false_value` on a boolean field to emit a game-specific token such as `-public 1` or `-public 0`. Both mapped values are single argv values.
+
+Validation rules: an argument matches `-` or `--` followed by letters, digits, and hyphens; an environment name uses the existing uppercase environment key grammar; a secret binding requires a `secret`, `sensitive` field and a non-secret binding forbids one; `launch-flag` and boolean value mapping require a boolean field; two fields may not claim the same argument or environment name; and NUL/newline data is rejected in values and mapped tokens. A user value always stays exactly one argv element and can never add another argument.
+
+`managed-launch` values are persisted per server in `server_config_values` alongside the pinned adapter snapshot. Initial values come from the matching template variables during provisioning, and those keys are deliberately excluded from the server's process environment and template-variable metadata so they are not configured in two places.
 
 `section-tuple-key-values` receives `section` and `container_property` from the reviewed descriptor. It supports quoted and empty strings, integers, numbers, booleans, and enums. Unknown tuple values—including balanced nested values—remain opaque and are preserved; duplicate mapped properties are rejected as ambiguous. Other sections and unrelated file content remain intact. This is a compiled parser for that exact file shape, not a general Unreal Engine parser or a template-defined language.
 
@@ -143,7 +174,7 @@ This is a complete parser-valid schema-v2 example. Product facts still require u
 }
 ```
 
-The production references cover several different shapes: 7 Days to Die is a Windows/Linux SteamCMD direct binary with an XML adapter; Project Zomboid is Windows SteamCMD with a reviewed direct bundled-Java invocation replacing an upstream batch wrapper and a post-start INI adapter; Minecraft NeoForge is an existing-files Java/argfile resolver; Palworld is a Windows SteamCMD direct binary with a seeded section/tuple adapter; Satisfactory is a Windows SteamCMD direct binary whose verified settings are expressed entirely through structured launch arguments and ports.
+The production references cover several different shapes: 7 Days to Die is a Windows/Linux SteamCMD direct binary with an XML adapter; Project Zomboid is Windows SteamCMD with a reviewed direct bundled-Java invocation replacing an upstream batch wrapper and a post-start INI adapter; Minecraft NeoForge is an existing-files Java/argfile resolver; Palworld is a Windows SteamCMD direct binary with a seeded section/tuple adapter; Satisfactory is a Windows SteamCMD direct binary whose verified settings are expressed entirely through structured launch arguments and ports; Valheim is a Windows SteamCMD direct binary whose settings are a schema-v2 `managed-launch` adapter, because the game reads them only from process arguments.
 
 ## Validation and contribution workflow
 

@@ -1,0 +1,112 @@
+{
+  "schema_version": 2,
+  "id": "valheim-settings",
+  "version": "1.0.0",
+  "format": "managed-launch",
+  "restart_required": true,
+  "fields": [
+    {
+      "key": "SERVER_NAME",
+      "label": "Server name",
+      "description": "Name shown in the Valheim server list.",
+      "section": "General",
+      "type": "string",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min_length": 1,
+        "max_length": 64
+      },
+      "binding": {
+        "type": "launch-value",
+        "argument": "-name"
+      }
+    },
+    {
+      "key": "WORLD_NAME",
+      "label": "World",
+      "description": "World to create or load inside the managed save directory.",
+      "section": "General",
+      "type": "string",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min_length": 1,
+        "max_length": 64
+      },
+      "binding": {
+        "type": "launch-value",
+        "argument": "-world"
+      }
+    },
+    {
+      "key": "SERVER_PASSWORD",
+      "label": "Server password",
+      "description": "Password required to join. Valheim accepts this only as a process argument, so it is stored by GameNode and supplied directly to the game process at start.",
+      "section": "Security",
+      "type": "secret",
+      "required": false,
+      "nullable": true,
+      "sensitive": true,
+      "validation": {
+        "max_length": 64
+      },
+      "binding": {
+        "type": "launch-secret",
+        "argument": "-password"
+      }
+    },
+    {
+      "key": "PUBLIC_VISIBILITY",
+      "label": "Public server",
+      "description": "List the server in the public browser. When disabled, players join by direct connection.",
+      "section": "Networking",
+      "type": "boolean",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {},
+      "binding": {
+        "type": "launch-value",
+        "argument": "-public",
+        "true_value": "1",
+        "false_value": "0"
+      }
+    },
+    {
+      "key": "CROSSPLAY",
+      "label": "Crossplay",
+      "description": "Run the server on the PlayFab crossplay backend so players on any platform can join. Disabled selects the Steam backend.",
+      "section": "Networking",
+      "type": "boolean",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {},
+      "binding": {
+        "type": "launch-flag",
+        "argument": "-crossplay"
+      }
+    },
+    {
+      "key": "SAVE_INTERVAL_SECONDS",
+      "label": "Save interval",
+      "description": "How often the world is saved, in seconds. The upstream default is 1800.",
+      "section": "Gameplay",
+      "type": "integer",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min": 60,
+        "max": 86400
+      },
+      "binding": {
+        "type": "launch-value",
+        "argument": "-saveinterval"
+      }
+    }
+  ]
+}

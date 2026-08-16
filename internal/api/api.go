@@ -31,6 +31,7 @@ import (
 	"gamenode/internal/steamcmd"
 	"gamenode/internal/support"
 	"gamenode/internal/templates"
+	"gamenode/internal/tenants"
 )
 
 const sessionCookie = "gamenode_session"
@@ -45,6 +46,7 @@ type Server struct {
 	files           *filesystem.Service
 	identity        *identity.Service
 	rbac            *rbac.Service
+	tenants         *tenants.Service
 	ports           *ports.Service
 	settings        *settings.Service
 	diagnostics     *diagnostics.Service
@@ -219,7 +221,7 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	}
 	identityService := identity.New(a.Database())
 	identityService.SetPasswordPolicyProvider(settingService)
-	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identityService, rbac: rbac.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie}
+	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identityService, rbac: rbac.New(a.Database()), tenants: tenants.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie}
 	if len(options) > 0 {
 		result.trustLocalProxy = options[0].TrustLocalProxy
 		result.setupConfig = options[0].SetupConfig
@@ -263,7 +265,10 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/roles", s.rolesHandler)
 	mux.HandleFunc("/api/v1/roles/", s.roleHandler)
 	mux.HandleFunc("/api/v1/servers", s.serversHandler)
+	mux.HandleFunc("/api/v1/servers/creatable-tenants", s.creatableTenantsHandler)
 	mux.HandleFunc("/api/v1/servers/", s.serverHandler)
+	mux.HandleFunc("/api/v1/tenants", s.tenantsHandler)
+	mux.HandleFunc("/api/v1/tenants/", s.tenantHandler)
 	mux.HandleFunc("/api/v1/templates", s.templatesHandler)
 	mux.HandleFunc("/api/v1/templates/", s.templateHandler)
 	mux.HandleFunc("/api/v1/template-catalog", s.templateCatalogHandler)
@@ -568,7 +573,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, http.StatusOK, response)
 }
 
-var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View"}
+var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View", "Tenants.View", "Tenants.Manage"}
 
 func (s *Server) allowed(ctx context.Context, u auth.User, permission string, scope rbac.Scope) (bool, error) {
 	return s.rbac.Allowed(ctx, u.ID, permission, scope)
@@ -626,6 +631,10 @@ func (s *Server) visibleServers(ctx context.Context, u auth.User) ([]map[string]
 	if err != nil {
 		return nil, err
 	}
+	names, err := s.tenantNames(ctx)
+	if err != nil {
+		return nil, err
+	}
 	result := make([]map[string]any, 0, len(records))
 	for _, record := range records {
 		capabilities, err := s.serverCapabilities(ctx, u, record.Server.ID)
@@ -639,9 +648,37 @@ func (s *Server) visibleServers(ctx context.Context, u auth.User) ([]map[string]
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, map[string]any{"server": record.Server, "runtime": record.Runtime, "capabilities": capabilities})
+		result = append(result, map[string]any{"server": record.Server, "runtime": record.Runtime, "capabilities": capabilities, "tenant_name": names[record.Server.TenantID]})
 	}
 	return result, nil
+}
+
+// tenantNames resolves every tenant ID to its display name in one query, for
+// server list/detail responses that add a safe tenant_name alongside the
+// server's own tenant_id (never a storage root or host path). A missing
+// entry - a server pointing at a tenant that no longer exists, which should
+// not normally happen - resolves to the zero value "" rather than an error.
+func (s *Server) tenantNames(ctx context.Context) (map[string]string, error) {
+	list, err := s.tenants.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[string]string, len(list))
+	for _, tenant := range list {
+		names[tenant.ID] = tenant.Name
+	}
+	return names, nil
+}
+
+// tenantName resolves a single tenant ID for one-record server responses
+// (create/update/detail). A failed lookup is treated as "unknown" (empty
+// name) rather than failing the whole request.
+func (s *Server) tenantName(ctx context.Context, tenantID string) string {
+	tenant, err := s.tenants.Get(ctx, tenantID)
+	if err != nil {
+		return ""
+	}
+	return tenant.Name
 }
 
 func (s *Server) publicServerRecord(ctx context.Context, record servers.Record) (servers.Record, error) {

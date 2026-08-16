@@ -17,6 +17,7 @@ const (
 	CodeShellSemanticsForbidden = "TEMPLATE_SHELL_SEMANTICS_FORBIDDEN"
 	CodeExpectedFileInvalid     = "TEMPLATE_EXPECTED_FILE_INVALID"
 	CodeRequirementUnavailable  = "TEMPLATE_REQUIREMENT_UNAVAILABLE"
+	CodeUnsupportedStopMethod   = "TEMPLATE_UNSUPPORTED_STOP_METHOD"
 )
 
 // ValidationError carries a stable machine code and a safe message. It never

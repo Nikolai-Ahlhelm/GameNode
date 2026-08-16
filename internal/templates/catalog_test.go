@@ -179,6 +179,60 @@ func TestOfficialLaunchRejectsShellInterpreters(t *testing.T) {
 	}
 }
 
+func TestOfficialLaunchAcceptsConsoleInterruptStopMethod(t *testing.T) {
+	template := officialSteamFixture()
+	launch := template.PlatformLaunches["windows"]
+	launch.StopMethod = "console_interrupt"
+	launch.StopCommand = ""
+	template.PlatformLaunches["windows"] = launch
+	if err := validateOfficial(template); err != nil {
+		t.Fatalf("console_interrupt stop method should validate cleanly: %v", err)
+	}
+}
+
+func TestOfficialLaunchRejectsConsoleInterruptWithStopCommand(t *testing.T) {
+	template := officialSteamFixture()
+	launch := template.PlatformLaunches["windows"]
+	launch.StopMethod = "console_interrupt"
+	launch.StopCommand = "stop"
+	template.PlatformLaunches["windows"] = launch
+	err := validateOfficial(template)
+	if ValidationCode(err) != CodeUnsupportedStopMethod {
+		t.Fatalf("console_interrupt with a stop command should be rejected with %s, got %v", CodeUnsupportedStopMethod, err)
+	}
+}
+
+func TestOfficialLaunchRejectsConsoleInterruptForLinux(t *testing.T) {
+	template := officialSteamFixture()
+	launch := template.PlatformLaunches["linux"]
+	launch.StopMethod = "console_interrupt"
+	launch.StopCommand = ""
+	template.PlatformLaunches["linux"] = launch
+	err := validateOfficial(template)
+	if ValidationCode(err) != CodeUnsupportedStopMethod {
+		t.Fatalf("Linux console_interrupt should be rejected with %s, got %v", CodeUnsupportedStopMethod, err)
+	}
+}
+
+func TestOfficialLaunchRejectsUnknownStopMethod(t *testing.T) {
+	for _, method := range []string{"sigterm", "SIGKILL", "ctrl_c", ""} {
+		if method == "" {
+			continue // empty defaults to terminate and must stay accepted
+		}
+		t.Run(method, func(t *testing.T) {
+			template := officialSteamFixture()
+			launch := template.PlatformLaunches["windows"]
+			launch.StopMethod = method
+			launch.StopCommand = ""
+			template.PlatformLaunches["windows"] = launch
+			err := validateOfficial(template)
+			if ValidationCode(err) != CodeUnsupportedStopMethod {
+				t.Fatalf("unknown stop method %q should be rejected with %s, got %v", method, CodeUnsupportedStopMethod, err)
+			}
+		})
+	}
+}
+
 func TestOfficialLaunchAllowsWindowsJavaClasspathAsOneArgument(t *testing.T) {
 	launch := LaunchDefinition{
 		Executable:  "jre64/bin/java.exe",
@@ -188,14 +242,14 @@ func TestOfficialLaunchAllowsWindowsJavaClasspathAsOneArgument(t *testing.T) {
 		StopCommand: "quit",
 		StopTimeout: 60,
 	}
-	if err := validateOfficialLaunch(launch, map[string]bool{}); err != nil {
+	if err := validateOfficialLaunch(launch, map[string]bool{}, "windows"); err != nil {
 		t.Fatalf("structured Java classpath was rejected: %v", err)
 	}
 	if len(launch.Arguments) != 3 || launch.Arguments[1] != "java/.;java/projectzomboid.jar" {
 		t.Fatalf("classpath must remain one argv element: %#v", launch.Arguments)
 	}
 	launch.Arguments[1] = `java/.;C:\host\evil.jar`
-	if err := validateOfficialLaunch(launch, map[string]bool{}); err == nil {
+	if err := validateOfficialLaunch(launch, map[string]bool{}, "windows"); err == nil {
 		t.Fatal("absolute Java classpath entry was accepted")
 	}
 }
@@ -407,7 +461,7 @@ func TestRepositoryOfficialCatalog(t *testing.T) {
 		installer string
 		platforms int
 		resolver  string
-	}{"7-days-to-die": {InstallerSteamCMD, 2, ""}, "project-zomboid": {InstallerSteamCMD, 1, ""}, "minecraft-neoforge": {InstallerExistingFiles, 2, "neoforge"}, "palworld": {InstallerSteamCMD, 1, ""}, "satisfactory": {InstallerSteamCMD, 1, ""}, "eco": {InstallerSteamCMD, 2, ""}}
+	}{"7-days-to-die": {InstallerSteamCMD, 2, ""}, "project-zomboid": {InstallerSteamCMD, 1, ""}, "minecraft-neoforge": {InstallerExistingFiles, 2, "neoforge"}, "palworld": {InstallerSteamCMD, 1, ""}, "satisfactory": {InstallerSteamCMD, 1, ""}, "eco": {InstallerSteamCMD, 2, ""}, "valheim": {InstallerSteamCMD, 1, ""}, "vein": {InstallerSteamCMD, 1, ""}}
 	for _, entry := range manifest.Templates {
 		expected, ok := wanted[entry.ID]
 		if !ok || entry.Installer != expected.installer || len(entry.Platforms) != expected.platforms {
@@ -496,14 +550,14 @@ func TestSatisfactoryRepositoryGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry := CatalogEntry{ID: "satisfactory", Name: "Satisfactory Dedicated Server", Description: "Install the official Satisfactory dedicated server through SteamCMD and launch its native Windows server executable without a shell.", Category: "steamcmd", Version: "1.0.0", TemplateSchemaVersion: 2, Platforms: []string{"windows"}, Installer: InstallerSteamCMD, File: "steamcmd/satisfactory/template.json", Tags: []string{"satisfactory", "steam", "steamcmd", "factory", "survival"}, Icon: "steamcmd", MinimumGameNode: "0.2.0"}
+	entry := CatalogEntry{ID: "satisfactory", Name: "Satisfactory Dedicated Server", Description: "Install the official Satisfactory dedicated server through SteamCMD and launch its native Windows server executable without a shell.", Category: "steamcmd", Version: "1.1.0", TemplateSchemaVersion: 2, Platforms: []string{"windows"}, Installer: InstallerSteamCMD, File: "steamcmd/satisfactory/template.json", Tags: []string{"satisfactory", "steam", "steamcmd", "factory", "survival"}, Icon: "steamcmd", MinimumGameNode: "0.2.0"}
 	template, err := decodeOfficial(data, entry, "0.2.0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	windows, windowsOK := template.PlatformLaunches["windows"]
 	_, linuxOK := template.PlatformLaunches["linux"]
-	if template.Installer.SteamCMD == nil || template.Installer.SteamCMD.AppID != 1690800 || template.Installer.SteamCMD.BetaBranchVariable != "RELEASE_BRANCH" || !windowsOK || linuxOK || windows.Executable != "FactoryServer.exe" || len(template.Ports) != 3 || len(template.ExpectedFiles) != 3 || template.Configuration != nil || template.Compatibility.Status != PartiallyCompatible || len(template.Platforms) != 1 || template.Platforms[0] != "windows" {
+	if template.Installer.SteamCMD == nil || template.Installer.SteamCMD.AppID != 1690800 || template.Installer.SteamCMD.BetaBranchVariable != "RELEASE_BRANCH" || !windowsOK || linuxOK || windows.Executable != "FactoryServer.exe" || windows.StopMethod != "console_interrupt" || windows.StopCommand != "" || len(template.Ports) != 3 || len(template.ExpectedFiles) != 3 || template.Configuration != nil || template.Compatibility.Status != PartiallyCompatible || len(template.Platforms) != 1 || template.Platforms[0] != "windows" {
 		t.Fatalf("unexpected Satisfactory template: %#v", template)
 	}
 	for _, variable := range template.Variables {
