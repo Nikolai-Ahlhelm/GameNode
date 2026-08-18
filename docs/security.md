@@ -107,3 +107,12 @@ Pelican/Pterodactyl `^C` stop strings from imported Eggs are not automatically n
 Theme, sidebar-collapsed, and wallpaper are personal browser preferences (`web/src/theme.ts`), stored only in the browser's `localStorage` and never sent to the backend. This adds no new HTTP endpoint, no new authentication/CSRF surface, and no new persisted server-side data: `internal/settings`, its authorization, and its audit event are unchanged.
 
 A wallpaper image never leaves the browser. `web/src/wallpaper.ts` accepts only `image/png`, `image/jpeg`, or `image/webp`, decodes the file with `createImageBitmap` (which fails closed on anything that is not real, decodable raster image data regardless of its claimed extension or `Content-Type`), and re-encodes the decoded bitmap through a `<canvas>` before storing it - which rasterizes the image and discards any bytes that are not pixel data. The resulting value is additionally validated against a strict `data:image/(png|jpeg|webp);base64,...` pattern with a bounded length before it is ever written into a CSS custom property, so no remote URL, SVG, inline HTML, or arbitrary CSS/script can reach the DOM through this path. Because the allow-listed pattern only contains base64-alphabet characters, no further escaping is needed to use it safely inside a `style` attribute.
+# Container runtime boundary (v0.3)
+
+Docker is a privileged host component. GameNode exposes a constrained typed
+subset of its Engine API, never Docker CLI, shell commands, raw Engine JSON,
+privileged containers, host namespaces, devices, capabilities, socket mounts,
+or arbitrary host mounts. Containers are not VM isolation. Ownership requires
+server ID, generation, and a durable token; name matching cannot adopt a
+foreign container. Engine errors and pull streams are sanitized, and console
+data never enters audit or product logs.

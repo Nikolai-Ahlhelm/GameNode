@@ -2,7 +2,7 @@
 
 GameNode is a self-contained, single-node game-server management platform for Windows and Linux. It manages existing native applications through a local web interface; it does not require containers, templates, or a central controller.
 
-The current implementation covers the foundation, native runtime, live console, server-root file browser, RBAC, tenant-scoped multi-tenancy, monitoring and health state, auto-restart, port management, audit log, dashboards, typed settings, diagnostics, support bundles, the Official Game Library, safe Egg template import, and native SteamCMD provisioning. When an existing database has pending schema migrations, startup creates a consistent `*.pre-migration-*.db` SQLite copy beside it before changing the schema; this is an upgrade safeguard, not a general backup system. Cluster/controller operation, Docker/Podman, a marketplace, automatic server updates, backups, scheduling, and firewall/NAT automation are intentionally out of scope.
+The current implementation covers Native and Linux-first Docker Container runtimes, live console, server-root file browser, RBAC, monitoring, ports, audit, templates, and native SteamCMD provisioning. Container servers use explicit image pull, typed CPU/RAM limits, host-to-container port mappings, and ownership-safe rediscovery. Docker CLI execution, privileged mode, arbitrary mounts, socket mounts, Egg execution, controller/cluster operation, automatic updates, and firewall/NAT automation remain out of scope.
 
 ## Capabilities
 

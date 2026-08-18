@@ -11,7 +11,7 @@ The current v0.2 direction adds a normalized template model, the Official Game L
 ## 2. Non-Goals and Hard Boundaries
 
 - Keep the deployable architecture a single Go process with SQLite. Do not introduce microservices, Redis, RabbitMQ, Kafka, Kubernetes, or a cluster/controller protocol.
-- Do not add Docker/Podman execution, container paths, images, or lifecycle semantics unless a future milestone explicitly changes this boundary.
+- v0.3 permits the Linux-first Docker Container Runtime beside Native. `servers.Service` remains lifecycle authority; Docker Engine API is the only control boundary (never Docker CLI/shell). Container identity is managed/server-ID/generation/durable-token labels persisted in StartKey and must be verified before lifecycle, metrics, rediscovery, or ConsoleManager attach. Host and container ports are distinct; image Pull is explicit and Start never pulls/updates. No raw HostConfig, privileged mode, socket mounts, arbitrary mounts, devices, capabilities, host namespaces, Egg execution, Remote Nodes, or cluster scheduling.
 - Do not introduce implicit shell execution, generic script hooks, arbitrary download URLs, arbitrary remote-code-execution endpoints, or user-controlled command strings. GameNode intentionally runs configured native executables, but launch remains structured and permission-gated.
 - Do not build speculative provider layers, plugin systems, repositories, schedulers, update engines, or other future abstractions without a current requirement.
 - Do not silently implement the next milestone. Automatic game updates, backups, scheduling, firewall/NAT automation, marketplace/community catalogs, credentialed Steam login, and multi-node management remain out of scope.

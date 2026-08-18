@@ -150,3 +150,9 @@ go test ./internal/provisioning -run '^TestSatisfactoryFullDeploymentIntegration
 ```
 
 The acceptance provisions App ID `1690800`, verifies `FactoryServer.exe`, structured port/player arguments, three registered port rows, start stability, terminate behavior, and restart. It does not claim or configure the server through the game API and does not characterize Windows terminate as graceful.
+# Container development
+
+Normal unit tests use a fake Engine and do not require Docker. Real acceptance
+is opt-in and requires a Linux-accessible Docker Engine socket; it should use a
+small public image and explicitly Pull before Start. Docker CLI is not part of
+the product test path.

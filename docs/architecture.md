@@ -213,3 +213,10 @@ Theme, sidebar-collapsed, and wallpaper choices are a **personal, browser-local 
 The optional wallpaper image follows the same browser-local model instead of a server upload. `web/src/wallpaper.ts`'s `processWallpaperFile` accepts only `image/png`, `image/jpeg`, or `image/webp` (SVG is never in the accepted-type list), decodes the file with `createImageBitmap` (which rejects anything that isn't real raster image data regardless of its claimed MIME type - the actual defense against a mislabeled or polyglot upload), redraws it onto a canvas capped at 1920px, and re-exports it as a bounded PNG/JPEG data URL. That data URL must additionally pass `theme.ts`'s `isValidWallpaperImage` allow-list (`data:image/(png|jpeg|webp);base64,...`, size-capped) before it is ever written into a CSS custom property or persisted - so it is also safe to interpolate directly into `--wallpaper-image` without further escaping. The wallpaper is purely decorative (`position:fixed`, negative `z-index`, `pointer-events:none`) and never influences any business or RBAC logic; cards and panels keep their own opaque backgrounds so content stays readable under blur/dim.
 
 The application shell gained a reusable `AppTopbar` (`web/src/ui.tsx`) rendered once above the existing per-page content in `DashboardModern` - a breadcrumb/page title plus the theme switch and sidebar collapse toggle, so no page rebuilds this chrome itself. The sidebar supports an icon-only collapsed state (`[data-sidebar="collapsed"]` on `<html>`) with labels kept in the accessibility tree (via `title`) instead of removed. None of this touched routing: navigation is still the existing component-state switch in `DashboardModern`.
+# Container runtime (v0.3)
+
+`servers.Service` dispatches ordinary lifecycle work to either the Native
+runtime or the Container runtime. The latter speaks only to Docker's Engine
+API and retains the host-side server root for the Files API. It uses verified
+ownership labels/token/generation, ConsoleManager attach, typed limits, and
+registered host-to-container port mappings; it is not a separate manager.

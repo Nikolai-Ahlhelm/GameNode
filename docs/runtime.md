@@ -29,3 +29,16 @@ Automatic restart is opt-in per server. A bounded rolling attempt window and can
 Port preflight runs after the existing `already running` validation and before runtime-state mutation, Console Session creation, or `Runtime.Start`. Manual restart runs it only after the old process has exited and finalized; auto-restart uses this same normal start path. A confirmed collision prevents the new launch, records `last_error`, and is not a process crash, so it does not increase `crash_count` or create a recursive restart loop. Pending auto-restart state is cleared before the attempt. OS availability probes are best effort: a successful temporary bind check cannot guarantee that the game process will later bind the port because of TOCTOU.
 
 Complete 6C runtime test-matrix validation and Windows E2E remain pending on an environment that permits executable test binaries.
+# Container runtime (v0.3)
+
+Container servers remain ordinary `servers.Service` workloads alongside Native
+servers. Docker is controlled only through its Engine API. A container mounts
+only its GameNode server root at `/home/container`, uses bridge networking, and
+receives typed CPU/RAM limits and registered host-to-container ports.
+
+Every operation verifies managed/server/generation/token labels stored in the
+Container StartKey; foreign or stale containers are never adopted. Non-TTY
+Engine attach feeds the existing ConsoleManager. Image Pull is explicit;
+Start never pulls or updates an image. Availability is queried from the Engine,
+and transient pull state is cleared on GameNode restart. Container memory is
+Engine/cgroup usage, not a claim of native RSS equivalence.

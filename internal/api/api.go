@@ -172,6 +172,16 @@ func auditFailure(err error) (string, string) {
 		return "invalid_bind_address", "invalid port assignment"
 	case strings.Contains(message, "already running") || strings.Contains(message, "not running") || strings.Contains(message, "restart is in progress") || strings.Contains(message, "stop the server before"):
 		return "invalid_state", "server state does not allow this operation"
+	case strings.Contains(message, "container engine is unavailable"):
+		return "container_engine_unavailable", "container engine is unavailable"
+	case strings.Contains(message, "container ownership is invalid"):
+		return "container_ownership_invalid", "container ownership could not be verified"
+	case strings.Contains(message, "container image is missing"):
+		return "container_image_missing", "configured container image is not available"
+	case strings.Contains(message, "container image pull is already in progress"):
+		return "container_pull_in_progress", "container image pull is already in progress"
+	case strings.Contains(message, "container image"):
+		return "container_runtime_invalid", "container configuration is invalid"
 	case errors.Is(err, filesystem.ErrInvalidPath), errors.Is(err, filesystem.ErrPathEscapesRoot), errors.Is(err, filesystem.ErrInvalidFilename), errors.Is(err, filesystem.ErrRootOperation), errors.Is(err, filesystem.ErrExpectedFile), errors.Is(err, filesystem.ErrExpectedDir), errors.Is(err, filesystem.ErrSpecialFile):
 		return "invalid_path", "filesystem path is not available"
 	case errors.Is(err, filesystem.ErrAlreadyExists), errors.Is(err, filesystem.ErrDirectoryNotEmpty):

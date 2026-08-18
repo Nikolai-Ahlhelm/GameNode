@@ -198,6 +198,29 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 		s.gameConfigurationHandler(w, r, id)
 		return
 	}
+	if len(parts) == 3 && parts[1] == "container" && parts[2] == "pull" {
+		if r.Method != http.MethodPost {
+			method(w)
+			return
+		}
+		u, _, ok := s.requireServerPermission(w, r, "Server.Edit", id, true)
+		if !ok {
+			return
+		}
+		if err := s.servers.PullContainerImage(r.Context(), id); err != nil {
+			s.recordServerAudit(r, u, audit.ServerUpdate, audit.Failure, id, "", err)
+			serverError(w, err, false)
+			return
+		}
+		record, err := s.servers.Get(r.Context(), id)
+		if err != nil {
+			internal(w)
+			return
+		}
+		s.recordServerAudit(r, u, audit.ServerUpdate, audit.Success, id, record.Server.Name, nil)
+		jsonOut(w, http.StatusOK, map[string]string{"image_status": "ready"})
+		return
+	}
 	if len(parts) >= 2 && parts[1] == "ports" {
 		s.portsHandler(w, r, id)
 		return

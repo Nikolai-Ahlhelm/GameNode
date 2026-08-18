@@ -1641,3 +1641,10 @@ The Official schema now supports exact platform launch maps, optional safe relat
 Official product data is grouped per game. Templates reference same-directory adapter definitions fetched and cached through the fixed catalog source. Compiled formats now include bounded `xml-properties` and strict, sectionless `ini-key-values`. Project Zomboid template `1.1.0` persists its adapter at provisioning but waits for the first game start to generate `Server/gamenode.ini`; the UI reports this pending state and never invents a partial upstream file. Updates preserve unknown keys, comments, ordering, BOM, and line endings. The Configuration tab validates typed edits, masks secrets, keeps a last-file backup, writes atomically, requires `Server.Edit` plus CSRF, records redacted audit metadata, and never restarts a server automatically. Lua configuration remains outside this milestone.
 
 Automatic NeoForge/Minecraft download, version catalogs, EULA mutation, mod/plugin management, generic script execution, and child-process handoff remain deferred. Real start/help/stop acceptance requires a compatible Java installation on the test host.
+# v0.3 — Container Runtime
+
+v0.3 adds a Linux-first Docker Engine API runtime alongside Native servers.
+It uses typed images, explicit Pull, typed CPU/RAM limits, host-to-container
+ports, ConsoleManager attach, and verified server/generation/token ownership.
+Native remains first-class. v0.4 is container-backed Egg execution, v0.5 Remote
+Nodes, and v0.6 scheduling; none are implemented by this milestone.

@@ -30,6 +30,7 @@ const (
 )
 
 type StartOptions struct {
+	RuntimeType      string
 	Executable       string
 	Arguments        []string
 	WorkingDirectory string
@@ -43,6 +44,25 @@ type StartOptions struct {
 	// set for ordinary terminate/stdin_command servers so their existing
 	// process-creation behavior is unchanged.
 	ConsoleInterruptCapable bool
+	Container               *ContainerOptions
+}
+
+// ContainerOptions is the closed set of values servers.Service may hand to a
+// container backend. It intentionally has no flags, mounts, namespace, device
+// or credential escape hatch.
+type ContainerOptions struct {
+	Image            string
+	Command          []string
+	MemoryLimitBytes int64
+	CPULimitMillis   int
+	ServerID         string
+	Generation       string
+	OwnershipToken   string
+	Ports            []ContainerPort
+}
+type ContainerPort struct {
+	Protocol, BindAddress   string
+	HostPort, ContainerPort int
 }
 
 // StartIO is deliberately transport-neutral. The runtime only owns OS pipes
@@ -54,8 +74,9 @@ type StartIO struct {
 }
 
 type Identity struct {
-	PID      int    `json:"pid"`
-	StartKey string `json:"-"`
+	PID         int    `json:"pid"`
+	StartKey    string `json:"-"`
+	ContainerID string `json:"container_id,omitempty"`
 }
 
 type ExitResult struct {
@@ -92,4 +113,12 @@ type Runtime interface {
 	Kill(context.Context, Identity) error
 	Status(context.Context, Identity) (Status, error)
 	Metrics(context.Context, Identity) (Metrics, error)
+}
+
+// ImageManager is optional runtime capability used only by explicitly
+// configured container servers. Native runtimes deliberately do not expose an
+// image lifecycle.
+type ImageManager interface {
+	ImageAvailable(context.Context, string) (bool, error)
+	PullImage(context.Context, string) error
 }

@@ -200,3 +200,12 @@ Start returns `202` with a job. Statuses are `pending`, `preparing`, `downloadin
 Supported source fields include `meta.version`, `exported_at`, `name`, `description`, `author`, `uuid`, `startup`, `variables`, `docker_images` (metadata only), `scripts.installation` (analysis only), `config`, `features`, and tags. Unknown top-level fields become informational findings. Config parser bodies, file rewrite rules, Docker semantics, arbitrary installation hooks, and unknown config structures are not executed and may produce compatibility findings.
 
 Supported variable rules are `required`, `nullable`, `integer`, `numeric`, `string`, `boolean`, `between`, `min`, `max`, and `in`. Other Laravel/Pterodactyl rules remain in `raw_rules` and produce `UNKNOWN_VALIDATION_RULE`; GameNode does not emulate the full validation language.
+# Container servers (v0.3)
+
+Server `runtime_type` may be `container` with a nested `container` object:
+`image`, `command`, `memory_limit_bytes`, `cpu_limit_millis`, engine-derived
+`image_availability`, and transient `pull_state`. Port records optionally
+include `container_port`. `POST /api/v1/servers/{id}/container/pull` requires
+server-scoped `Server.Edit`, same-origin, and CSRF protection. Start never
+pulls; a missing image returns a controlled error. No Docker JSON, credentials,
+or daemon details are API fields.

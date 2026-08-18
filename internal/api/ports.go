@@ -12,7 +12,7 @@ import (
 )
 
 func portAuditMetadata(port ports.Port) json.RawMessage {
-	metadata, err := json.Marshal(map[string]any{"protocol": port.Protocol, "bind_address": port.BindAddress, "port": port.Port})
+	metadata, err := json.Marshal(map[string]any{"protocol": port.Protocol, "bind_address": port.BindAddress, "port": port.Port, "container_port": port.ContainerPort})
 	if err != nil {
 		return nil
 	}

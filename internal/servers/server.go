@@ -74,6 +74,7 @@ type Server struct {
 	EnvironmentVariables          map[string]string `json:"environment_variables"`
 	SensitiveEnvironmentVariables []string          `json:"sensitive_environment_variables,omitempty"`
 	RuntimeType                   string            `json:"runtime_type"`
+	Container                     *ContainerConfig  `json:"container,omitempty"`
 	AutoStart                     bool              `json:"auto_start"`
 	RestartPolicy                 string            `json:"restart_policy"`
 	StopMethod                    string            `json:"stop_method"`
@@ -149,22 +150,32 @@ func (s *Server) Validate() error {
 	if err != nil || !info.IsDir() {
 		return errors.New("working directory must exist")
 	}
-	if s.Executable == "" || strings.ContainsRune(s.Executable, 0) {
+	if s.RuntimeType == "" {
+		s.RuntimeType = RuntimeNative
+	}
+	if s.RuntimeType != RuntimeNative && s.RuntimeType != RuntimeContainer {
+		return errors.New("runtime type must be native or container")
+	}
+	if s.RuntimeType == RuntimeContainer {
+		if s.Container == nil {
+			return errors.New("container configuration is required")
+		}
+		if err := s.Container.Validate(); err != nil {
+			return err
+		}
+		// A container launches its configured command inside its fixed mount;
+		// executable validation applies only to host-native processes.
+		s.Executable = ""
+	} else if s.Executable == "" || strings.ContainsRune(s.Executable, 0) {
 		return errors.New("executable is required")
 	}
 	resolved := s.ResolvedExecutable()
-	if !filepath.IsAbs(s.Executable) && !inside(s.WorkingDirectory, resolved) {
+	if s.RuntimeType == RuntimeNative && !filepath.IsAbs(s.Executable) && !inside(s.WorkingDirectory, resolved) {
 		return errors.New("relative executable escapes working directory")
 	}
 	executableInfo, err := os.Stat(resolved)
-	if err != nil || executableInfo.IsDir() {
+	if s.RuntimeType == RuntimeNative && (err != nil || executableInfo.IsDir()) {
 		return errors.New("executable must be an existing file")
-	}
-	if s.RuntimeType == "" {
-		s.RuntimeType = "native"
-	}
-	if s.RuntimeType != "native" {
-		return errors.New("only native runtime is supported")
 	}
 	if s.RestartPolicy == "" {
 		s.RestartPolicy = "never"
@@ -275,6 +286,11 @@ func (store *Store) Create(ctx context.Context, server Server) (Record, error) {
 	_, err = store.db.ExecContext(ctx, `INSERT INTO servers(id,tenant_id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.TenantID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
 	if err != nil {
 		return Record{}, fmt.Errorf("create server: %w", err)
+	}
+	if server.RuntimeType == RuntimeContainer {
+		if err = store.saveContainerConfig(ctx, server.ID, server.Container); err != nil {
+			return Record{}, err
+		}
 	}
 	_, err = store.db.ExecContext(ctx, `INSERT INTO server_runtime_state(server_id,current_state,updated_at) VALUES(?,?,?)`, server.ID, StateStopped, stamp(now))
 	if err != nil {
@@ -451,13 +467,38 @@ func (store *Store) List(ctx context.Context) ([]Record, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err = store.hydrateContainer(ctx, &record); err != nil {
+			return nil, err
+		}
 		records = append(records, record)
 	}
 	return records, rows.Err()
 }
 func (store *Store) Get(ctx context.Context, id string) (Record, error) {
 	row := store.db.QueryRowContext(ctx, selectSQL+` WHERE s.id=?`, id)
-	return scan(row)
+	record, err := scan(row)
+	if err != nil {
+		return Record{}, err
+	}
+	if err = store.hydrateContainer(ctx, &record); err != nil {
+		return Record{}, err
+	}
+	return record, nil
+}
+
+func (store *Store) hydrateContainer(ctx context.Context, record *Record) error {
+	if record.Server.RuntimeType != RuntimeContainer {
+		return nil
+	}
+	config, err := store.containerConfig(ctx, record.Server.ID)
+	if err != nil {
+		return err
+	}
+	if config == nil {
+		return errors.New("container configuration is missing")
+	}
+	record.Server.Container = config
+	return nil
 }
 func (store *Store) Update(ctx context.Context, id string, server Server) (Record, error) {
 	existing, err := store.Get(ctx, id)
@@ -497,6 +538,11 @@ func (store *Store) Update(ctx context.Context, id string, server Server) (Recor
 	_, err = store.db.ExecContext(ctx, `UPDATE servers SET creation_mode=?,name=?,description=?,working_directory=?,executable=?,arguments_json=?,environment_json=?,runtime_type=?,auto_start=?,restart_policy=?,stop_method=?,stop_command=?,stop_timeout_seconds=?,auto_restart_enabled=?,auto_restart_max_attempts=?,auto_restart_window_seconds=?,auto_restart_delay_seconds=?,updated_at=? WHERE id=?`, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(server.UpdatedAt), id)
 	if err != nil {
 		return Record{}, err
+	}
+	if server.RuntimeType == RuntimeContainer {
+		if err = store.saveContainerConfig(ctx, id, server.Container); err != nil {
+			return Record{}, err
+		}
 	}
 	return store.Get(ctx, id)
 }
@@ -541,6 +587,10 @@ func scan(row scanner) (Record, error) {
 	r.Server.AutoRestartEnabled = autoRestart != 0
 	_ = json.Unmarshal([]byte(args), &r.Server.Arguments)
 	_ = json.Unmarshal([]byte(env), &r.Server.EnvironmentVariables)
+	if r.Server.RuntimeType == RuntimeContainer {
+		// This helper cannot receive a context/database; Get/List hydrate below.
+		r.Server.Container = nil
+	}
 	r.Server.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	r.Server.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
 	if pid.Valid {
@@ -614,6 +664,8 @@ type Service struct {
 	autoRestarts sync.Map
 	autoAttempts sync.Map
 	autoMu       sync.Mutex
+	pullMu       sync.Mutex
+	pulls        map[string]string
 	log          *slog.Logger
 	launch       LaunchResolver
 }
@@ -660,7 +712,7 @@ func NewServiceWithMonitoring(store *Store, r runtime.Runtime, manager *console.
 	if manager == nil {
 		manager = console.NewManager()
 	}
-	return &Service{store: store, runtime: r, console: manager, monitoring: monitoring.New(r, options), ports: ports.New(store.db), log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	return &Service{store: store, runtime: r, console: manager, monitoring: monitoring.New(r, options), ports: ports.New(store.db), pulls: make(map[string]string), log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
 
 // SetLogger connects the application logger before the service begins serving requests.
@@ -713,8 +765,82 @@ func (s *Service) CreateProvisioned(ctx context.Context, server Server, template
 func (s *Service) SensitiveEnvironmentKeys(ctx context.Context, id string) ([]string, error) {
 	return s.store.SensitiveEnvironmentKeys(ctx, id)
 }
-func (s *Service) List(ctx context.Context) ([]Record, error)         { return s.refreshAll(ctx) }
-func (s *Service) Get(ctx context.Context, id string) (Record, error) { return s.refresh(ctx, id) }
+func (s *Service) List(ctx context.Context) ([]Record, error) {
+	records, err := s.refreshAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range records {
+		s.decorateContainerImage(ctx, &records[i])
+	}
+	return records, nil
+}
+func (s *Service) Get(ctx context.Context, id string) (Record, error) {
+	record, err := s.refresh(ctx, id)
+	if err == nil {
+		s.decorateContainerImage(ctx, &record)
+	}
+	return record, err
+}
+
+// PullContainerImage is an explicit Server.Edit preparation action. Start
+// never pulls implicitly, so an existing server remains pinned to its chosen
+// configured image until an operator deliberately prepares it.
+func (s *Service) PullContainerImage(ctx context.Context, id string) error {
+	record, err := s.store.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if record.Server.RuntimeType != RuntimeContainer || record.Server.Container == nil {
+		return errors.New("server does not use a container runtime")
+	}
+	manager, ok := s.runtime.(runtime.ImageManager)
+	if !ok {
+		return errors.New("container engine is unavailable")
+	}
+	s.pullMu.Lock()
+	if s.pulls[id] == "pulling" {
+		s.pullMu.Unlock()
+		return errors.New("container image pull is already in progress")
+	}
+	s.pulls[id] = "pulling"
+	s.pullMu.Unlock()
+	err = manager.PullImage(ctx, record.Server.Container.Image)
+	s.pullMu.Lock()
+	if err != nil {
+		s.pulls[id] = "failed"
+	} else {
+		s.pulls[id] = "idle"
+	}
+	s.pullMu.Unlock()
+	return err
+}
+
+func (s *Service) decorateContainerImage(ctx context.Context, record *Record) {
+	if record.Server.RuntimeType != RuntimeContainer || record.Server.Container == nil {
+		return
+	}
+	s.pullMu.Lock()
+	pull := s.pulls[record.Server.ID]
+	s.pullMu.Unlock()
+	if pull == "" {
+		pull = "idle"
+	}
+	record.Server.Container.PullState = pull
+	manager, ok := s.runtime.(runtime.ImageManager)
+	if !ok {
+		record.Server.Container.ImageAvailability = "engine_unavailable"
+		return
+	}
+	available, err := manager.ImageAvailable(ctx, record.Server.Container.Image)
+	if err != nil {
+		record.Server.Container.ImageAvailability = "engine_unavailable"
+	} else if available {
+		record.Server.Container.ImageAvailability = "available"
+	} else {
+		record.Server.Container.ImageAvailability = "missing"
+	}
+}
 
 // Rediscover refreshes persisted processes after GameNode starts. A verified
 // surviving process is running but deliberately detached from console I/O.
@@ -956,6 +1082,7 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 		})
 	}
 	identity, exits, err := s.runtime.Start(ctx, runtime.StartOptions{
+		RuntimeType:      record.Server.RuntimeType,
 		Executable:       record.Server.ResolvedExecutable(),
 		Arguments:        arguments,
 		WorkingDirectory: record.Server.WorkingDirectory,
@@ -969,6 +1096,7 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 		// request data directly, so only a console_interrupt server changes
 		// how its process group is created.
 		ConsoleInterruptCapable: record.Server.StopMethod == StopMethodConsoleInterrupt,
+		Container:               s.runtimeContainerOptions(ctx, record.Server, id, instanceID),
 	})
 	if err != nil {
 		cleanup()
@@ -1002,6 +1130,25 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 		return Record{}, err
 	}
 	return result, nil
+}
+
+func (s *Service) runtimeContainerOptions(ctx context.Context, server Server, serverID, generation string) *runtime.ContainerOptions {
+	if server.RuntimeType != RuntimeContainer || server.Container == nil {
+		return nil
+	}
+	result := &runtime.ContainerOptions{Image: server.Container.Image, Command: append([]string(nil), server.Container.Command...), MemoryLimitBytes: server.Container.MemoryLimitBytes, CPULimitMillis: server.Container.CPULimitMillis, ServerID: serverID, Generation: generation, OwnershipToken: server.Container.OwnershipToken}
+	registered, err := s.ports.List(ctx, serverID)
+	if err != nil {
+		return result
+	}
+	for _, port := range registered {
+		target := port.ContainerPort
+		if target == 0 {
+			target = port.Port
+		}
+		result.Ports = append(result.Ports, runtime.ContainerPort{Protocol: port.Protocol, BindAddress: port.BindAddress, HostPort: port.Port, ContainerPort: target})
+	}
+	return result
 }
 func (s *Service) Stop(ctx context.Context, id string) (Record, error) {
 	s.log.Info("server stop requested", "module", "Server.Stop", "server_id", id)

@@ -120,7 +120,7 @@ func main() {
 	static := spaHandler(assets)
 	transportTLS := cfg.Server.TLSCert != ""
 	secureCookie := transportTLS || cfg.Server.TrustLocalProxy
-	serverService := servers.NewServiceWithMonitoring(servers.NewStore(db), runtime.NewNative(), console.NewManager(), monitoring.Options{Interval: time.Duration(currentSettings.Monitoring.SampleIntervalSeconds) * time.Second, HistoryLimit: currentSettings.Monitoring.HistoryLimit})
+	serverService := servers.NewServiceWithMonitoring(servers.NewStore(db), runtime.NewHybrid(), console.NewManager(), monitoring.Options{Interval: time.Duration(currentSettings.Monitoring.SampleIntervalSeconds) * time.Second, HistoryLimit: currentSettings.Monitoring.HistoryLimit})
 	serverService.SetLogger(log)
 	if err = serverService.Rediscover(context.Background()); err != nil {
 		log.Error("server rediscovery failed", "error", err.Error())

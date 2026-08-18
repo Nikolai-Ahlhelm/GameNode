@@ -14,12 +14,13 @@ import (
 )
 
 type Port struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Protocol    string `json:"protocol"`
-	BindAddress string `json:"bind_address"`
-	Port        int    `json:"port"`
-	Status      string `json:"status"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Protocol      string `json:"protocol"`
+	BindAddress   string `json:"bind_address"`
+	Port          int    `json:"port"`
+	ContainerPort int    `json:"container_port,omitempty"`
+	Status        string `json:"status"`
 }
 type Service struct{ db *sql.DB }
 
@@ -33,6 +34,9 @@ func Validate(p *Port) error {
 	}
 	if p.Port < 1 || p.Port > 65535 {
 		return errors.New("port must be between 1 and 65535")
+	}
+	if p.ContainerPort < 0 || p.ContainerPort > 65535 {
+		return errors.New("container port must be between 1 and 65535")
 	}
 	if p.BindAddress != "" && p.BindAddress != "0.0.0.0" && p.BindAddress != "::" {
 		if _, e := netip.ParseAddr(p.BindAddress); e != nil {
@@ -51,7 +55,7 @@ func Conflict(a, b Port) bool {
 	return a.BindAddress == "" || b.BindAddress == "" || a.BindAddress == "0.0.0.0" || b.BindAddress == "0.0.0.0" || a.BindAddress == "::" || b.BindAddress == "::"
 }
 func (s *Service) List(c context.Context, server string) ([]Port, error) {
-	rows, e := s.db.QueryContext(c, "SELECT id,name,protocol,bind_address,port FROM server_ports WHERE server_id=? ORDER BY protocol,port,name", server)
+	rows, e := s.db.QueryContext(c, "SELECT id,name,protocol,bind_address,port,container_port FROM server_ports WHERE server_id=? ORDER BY protocol,port,name", server)
 	if e != nil {
 		return nil, e
 	}
@@ -59,8 +63,12 @@ func (s *Service) List(c context.Context, server string) ([]Port, error) {
 	var out []Port
 	for rows.Next() {
 		var p Port
-		if e = rows.Scan(&p.ID, &p.Name, &p.Protocol, &p.BindAddress, &p.Port); e != nil {
+		var target sql.NullInt64
+		if e = rows.Scan(&p.ID, &p.Name, &p.Protocol, &p.BindAddress, &p.Port, &target); e != nil {
 			return nil, e
+		}
+		if target.Valid {
+			p.ContainerPort = int(target.Int64)
 		}
 		p.Status = s.status(p)
 		out = append(out, p)
@@ -76,7 +84,7 @@ func (s *Service) Add(c context.Context, server string, p Port) (Port, error) {
 	}
 	p.ID = id()
 	n := time.Now().UTC().Format(time.RFC3339Nano)
-	_, e := s.db.ExecContext(c, "INSERT INTO server_ports(id,server_id,name,protocol,bind_address,port,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", p.ID, server, p.Name, p.Protocol, p.BindAddress, p.Port, n, n)
+	_, e := s.db.ExecContext(c, "INSERT INTO server_ports(id,server_id,name,protocol,bind_address,port,container_port,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", p.ID, server, p.Name, p.Protocol, p.BindAddress, p.Port, nullablePort(p.ContainerPort), n, n)
 	p.Status = s.status(p)
 	return p, e
 }
@@ -87,7 +95,7 @@ func (s *Service) Update(c context.Context, server, id string, p Port) (Port, er
 	if e := s.check(c, server, p, id); e != nil {
 		return p, e
 	}
-	r, e := s.db.ExecContext(c, "UPDATE server_ports SET name=?,protocol=?,bind_address=?,port=?,updated_at=? WHERE id=? AND server_id=?", p.Name, p.Protocol, p.BindAddress, p.Port, time.Now().UTC().Format(time.RFC3339Nano), id, server)
+	r, e := s.db.ExecContext(c, "UPDATE server_ports SET name=?,protocol=?,bind_address=?,port=?,container_port=?,updated_at=? WHERE id=? AND server_id=?", p.Name, p.Protocol, p.BindAddress, p.Port, nullablePort(p.ContainerPort), time.Now().UTC().Format(time.RFC3339Nano), id, server)
 	if e != nil {
 		return p, e
 	}
@@ -123,15 +131,19 @@ func (s *Service) Check(c context.Context, server string) error {
 	return nil
 }
 func (s *Service) check(c context.Context, server string, p Port, exclude string) error {
-	rows, e := s.db.QueryContext(c, "SELECT id,name,protocol,bind_address,port FROM server_ports WHERE id<>?", exclude)
+	rows, e := s.db.QueryContext(c, "SELECT id,name,protocol,bind_address,port,container_port FROM server_ports WHERE id<>?", exclude)
 	if e != nil {
 		return e
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var q Port
-		if e = rows.Scan(&q.ID, &q.Name, &q.Protocol, &q.BindAddress, &q.Port); e != nil {
+		var target sql.NullInt64
+		if e = rows.Scan(&q.ID, &q.Name, &q.Protocol, &q.BindAddress, &q.Port, &target); e != nil {
 			return e
+		}
+		if target.Valid {
+			q.ContainerPort = int(target.Int64)
 		}
 		if Conflict(p, q) {
 			return errors.New("port conflicts with another GameNode server")
@@ -164,4 +176,10 @@ func (s *Service) status(p Port) string {
 	return "available"
 }
 func fmtPort(n int) string { return strconv.Itoa(n) }
-func id() string           { b := make([]byte, 16); rand.Read(b); return hex.EncodeToString(b) }
+func nullablePort(value int) any {
+	if value == 0 {
+		return nil
+	}
+	return value
+}
+func id() string { b := make([]byte, 16); rand.Read(b); return hex.EncodeToString(b) }
