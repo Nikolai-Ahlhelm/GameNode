@@ -26,10 +26,26 @@ export type UIPreferences = {
   theme: ThemeMode;
   sidebarCollapsed: boolean;
   wallpaper: WallpaperPreference;
+  /** Base neutral color each theme's page/sidebar/surface/border ladder is
+   * derived from (see styles.css color-mix rules). Kept separate per theme
+   * so switching dark/light doesn't require re-picking a color. */
+  baseColorDark: string;
+  baseColorLight: string;
 };
 
 export const defaultWallpaper: WallpaperPreference = { enabled: false, image: null, blur: 12, dim: 55 };
-export const defaultPreferences: UIPreferences = { theme: 'system', sidebarCollapsed: false, wallpaper: defaultWallpaper };
+// Match the previous hardcoded --page values, so an unmodified install looks
+// identical to before this became configurable.
+export const defaultBaseColorDark = '#08111f';
+export const defaultBaseColorLight = '#eef1f6';
+export const defaultPreferences: UIPreferences = { theme: 'system', sidebarCollapsed: false, wallpaper: defaultWallpaper, baseColorDark: defaultBaseColorDark, baseColorLight: defaultBaseColorLight };
+
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+/** Strict allow-list check: 6-digit `#rrggbb` hex only, so it is also safe to interpolate into a CSS custom property without further escaping. */
+export const isValidHexColor = (value: unknown): value is string => typeof value === 'string' && HEX_COLOR.test(value);
+
+export const sanitizeBaseColor = (value: unknown, fallback: string): string => isValidHexColor(value) ? value : fallback;
 
 export const STORAGE_KEY = 'gamenode:ui-preferences';
 
@@ -60,7 +76,13 @@ export function sanitizeWallpaper(value: unknown): WallpaperPreference {
 export function sanitizePreferences(value: unknown): UIPreferences {
   const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   const theme: ThemeMode = raw.theme === 'dark' || raw.theme === 'light' || raw.theme === 'system' ? raw.theme : defaultPreferences.theme;
-  return { theme, sidebarCollapsed: raw.sidebarCollapsed === true, wallpaper: sanitizeWallpaper(raw.wallpaper) };
+  return {
+    theme,
+    sidebarCollapsed: raw.sidebarCollapsed === true,
+    wallpaper: sanitizeWallpaper(raw.wallpaper),
+    baseColorDark: sanitizeBaseColor(raw.baseColorDark, defaultBaseColorDark),
+    baseColorLight: sanitizeBaseColor(raw.baseColorLight, defaultBaseColorLight),
+  };
 }
 
 export function loadPreferences(): UIPreferences {
@@ -93,6 +115,13 @@ export function applyTheme(resolved: ResolvedTheme): void {
   if (typeof document === 'undefined') return;
   document.documentElement.dataset.theme = resolved;
   document.documentElement.style.colorScheme = resolved;
+}
+
+export function applyBaseColors(baseColorDark: string, baseColorLight: string): void {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  root.style.setProperty('--base-dark', sanitizeBaseColor(baseColorDark, defaultBaseColorDark));
+  root.style.setProperty('--base-light', sanitizeBaseColor(baseColorLight, defaultBaseColorLight));
 }
 
 export function applyWallpaper(wallpaper: WallpaperPreference): void {

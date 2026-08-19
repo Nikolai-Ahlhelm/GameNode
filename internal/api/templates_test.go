@@ -61,6 +61,10 @@ func eggEnvelope(t *testing.T) []byte {
 	encoded, _ := json.Marshal(map[string]json.RawMessage{"egg": data})
 	return encoded
 }
+
+func containerEggEnvelope() []byte {
+	return []byte(`{"egg":{"name":"Container API fixture","startup":"./server --port {{PORT}}","docker_images":{"game":"ghcr.io/example/game:1"},"scripts":{"installation":{"script":"echo install","container":"ghcr.io/example/installer:1","entrypoint":"/bin/sh"}},"variables":[{"env_variable":"PORT","default_value":"25565","rules":"required|integer"}]}}`)
+}
 func templateRequest(h http.Handler, method, path string, body []byte, session *testSession, csrf bool) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, path, bytes.NewReader(body))
 	if session != nil {
@@ -120,6 +124,25 @@ func TestTemplateImportPreviewPersistenceDeleteAndAudit(t *testing.T) {
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE action='template.delete' AND result='success'`).Scan(&deletes); err != nil || deletes != 1 {
 		t.Fatalf("deletes=%d err=%v", deletes, err)
+	}
+}
+
+func TestContainerCompatibilityIsExposedSeparately(t *testing.T) {
+	h, _ := newTestServer(t)
+	admin := createAdminSession(t, h)
+	response := templateRequest(h, http.MethodPost, "/api/v1/templates/analyze/egg", containerEggEnvelope(), &admin, true)
+	if response.Code != http.StatusOK {
+		t.Fatalf("container preview=%d %s", response.Code, response.Body.String())
+	}
+	var template templates.Template
+	if err := json.NewDecoder(response.Body).Decode(&template); err != nil {
+		t.Fatal(err)
+	}
+	if template.ContainerCompatibility.Status != templates.Compatible || template.ContainerRuntime == nil || len(template.ContainerRuntime.Images) != 2 {
+		t.Fatalf("container model=%#v", template)
+	}
+	if template.NativeCompatibility.Status != templates.Unsupported {
+		t.Fatalf("native compatibility was not kept separate: %#v", template.NativeCompatibility)
 	}
 }
 

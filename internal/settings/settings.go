@@ -8,9 +8,11 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image/png"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,14 +24,66 @@ const (
 	monitoringSampleIntervalKey = "monitoring.sample_interval_seconds"
 	monitoringHistoryLimitKey   = "monitoring.history_limit"
 	loggingLevelKey             = "logging.level"
+	loggingDetailedErrorsKey    = "logging.detailed_errors"
 	passwordMinimumLengthKey    = "security.password_minimum_length"
 	passwordMaximumLengthKey    = "security.password_maximum_length"
 	brandingNameKey             = "branding.name"
 	brandingSubtitleKey         = "branding.subtitle"
+	containerImageAllowlistKey  = "runtime.container_image_allowlist"
 	brandingFaviconTypeKey      = "branding.favicon_content_type"
 	brandingFaviconDataKey      = "branding.favicon_data"
 	MaxFaviconBytes             = 256 << 10
 )
+
+// logCategoryKeys is the strict whitelist of persisted log category toggles.
+// It intentionally mirrors internal/logging.Categories, but settings does not
+// import logging - composition happens in main/api so this package stays
+// free of any HTTP or logging-framework dependency.
+var logCategoryKeys = []struct {
+	name string
+	key  string
+}{
+	{"http", "logging.category.http"},
+	{"database", "logging.category.database"},
+	{"runtime", "logging.category.runtime"},
+	{"auth", "logging.category.auth"},
+	{"filesystem", "logging.category.filesystem"},
+	{"provisioning", "logging.category.provisioning"},
+	{"steamcmd", "logging.category.steamcmd"},
+	{"templates", "logging.category.templates"},
+	{"general", "logging.category.general"},
+}
+
+// ErrPersistence marks a settings failure that originated in the database
+// layer rather than input validation. Callers (the API layer) use it to
+// decide the API response and never forward the wrapped driver error to a
+// client - only a detailed-error-gated application log may see it, via
+// logging.ErrorDetail.
+var ErrPersistence = errors.New("settings could not be persisted")
+
+func categoryKey(name string) string {
+	for _, entry := range logCategoryKeys {
+		if entry.name == name {
+			return entry.key
+		}
+	}
+	return ""
+}
+func categoryNameForKey(key string) (string, bool) {
+	for _, entry := range logCategoryKeys {
+		if entry.key == key {
+			return entry.name, true
+		}
+	}
+	return "", false
+}
+func allCategoryKeys() []string {
+	keys := make([]string, len(logCategoryKeys))
+	for i, entry := range logCategoryKeys {
+		keys[i] = entry.key
+	}
+	return keys
+}
 
 type Defaults struct {
 	MonitoringSampleIntervalSeconds int
@@ -46,8 +100,13 @@ type Values struct {
 	Logging               Logging    `json:"logging"`
 	Security              Security   `json:"security"`
 	Branding              Branding   `json:"branding"`
+	Runtime               Runtime    `json:"runtime"`
 	RestartRequired       bool       `json:"restart_required"`
 	RestartRequiredFields []string   `json:"restart_required_fields"`
+}
+
+type Runtime struct {
+	ContainerImageAllowlist []string `json:"container_image_allowlist"`
 }
 
 type Monitoring struct {
@@ -56,7 +115,82 @@ type Monitoring struct {
 }
 
 type Logging struct {
-	Level string `json:"level"`
+	Level          string            `json:"level"`
+	Categories     LoggingCategories `json:"categories"`
+	DetailedErrors bool              `json:"detailed_errors"`
+}
+
+// LoggingCategories is a strict, fixed whitelist of togglable log
+// categories - not arbitrary logger configuration. Each field maps 1:1 to a
+// category the logging package recognizes.
+type LoggingCategories struct {
+	HTTP         bool `json:"http"`
+	Database     bool `json:"database"`
+	Runtime      bool `json:"runtime"`
+	Auth         bool `json:"auth"`
+	Filesystem   bool `json:"filesystem"`
+	Provisioning bool `json:"provisioning"`
+	SteamCMD     bool `json:"steamcmd"`
+	Templates    bool `json:"templates"`
+	General      bool `json:"general"`
+}
+
+// AsMap returns the categories keyed by their logging-package category name,
+// for handoff to logging.Manager.SetCategories without either package
+// depending on the other.
+func (c LoggingCategories) AsMap() map[string]bool {
+	return map[string]bool{
+		"http": c.HTTP, "database": c.Database, "runtime": c.Runtime, "auth": c.Auth,
+		"filesystem": c.Filesystem, "provisioning": c.Provisioning, "steamcmd": c.SteamCMD,
+		"templates": c.Templates, "general": c.General,
+	}
+}
+
+func (c *LoggingCategories) set(name string, value bool) {
+	switch name {
+	case "http":
+		c.HTTP = value
+	case "database":
+		c.Database = value
+	case "runtime":
+		c.Runtime = value
+	case "auth":
+		c.Auth = value
+	case "filesystem":
+		c.Filesystem = value
+	case "provisioning":
+		c.Provisioning = value
+	case "steamcmd":
+		c.SteamCMD = value
+	case "templates":
+		c.Templates = value
+	case "general":
+		c.General = value
+	}
+}
+func (c LoggingCategories) get(name string) bool {
+	switch name {
+	case "http":
+		return c.HTTP
+	case "database":
+		return c.Database
+	case "runtime":
+		return c.Runtime
+	case "auth":
+		return c.Auth
+	case "filesystem":
+		return c.Filesystem
+	case "provisioning":
+		return c.Provisioning
+	case "steamcmd":
+		return c.SteamCMD
+	case "templates":
+		return c.Templates
+	case "general":
+		return c.General
+	default:
+		return false
+	}
 }
 
 type Security struct {
@@ -75,10 +209,70 @@ type Patch struct {
 	Logging    *LoggingPatch    `json:"logging,omitempty"`
 	Security   *SecurityPatch   `json:"security,omitempty"`
 	Branding   *BrandingPatch   `json:"branding,omitempty"`
+	Runtime    *RuntimePatch    `json:"runtime,omitempty"`
+}
+
+type RuntimePatch struct {
+	ContainerImageAllowlist *[]string `json:"container_image_allowlist,omitempty"`
 }
 
 type LoggingPatch struct {
-	Level *string `json:"level,omitempty"`
+	Level          *string                 `json:"level,omitempty"`
+	Categories     *LoggingCategoriesPatch `json:"categories,omitempty"`
+	DetailedErrors *bool                   `json:"detailed_errors,omitempty"`
+}
+
+// LoggingCategoriesPatch mirrors LoggingCategories with optional fields so a
+// PATCH can change one category without touching the others. Any field not
+// present in the request body is decoded as nil and left unchanged; unknown
+// field names are rejected by the request decoder's DisallowUnknownFields.
+type LoggingCategoriesPatch struct {
+	HTTP         *bool `json:"http,omitempty"`
+	Database     *bool `json:"database,omitempty"`
+	Runtime      *bool `json:"runtime,omitempty"`
+	Auth         *bool `json:"auth,omitempty"`
+	Filesystem   *bool `json:"filesystem,omitempty"`
+	Provisioning *bool `json:"provisioning,omitempty"`
+	SteamCMD     *bool `json:"steamcmd,omitempty"`
+	Templates    *bool `json:"templates,omitempty"`
+	General      *bool `json:"general,omitempty"`
+}
+
+func (p *LoggingCategoriesPatch) isEmpty() bool {
+	return p == nil || (p.HTTP == nil && p.Database == nil && p.Runtime == nil && p.Auth == nil && p.Filesystem == nil && p.Provisioning == nil && p.SteamCMD == nil && p.Templates == nil && p.General == nil)
+}
+
+// entries returns the patch as (category name, value) pairs for fields that
+// were actually supplied.
+func (p *LoggingCategoriesPatch) entries() []struct {
+	name  string
+	value bool
+} {
+	var out []struct {
+		name  string
+		value bool
+	}
+	if p == nil {
+		return out
+	}
+	add := func(name string, value *bool) {
+		if value != nil {
+			out = append(out, struct {
+				name  string
+				value bool
+			}{name, *value})
+		}
+	}
+	add("http", p.HTTP)
+	add("database", p.Database)
+	add("runtime", p.Runtime)
+	add("auth", p.Auth)
+	add("filesystem", p.Filesystem)
+	add("provisioning", p.Provisioning)
+	add("steamcmd", p.SteamCMD)
+	add("templates", p.Templates)
+	add("general", p.General)
+	return out
 }
 
 type MonitoringPatch struct {
@@ -148,7 +342,7 @@ func (s *Service) PasswordPolicy(ctx context.Context) (int, int, error) {
 
 // Update changes only supplied typed fields and returns their stable API paths.
 func (s *Service) Update(ctx context.Context, patch Patch) (Values, []string, error) {
-	if (patch.Monitoring == nil || (patch.Monitoring.SampleIntervalSeconds == nil && patch.Monitoring.HistoryLimit == nil)) && (patch.Logging == nil || patch.Logging.Level == nil) && (patch.Security == nil || (patch.Security.PasswordMinimumLength == nil && patch.Security.PasswordMaximumLength == nil)) && (patch.Branding == nil || (patch.Branding.Name == nil && patch.Branding.Subtitle == nil)) {
+	if (patch.Monitoring == nil || (patch.Monitoring.SampleIntervalSeconds == nil && patch.Monitoring.HistoryLimit == nil)) && (patch.Logging == nil || (patch.Logging.Level == nil && patch.Logging.DetailedErrors == nil && patch.Logging.Categories.isEmpty())) && (patch.Security == nil || (patch.Security.PasswordMinimumLength == nil && patch.Security.PasswordMaximumLength == nil)) && (patch.Branding == nil || (patch.Branding.Name == nil && patch.Branding.Subtitle == nil)) && (patch.Runtime == nil || patch.Runtime.ContainerImageAllowlist == nil) {
 		values, err := s.Get(ctx)
 		return values, nil, err
 	}
@@ -156,12 +350,12 @@ func (s *Service) Update(ctx context.Context, patch Patch) (Values, []string, er
 	defer s.mu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Values{}, nil, err
+		return Values{}, nil, fmt.Errorf("%w: %v", ErrPersistence, err)
 	}
 	defer tx.Rollback()
 	current, err := s.get(ctx, tx)
 	if err != nil {
-		return Values{}, nil, err
+		return Values{}, nil, fmt.Errorf("%w: %v", ErrPersistence, err)
 	}
 	changed := make([]string, 0, 3)
 	if patch.Monitoring != nil {
@@ -180,12 +374,25 @@ func (s *Service) Update(ctx context.Context, patch Patch) (Values, []string, er
 			changed = append(changed, monitoringHistoryLimitKey)
 		}
 	}
-	if value := patch.Logging; value != nil && value.Level != nil && *value.Level != current.Logging.Level {
-		if err := validateLogLevel(*value.Level); err != nil {
-			return Values{}, nil, err
+	if value := patch.Logging; value != nil {
+		if value.Level != nil && *value.Level != current.Logging.Level {
+			if err := validateLogLevel(*value.Level); err != nil {
+				return Values{}, nil, err
+			}
+			current.Logging.Level = *value.Level
+			changed = append(changed, loggingLevelKey)
 		}
-		current.Logging.Level = *value.Level
-		changed = append(changed, loggingLevelKey)
+		if value.DetailedErrors != nil && *value.DetailedErrors != current.Logging.DetailedErrors {
+			current.Logging.DetailedErrors = *value.DetailedErrors
+			changed = append(changed, loggingDetailedErrorsKey)
+		}
+		for _, entry := range value.Categories.entries() {
+			if current.Logging.Categories.get(entry.name) == entry.value {
+				continue
+			}
+			current.Logging.Categories.set(entry.name, entry.value)
+			changed = append(changed, categoryKey(entry.name))
+		}
 	}
 	if patch.Security != nil {
 		minimum, maximum := current.Security.PasswordMinimumLength, current.Security.PasswordMaximumLength
@@ -229,29 +436,49 @@ func (s *Service) Update(ctx context.Context, patch Patch) (Values, []string, er
 			}
 		}
 	}
+	if patch.Runtime != nil && patch.Runtime.ContainerImageAllowlist != nil {
+		allowlist, err := validateImageAllowlist(*patch.Runtime.ContainerImageAllowlist)
+		if err != nil {
+			return Values{}, nil, err
+		}
+		if !sameStrings(allowlist, current.Runtime.ContainerImageAllowlist) {
+			current.Runtime.ContainerImageAllowlist = allowlist
+			changed = append(changed, containerImageAllowlistKey)
+		}
+	}
 	for _, key := range changed {
 		var stored string
-		if key == monitoringSampleIntervalKey {
+		switch {
+		case key == monitoringSampleIntervalKey:
 			stored = strconv.Itoa(current.Monitoring.SampleIntervalSeconds)
-		} else if key == monitoringHistoryLimitKey {
+		case key == monitoringHistoryLimitKey:
 			stored = strconv.Itoa(current.Monitoring.HistoryLimit)
-		} else if key == loggingLevelKey {
+		case key == loggingLevelKey:
 			stored = current.Logging.Level
-		} else if key == passwordMinimumLengthKey {
+		case key == loggingDetailedErrorsKey:
+			stored = strconv.FormatBool(current.Logging.DetailedErrors)
+		case key == passwordMinimumLengthKey:
 			stored = strconv.Itoa(current.Security.PasswordMinimumLength)
-		} else if key == passwordMaximumLengthKey {
+		case key == passwordMaximumLengthKey:
 			stored = strconv.Itoa(current.Security.PasswordMaximumLength)
-		} else if key == brandingNameKey {
+		case key == brandingNameKey:
 			stored = current.Branding.Name
-		} else {
+		case key == brandingSubtitleKey:
 			stored = current.Branding.Subtitle
+		case key == containerImageAllowlistKey:
+			encoded, _ := json.Marshal(current.Runtime.ContainerImageAllowlist)
+			stored = string(encoded)
+		default:
+			if name, ok := categoryNameForKey(key); ok {
+				stored = strconv.FormatBool(current.Logging.Categories.get(name))
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, key, stored, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-			return Values{}, nil, err
+			return Values{}, nil, fmt.Errorf("%w: %v", ErrPersistence, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return Values{}, nil, err
+		return Values{}, nil, fmt.Errorf("%w: %v", ErrPersistence, err)
 	}
 	if len(changed) > 0 && s.onUpdate != nil {
 		s.onUpdate(current, changed)
@@ -263,8 +490,15 @@ type queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
+// defaultLoggingCategories preserves useful operational and error logging by
+// default. Routine HTTP access entries are already demoted to debug level
+// (see api.Server.logRequests), so no category needs to start disabled.
+func defaultLoggingCategories() LoggingCategories {
+	return LoggingCategories{HTTP: true, Database: true, Runtime: true, Auth: true, Filesystem: true, Provisioning: true, SteamCMD: true, Templates: true, General: true}
+}
+
 func (s *Service) get(ctx context.Context, q queryer) (Values, error) {
-	values := Values{Monitoring: Monitoring{SampleIntervalSeconds: s.defaults.MonitoringSampleIntervalSeconds, HistoryLimit: s.defaults.MonitoringHistoryLimit}, Logging: Logging{Level: s.defaults.LoggingLevel}, Security: Security{PasswordMinimumLength: s.defaults.PasswordMinimumLength, PasswordMaximumLength: s.defaults.PasswordMaximumLength}, Branding: Branding{Name: s.defaults.BrandingName, Subtitle: s.defaults.BrandingSubtitle}, RestartRequired: true, RestartRequiredFields: []string{monitoringSampleIntervalKey, monitoringHistoryLimitKey}}
+	values := Values{Monitoring: Monitoring{SampleIntervalSeconds: s.defaults.MonitoringSampleIntervalSeconds, HistoryLimit: s.defaults.MonitoringHistoryLimit}, Logging: Logging{Level: s.defaults.LoggingLevel, Categories: defaultLoggingCategories(), DetailedErrors: false}, Security: Security{PasswordMinimumLength: s.defaults.PasswordMinimumLength, PasswordMaximumLength: s.defaults.PasswordMaximumLength}, Branding: Branding{Name: s.defaults.BrandingName, Subtitle: s.defaults.BrandingSubtitle}, Runtime: Runtime{ContainerImageAllowlist: []string{"docker.io", "ghcr.io", "quay.io"}}, RestartRequired: true, RestartRequiredFields: []string{monitoringSampleIntervalKey, monitoringHistoryLimitKey}}
 	if err := validateInterval(values.Monitoring.SampleIntervalSeconds); err != nil {
 		return Values{}, fmt.Errorf("invalid monitoring default: %w", err)
 	}
@@ -274,7 +508,14 @@ func (s *Service) get(ctx context.Context, q queryer) (Values, error) {
 	if err := validatePasswordLengths(values.Security.PasswordMinimumLength, values.Security.PasswordMaximumLength); err != nil {
 		return Values{}, fmt.Errorf("invalid password policy default: %w", err)
 	}
-	rows, err := q.QueryContext(ctx, `SELECT key,value FROM app_settings WHERE key IN (?,?,?,?,?,?,?,?)`, monitoringSampleIntervalKey, monitoringHistoryLimitKey, loggingLevelKey, passwordMinimumLengthKey, passwordMaximumLengthKey, brandingNameKey, brandingSubtitleKey, brandingFaviconDataKey)
+	keys := append([]string{monitoringSampleIntervalKey, monitoringHistoryLimitKey, loggingLevelKey, loggingDetailedErrorsKey, passwordMinimumLengthKey, passwordMaximumLengthKey, brandingNameKey, brandingSubtitleKey, brandingFaviconDataKey, containerImageAllowlistKey}, allCategoryKeys()...)
+	placeholders := strings.Repeat("?,", len(keys))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(keys))
+	for i, key := range keys {
+		args[i] = key
+	}
+	rows, err := q.QueryContext(ctx, `SELECT key,value FROM app_settings WHERE key IN (`+placeholders+`)`, args...)
 	if err != nil {
 		return Values{}, err
 	}
@@ -308,6 +549,12 @@ func (s *Service) get(ctx context.Context, q queryer) (Values, error) {
 				return Values{}, fmt.Errorf("invalid persisted setting %q: %w", key, err)
 			}
 			values.Logging.Level = raw
+		case loggingDetailedErrorsKey:
+			value, err := strconv.ParseBool(raw)
+			if err != nil {
+				return Values{}, fmt.Errorf("invalid persisted setting %q", key)
+			}
+			values.Logging.DetailedErrors = value
 		case passwordMinimumLengthKey:
 			value, err := strconv.Atoi(raw)
 			if err != nil {
@@ -324,8 +571,24 @@ func (s *Service) get(ctx context.Context, q queryer) (Values, error) {
 			values.Branding.Name = raw
 		case brandingSubtitleKey:
 			values.Branding.Subtitle = raw
+		case containerImageAllowlistKey:
+			var allowlist []string
+			if json.Unmarshal([]byte(raw), &allowlist) != nil {
+				return Values{}, fmt.Errorf("invalid persisted setting %q", key)
+			}
+			if values.Runtime.ContainerImageAllowlist, err = validateImageAllowlist(allowlist); err != nil {
+				return Values{}, fmt.Errorf("invalid persisted setting %q: %w", key, err)
+			}
 		case brandingFaviconDataKey:
 			values.Branding.CustomFavicon = raw != ""
+		default:
+			if name, ok := categoryNameForKey(key); ok {
+				value, err := strconv.ParseBool(raw)
+				if err != nil {
+					return Values{}, fmt.Errorf("invalid persisted setting %q", key)
+				}
+				values.Logging.Categories.set(name, value)
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -383,6 +646,37 @@ func validateBrandingText(value string, minimum, maximum int, field string) (str
 	return value, nil
 }
 
+var registryName = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,126}[a-z0-9])?(?::[0-9]{1,5})?$`)
+
+func validateImageAllowlist(values []string) ([]string, error) {
+	if len(values) == 0 || len(values) > 32 {
+		return nil, errors.New("container image allowlist must contain between 1 and 32 registries")
+	}
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if !registryName.MatchString(value) || seen[value] {
+			return nil, errors.New("container image allowlist contains an invalid registry")
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result, nil
+}
+
+func sameStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Service) SetFavicon(ctx context.Context, data []byte) (string, error) {
 	if len(data) == 0 || len(data) > MaxFaviconBytes {
 		return "", errors.New("favicon must be between 1 byte and 256 KiB")
@@ -415,16 +709,19 @@ func (s *Service) SetFavicon(ctx context.Context, data []byte) (string, error) {
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %v", ErrPersistence, err)
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for key, value := range map[string]string{brandingFaviconTypeKey: contentType, brandingFaviconDataKey: base64.StdEncoding.EncodeToString(data)} {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, key, value, now); err != nil {
-			return "", err
+			return "", fmt.Errorf("%w: %v", ErrPersistence, err)
 		}
 	}
-	return contentType, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrPersistence, err)
+	}
+	return contentType, nil
 }
 
 func (s *Service) Favicon(ctx context.Context) (string, []byte, error) {

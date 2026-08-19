@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { Building2, ChevronRight, Plus } from 'lucide-react';
-import { EmptyState, LoadingState, PageHeader, SectionHeader } from './ui';
+import { EmptyState, PageHeader, SectionHeader, SkeletonRows } from './ui';
 import { hasCapability } from './capabilities';
 import { filterMembershipCandidates, listOrEmpty, slugify, tenantCapabilities, validateTenantName, validateTenantSlug } from './tenants-helpers';
 import { runtimeStateLabel, serverStateTone } from './server-status';
@@ -68,7 +68,7 @@ export function TenantsPage({ token, capabilities, onOpenServer, openTenantID }:
     <PageHeader eyebrow="Multi-tenancy" title="Tenants" description="Every server belongs to exactly one tenant. Tenant boundaries protect GameNode's API and application access; they are not a hostile native-process sandbox." actions={rights.manage ? <button onClick={() => setCreating(true)}><Plus />Create tenant</button> : undefined} />
     {error && <p className="error notice">{error}</p>}
     {creating && <CreateTenant token={token} onCancel={() => setCreating(false)} onCreated={tenant => { setCreating(false); setSelected(tenant); }} />}
-    {loading ? <LoadingState label="Loading tenants" /> : items.length === 0 ? <EmptyState icon={Building2} title="No tenants yet" description="Create a tenant to logically separate customers or organizations on this GameNode." action={rights.manage ? <button onClick={() => setCreating(true)}>Create tenant</button> : undefined} /> : <div className="data-table tenants-table">
+    {loading ? <SkeletonRows count={5} label="Loading tenants" /> : items.length === 0 ? <EmptyState icon={Building2} title="No tenants yet" description="Create a tenant to logically separate customers or organizations on this GameNode." action={rights.manage ? <button onClick={() => setCreating(true)}>Create tenant</button> : undefined} /> : <div className="data-table tenants-table">
       <div className="table-head"><span>Tenant</span><span>Slug</span><span>Servers</span><span>Members</span><span>Actions</span></div>
       {items.map(tenant => <div className="table-row" key={tenant.id}>
         <strong>{tenant.name}</strong>
@@ -166,7 +166,7 @@ function TenantServers({ tenantID, onOpenServer }: { tenantID: string; onOpenSer
   const [items, setItems] = useState<ServerListItem[]>(); const [error, setError] = useState('');
   useEffect(() => { let cancelled = false; api<{ servers: ServerListItem[] | null }>('/servers').then(result => { if (!cancelled) setItems(listOrEmpty(result.servers).filter(item => item.server.tenant_id === tenantID)); }).catch(e => { if (!cancelled) setError(errorMessage(e)); }); return () => { cancelled = true; }; }, [tenantID]);
   if (error) return <p className="error notice">{error}</p>;
-  if (!items) return <LoadingState label="Loading servers" />;
+  if (!items) return <SkeletonRows count={3} label="Loading servers" />;
   if (items.length === 0) return <EmptyState compact title="No visible servers in this tenant" description="Either this tenant owns no servers yet, or none are visible to your account." />;
   return <div className="server-list">{items.map(item => <button className="server-card" key={item.server.id} onClick={() => onOpenServer(item.server.id)}><span className="server-card__identity"><strong>{item.server.name}</strong><small>{item.server.working_directory}</small></span><span className={`status ${serverStateTone(item.runtime.current_state)}`}>{runtimeStateLabel(item.runtime.current_state, item.runtime.console_detached)}</span><ChevronRight className="server-card__arrow" /></button>)}</div>;
 }
@@ -189,7 +189,7 @@ function TenantMembers({ tenantID, token, manage, usersView }: { tenantID: strin
     {error && <p className="error notice">{error}</p>}{notice && <p className="success notice">{notice}</p>}
     {manage && usersView && <div className="membership-picker"><input aria-label="Search users" placeholder="Search users…" value={query} onChange={e => setQuery(e.target.value)} /><select aria-label="Add user" value="" onChange={e => void add(e.target.value)}><option value="">Add user…</option>{candidates.map(user => <option key={user.id} value={user.id}>{user.username}{user.enabled ? '' : ' (disabled)'}</option>)}</select></div>}
     {manage && !usersView && <p className="hint">Users.View is required to search for and add members.</p>}
-    {!members ? <LoadingState label="Loading members" /> : members.length === 0 ? <EmptyState compact title="No members yet" description={manage && usersView ? 'Search for a user and add them to this tenant.' : 'This tenant has no members.'} /> : <div className="member-list">{members.map(member => <div key={member.user_id}><span><strong>{member.username || member.user_id}</strong><small>Member since {new Date(member.created_at).toLocaleDateString()}</small></span>{manage && <button className="danger quiet" onClick={() => void remove(member)}>Remove</button>}</div>)}</div>}
+    {!members ? <SkeletonRows count={3} label="Loading members" /> : members.length === 0 ? <EmptyState compact title="No members yet" description={manage && usersView ? 'Search for a user and add them to this tenant.' : 'This tenant has no members.'} /> : <div className="member-list">{members.map(member => <div key={member.user_id}><span><strong>{member.username || member.user_id}</strong><small>Member since {new Date(member.created_at).toLocaleDateString()}</small></span>{manage && <button className="danger quiet" onClick={() => void remove(member)}>Remove</button>}</div>)}</div>}
   </section>;
 }
 

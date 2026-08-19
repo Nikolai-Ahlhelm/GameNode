@@ -28,6 +28,8 @@ const (
 	MaxVariables             = 128
 	MaxFindings              = 128
 	MaxStringBytes           = 16 << 10
+	MaxContainerScriptBytes  = 64 << 10
+	MaxContainerImages       = 32
 	MaxNestingDepth          = 32
 
 	// Adapter formats. The first three edit a game-owned file in place; the
@@ -76,11 +78,17 @@ type Template struct {
 	Configuration       *ConfigurationDefinition    `json:"configuration,omitempty"`
 	ResolvedAdapters    []ConfigAdapterDefinition   `json:"-"`
 	Compatibility       Compatibility               `json:"compatibility"`
-	ReadOnly            bool                        `json:"read_only"`
-	Platforms           []string                    `json:"platforms,omitempty"`
-	Prerequisites       []string                    `json:"prerequisites,omitempty"`
-	CreatedAt           time.Time                   `json:"created_at,omitempty"`
-	UpdatedAt           time.Time                   `json:"updated_at,omitempty"`
+	// Compatibility is retained as the native compatibility alias for
+	// backwards-compatible API clients. New clients should use the explicit
+	// two-dimensional fields below.
+	NativeCompatibility    Compatibility            `json:"native_compatibility"`
+	ContainerCompatibility Compatibility            `json:"container_compatibility"`
+	ContainerRuntime       *ContainerEggRuntimePlan `json:"container_runtime,omitempty"`
+	ReadOnly               bool                     `json:"read_only"`
+	Platforms              []string                 `json:"platforms,omitempty"`
+	Prerequisites          []string                 `json:"prerequisites,omitempty"`
+	CreatedAt              time.Time                `json:"created_at,omitempty"`
+	UpdatedAt              time.Time                `json:"updated_at,omitempty"`
 }
 
 type ConfigurationDefinition struct {
@@ -210,13 +218,14 @@ type LaunchDefinition struct {
 }
 
 type TemplatePort struct {
-	Name     string `json:"name"`
-	Protocol string `json:"protocol"`
-	Port     int    `json:"port,omitempty"`
-	Variable string `json:"variable,omitempty"`
-	Offset   int    `json:"offset,omitempty"`
-	Required bool   `json:"required,omitempty"`
-	Purpose  string `json:"purpose,omitempty"`
+	Name          string `json:"name"`
+	Protocol      string `json:"protocol"`
+	Port          int    `json:"port,omitempty"`
+	ContainerPort int    `json:"container_port,omitempty"`
+	Variable      string `json:"variable,omitempty"`
+	Offset        int    `json:"offset,omitempty"`
+	Required      bool   `json:"required,omitempty"`
+	Purpose       string `json:"purpose,omitempty"`
 }
 
 // ExpectedFile describes an artifact that must remain below the server root.
@@ -293,6 +302,47 @@ type Validation struct {
 type Compatibility struct {
 	Status   string    `json:"status"`
 	Findings []Finding `json:"findings"`
+}
+
+func NormalizeCompatibility(template *Template) {
+	if template.NativeCompatibility.Status == "" {
+		template.NativeCompatibility = template.Compatibility
+	}
+	if template.Compatibility.Status == "" {
+		template.Compatibility = template.NativeCompatibility
+	}
+}
+
+// ContainerEggRuntimePlan is a normalized, bounded representation of the
+// container-only Egg semantics. It is data, never a host command. The
+// installation script is deliberately retained only in this plan so it can
+// be executed inside the controlled installer container; it must never be
+// copied to audit, logs, or a host exec call.
+type ContainerEggRuntimePlan struct {
+	Images              []string                   `json:"images"`
+	InstallerImage      string                     `json:"installer_image,omitempty"`
+	InstallerEntrypoint string                     `json:"installer_entrypoint,omitempty"`
+	InstallationScript  string                     `json:"installation_script,omitempty"`
+	StartupTemplate     string                     `json:"startup_template"`
+	StartupShell        string                     `json:"startup_shell"`
+	WorkingRoot         string                     `json:"working_root"`
+	ConfigOperations    []ContainerConfigOperation `json:"config_operations,omitempty"`
+	ResourceDefaults    ContainerResourceDefaults  `json:"resource_defaults"`
+}
+
+type ContainerConfigOperation struct {
+	Format   string `json:"format"`
+	Target   string `json:"target"`
+	Key      string `json:"key"`
+	Property string `json:"property,omitempty"`
+	Required bool   `json:"required,omitempty"`
+}
+
+type ContainerResourceDefaults struct {
+	MemoryLimitBytes int64 `json:"memory_limit_bytes"`
+	CPULimitMillis   int   `json:"cpu_limit_millis"`
+	PIDsLimit        int64 `json:"pids_limit"`
+	TempSizeBytes    int64 `json:"temp_size_bytes"`
 }
 
 type Finding struct {

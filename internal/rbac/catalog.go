@@ -3,7 +3,7 @@ package rbac
 type Permission struct{ Key, Category, Description string }
 
 var Catalog = []Permission{
-	{"Server.View", "Server", "View servers"}, {"Server.Create", "Server", "Create servers"}, {"Server.Edit", "Server", "Edit servers"}, {"Server.Delete", "Server", "Delete servers"}, {"Server.Start", "Server", "Start servers"}, {"Server.Stop", "Server", "Stop servers"}, {"Server.Restart", "Server", "Restart servers"}, {"Server.Kill", "Server", "Kill servers"},
+	{"Server.View", "Server", "View servers"}, {"Server.Create", "Server", "Create servers"}, {"Server.Edit", "Server", "Edit servers"}, {"Server.Delete", "Server", "Delete servers"}, {"Server.Start", "Server", "Start servers"}, {"Server.Stop", "Server", "Stop servers"}, {"Server.Restart", "Server", "Restart servers"}, {"Server.Kill", "Server", "Kill servers"}, {"Server.Update", "Server", "Manually update installed SteamCMD server files"},
 	{"Console.View", "Console", "View console"}, {"Console.Send", "Console", "Send console input"},
 	{"Files.View", "Files", "View files"}, {"Files.Edit", "Files", "Edit files"}, {"Files.Upload", "Files", "Upload files"}, {"Files.Download", "Files", "Download files"}, {"Files.Delete", "Files", "Delete files"}, {"Files.Rename", "Files", "Rename files"},
 	{"Ports.View", "Ports", "View server ports"}, {"Ports.Manage", "Ports", "Manage server ports"},
@@ -12,6 +12,17 @@ var Catalog = []Permission{
 	{"Templates.View", "Templates", "View imported game templates"}, {"Templates.Manage", "Templates", "Analyze, import, and delete game templates"},
 	{"Monitoring.View", "Monitoring", "View monitoring"}, {"Audit.View", "Audit", "View audit"},
 	{"Tenants.View", "Tenants", "View tenant entities"}, {"Tenants.Manage", "Tenants", "Create, update, and delete tenant entities"},
+	{"Node.View", "Node", "View this node's remote node registry and pairing status"}, {"Node.Manage", "Node", "Enroll, rename, enable/disable, and remove remote nodes; generate pairing tokens for this node"},
+	{"Cluster.View", "Cluster", "View cluster placement candidates and capacity for a tenant"}, {"Cluster.Schedule", "Cluster", "Compute a cluster placement decision for a tenant"},
+	// RemoteServer/RemoteConsole/RemoteFiles/RemoteMonitoring (v0.5B/v0.5C)
+	// govern the controller-side forwarding surface against an enrolled
+	// remote node's own servers - never local servers, which stay governed
+	// by Server.*/Console.*/Files.*/Monitoring.View above. See
+	// docs/adr/0010-remote-server-lifecycle-forwarding.md.
+	{"RemoteServer.View", "RemoteServer", "View remote servers on enrolled nodes"}, {"RemoteServer.Manage", "RemoteServer", "Create, edit, delete, and control the lifecycle of remote servers on enrolled nodes"},
+	{"RemoteConsole.View", "RemoteConsole", "View a remote server's console output"}, {"RemoteConsole.Send", "RemoteConsole", "Send input to a remote server's console"},
+	{"RemoteFiles.View", "RemoteFiles", "View files on a remote server"}, {"RemoteFiles.Edit", "RemoteFiles", "Edit and create files on a remote server"}, {"RemoteFiles.Upload", "RemoteFiles", "Upload files to a remote server"}, {"RemoteFiles.Download", "RemoteFiles", "Download files from a remote server"}, {"RemoteFiles.Delete", "RemoteFiles", "Delete files on a remote server"}, {"RemoteFiles.Rename", "RemoteFiles", "Move and rename files on a remote server"},
+	{"RemoteMonitoring.View", "RemoteMonitoring", "View monitoring data for a remote server"},
 }
 
 func Known(key string) bool {
@@ -37,8 +48,12 @@ func Known(key string) bool {
 // tenant, per GameNode_Tenant_Foundation_Prompt.md section 3.3.
 func GlobalOnly(key string) bool {
 	switch key {
-	case "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Audit.View", "Tenants.View", "Tenants.Manage":
+	case "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Audit.View", "Tenants.View", "Tenants.Manage", "Node.View", "Node.Manage":
 		return true
+	// Cluster.View/Cluster.Schedule are deliberately NOT global-only: a
+	// tenant-scoped operator must be able to request/inspect placement for
+	// their own tenant without a global grant, matching Server.Create's
+	// tenant-assignable convention. See AllowedScopes below.
 	default:
 		return false
 	}
@@ -63,10 +78,32 @@ func AllowedScopes(key string) []string {
 	if GlobalOnly(key) {
 		return []string{"global"}
 	}
-	if key == "Server.Create" {
+	if key == "Server.Create" || key == "Cluster.View" || key == "Cluster.Schedule" {
+		// A server does not exist yet when a placement decision is
+		// requested (or when Server.Create is evaluated), so a per-server
+		// scope is meaningless for either permission.
+		return []string{"global", "tenant"}
+	}
+	if isRemoteServerPermission(key) {
+		// Remote servers live in a remote node's own database, not this
+		// installation's local servers table, so there is no local
+		// per-remote-server assignment row to scope against (see
+		// internal/api/remoteservers.go's tenant-based authorization
+		// instead of a "server" scope). Only global and tenant grants are
+		// meaningful.
 		return []string{"global", "tenant"}
 	}
 	return []string{"global", "tenant", "server"}
+}
+
+func isRemoteServerPermission(key string) bool {
+	switch key {
+	case "RemoteServer.View", "RemoteServer.Manage", "RemoteConsole.View", "RemoteConsole.Send",
+		"RemoteFiles.View", "RemoteFiles.Edit", "RemoteFiles.Upload", "RemoteFiles.Download", "RemoteFiles.Delete", "RemoteFiles.Rename", "RemoteMonitoring.View":
+		return true
+	default:
+		return false
+	}
 }
 
 // ScopeAllowed reports whether a permission may become effective through an

@@ -2,6 +2,7 @@ package logging
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -43,6 +44,105 @@ func TestLoggerWritesReadableModuleLineAndClearsHistoricFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(directory, entries[0].Name())); err != nil {
 		t.Fatalf("current file was not retained: %v", err)
+	}
+}
+
+func TestCategoryDisabledSuppressesInfoAndBelow(t *testing.T) {
+	directory := t.TempDir()
+	manager, log, err := New(directory, "debug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetCategories(map[string]bool{CategoryHTTP: false}); err != nil {
+		t.Fatal(err)
+	}
+	WithCategory(log, CategoryHTTP).Info("http request completed", "path", "/api/v1/dashboard")
+	WithCategory(log, CategoryRuntime).Info("server started", "server_id", "server-1")
+	if len(manager.Entries()) != 1 {
+		t.Fatalf("expected only the enabled-category entry to be recorded: %#v", manager.Entries())
+	}
+	if strings.Contains(manager.Entries()[0].Line, "http request completed") {
+		t.Fatalf("disabled category entry was recorded: %#v", manager.Entries())
+	}
+}
+
+func TestCategoryEnabledEmitsEntries(t *testing.T) {
+	directory := t.TempDir()
+	manager, log, err := New(directory, "debug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetCategories(map[string]bool{CategoryHTTP: true, CategoryRuntime: false}); err != nil {
+		t.Fatal(err)
+	}
+	WithCategory(log, CategoryHTTP).Info("http request completed", "path", "/api/v1/dashboard")
+	entries := manager.Entries()
+	if len(entries) != 1 || !strings.Contains(entries[0].Line, "http request completed") {
+		t.Fatalf("expected enabled category entry to be recorded: %#v", entries)
+	}
+}
+
+func TestDisabledCategoryNeverHidesWarningsOrErrors(t *testing.T) {
+	directory := t.TempDir()
+	manager, log, err := New(directory, "debug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetCategories(map[string]bool{CategoryHTTP: false}); err != nil {
+		t.Fatal(err)
+	}
+	WithCategory(log, CategoryHTTP).Warn("http request rejected", "status", 400)
+	WithCategory(log, CategoryHTTP).Error("http request failed", "status", 500)
+	entries := manager.Entries()
+	if len(entries) != 2 {
+		t.Fatalf("expected warn/error entries to survive a disabled category: %#v", entries)
+	}
+}
+
+func TestUnknownCategoryIsRejected(t *testing.T) {
+	directory := t.TempDir()
+	manager, _, err := New(directory, "info")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetCategories(map[string]bool{"nonsense": true}); err == nil {
+		t.Fatal("expected an unknown category to be rejected")
+	}
+}
+
+func TestDetailedErrorsGateUnderlyingError(t *testing.T) {
+	directory := t.TempDir()
+	manager, log, err := New(directory, "info")
+	if err != nil {
+		t.Fatal(err)
+	}
+	underlying := errors.New(`UNIQUE constraint failed: users.username (SQLITE_CONSTRAINT_UNIQUE)`)
+	log.Error("settings update failed", "error_summary", "operation failed", ErrorDetail(underlying))
+	if strings.Contains(manager.Entries()[0].Line, "SQLITE_CONSTRAINT_UNIQUE") {
+		t.Fatalf("underlying error leaked while detailed errors were disabled: %#v", manager.Entries())
+	}
+	manager.SetDetailedErrors(true)
+	log.Error("settings update failed", "error_summary", "operation failed", ErrorDetail(underlying))
+	entries := manager.Entries()
+	if !strings.Contains(entries[len(entries)-1].Line, "SQLITE_CONSTRAINT_UNIQUE") {
+		t.Fatalf("underlying error missing while detailed errors were enabled: %#v", entries)
+	}
+}
+
+func TestErrorDetailAttachesSecretLikeUnderlyingErrorOnlyWhenEnabled(t *testing.T) {
+	// This does not claim ErrorDetail redacts secrets - it documents the
+	// existing contract that callers must only ever pass errors from
+	// trusted internal libraries (e.g. a database driver), never request
+	// input, and confirms the gate itself is the only thing standing
+	// between that value and the log file.
+	directory := t.TempDir()
+	manager, log, err := New(directory, "info")
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.Error("op failed", ErrorDetail(errors.New("token=super-secret-value")))
+	if strings.Contains(manager.Entries()[0].Line, "super-secret-value") {
+		t.Fatal("underlying error field leaked while detailed errors were disabled")
 	}
 }
 

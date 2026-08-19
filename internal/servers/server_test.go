@@ -144,6 +144,66 @@ func testServer(t *testing.T) Server {
 	return Server{TenantID: tenants.DefaultTenantID, Name: "test", CreationMode: CreationCustom, WorkingDirectory: filepath.Dir(exe), Executable: exe, Arguments: []string{}, EnvironmentVariables: map[string]string{"GAME_NODE_TEST": "1"}, StopTimeoutSeconds: 1}
 }
 
+func TestCreateRejectsDuplicateNameCaseInsensitively(t *testing.T) {
+	service, _, _, db := testService(t)
+	defer db.Close()
+	first := testServer(t)
+	first.Name = "Shared Name"
+	if _, err := service.Create(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	second := testServer(t)
+	second.Name = "shared name" // same name, different case: servers.name is COLLATE NOCASE
+	_, err := service.Create(context.Background(), second)
+	if !errors.Is(err, ErrDuplicateName) {
+		t.Fatalf("err=%v", err)
+	}
+	// The rejected error must never carry raw SQL/driver text.
+	if strings.Contains(strings.ToLower(err.Error()), "constraint") {
+		t.Fatalf("duplicate-name error leaked raw SQL text: %v", err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM servers`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("servers=%d err=%v", count, err)
+	}
+}
+
+func TestNameAvailableReportsExistingServerBeforeCreate(t *testing.T) {
+	service, _, _, db := testService(t)
+	defer db.Close()
+	server := testServer(t)
+	server.Name = "Preflight Name"
+	if _, err := service.Create(context.Background(), server); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.NameAvailable(context.Background(), "preflight name"); !errors.Is(err, ErrDuplicateName) {
+		t.Fatalf("err=%v", err)
+	}
+	if err := service.NameAvailable(context.Background(), "Another Free Name"); err != nil {
+		t.Fatalf("free name rejected: %v", err)
+	}
+}
+
+func TestCreateProvisionedRejectsDuplicateName(t *testing.T) {
+	_, _, _, db := testService(t)
+	defer db.Close()
+	store := NewStore(db)
+	first := testServer(t)
+	first.Name = "Provisioned Server"
+	if _, err := store.CreateProvisioned(context.Background(), first, "template", nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	second := testServer(t)
+	second.Name = "provisioned server"
+	if _, err := store.CreateProvisioned(context.Background(), second, "template", nil, nil, nil, nil); !errors.Is(err, ErrDuplicateName) {
+		t.Fatalf("err=%v", err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM servers`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("servers=%d err=%v", count, err)
+	}
+}
+
 func TestServerValidationRejectsEscapingExecutable(t *testing.T) {
 	dir := t.TempDir()
 	server := Server{Name: "test", WorkingDirectory: dir, Executable: ".." + string(filepath.Separator) + "outside", StopTimeoutSeconds: 1}

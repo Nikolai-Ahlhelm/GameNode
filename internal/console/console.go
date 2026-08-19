@@ -274,6 +274,30 @@ func (s *Session) Subscribe() (<-chan Event, func()) {
 	}
 }
 
+// Snapshot returns a bounded copy of this session's buffered output events
+// (never more than the fixed ring-buffer capacity) plus its current state.
+// It is used by the Remote Node console read endpoint (see
+// docs/adr/0011-remote-operational-hardening.md), which polls this method
+// instead of relaying the interactive WebSocket protocol across a
+// machine-authenticated boundary - a deliberately bounded, non-streaming
+// contract with no open subscriber channel and therefore no goroutine to
+// leak.
+func (s *Session) Snapshot() ([]Event, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	start := 0
+	count := s.next
+	if s.full {
+		start = s.next
+		count = len(s.events)
+	}
+	out := make([]Event, count)
+	for i := 0; i < count; i++ {
+		out[i] = s.events[(start+i)%len(s.events)]
+	}
+	return out, s.state
+}
+
 func (s *Session) Input(data string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

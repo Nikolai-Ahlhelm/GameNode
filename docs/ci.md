@@ -47,3 +47,7 @@ git push origin v0.1.0
 ```
 
 After downloading a release asset, verify it against `SHA256SUMS.txt` with the platform's SHA-256 tool before deployment.
+# Container runtime checks
+
+CI validates the Engine boundary with deterministic fakes. It does not claim a
+real Docker daemon acceptance test; that remains an opt-in environment check.

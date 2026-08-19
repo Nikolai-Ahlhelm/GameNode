@@ -12,6 +12,7 @@ import (
 
 	"gamenode/internal/audit"
 	"gamenode/internal/auth"
+	"gamenode/internal/logging"
 	"gamenode/internal/rbac"
 	"gamenode/internal/servers"
 	"gamenode/internal/templates"
@@ -82,7 +83,7 @@ func (s *Server) neoForgeTemplateAction(w http.ResponseWriter, r *http.Request, 
 	}
 	server := servers.Server{CreationMode: servers.CreationTemplate, Name: strings.TrimSpace(input.ServerName), Description: template.Description, WorkingDirectory: resolved.WorkingDirectory, Executable: resolved.Executable, Arguments: resolved.Arguments, EnvironmentVariables: map[string]string{}, RuntimeType: "native", RestartPolicy: "never", StopMethod: resolved.StopMethod, StopCommand: resolved.StopCommand, StopTimeoutSeconds: resolved.StopTimeout, AutoRestartMaxAttempts: 3, AutoRestartWindowSeconds: 300, AutoRestartDelaySeconds: 5}
 	metadata := []servers.ProvisionedVariable{{Key: "MIN_MEMORY_MB", Source: template.SourceType, Version: template.Version}, {Key: "MAX_MEMORY_MB", Source: template.SourceType, Version: template.Version}, {Key: "NOGUI", Source: template.SourceType, Version: template.Version}}
-	record, err := s.servers.CreateProvisioned(r.Context(), server, template.ID, metadata, nil, nil)
+	record, err := s.servers.CreateProvisioned(r.Context(), server, template.ID, metadata, nil, nil, nil)
 	if err != nil {
 		s.recordServerAudit(r, actor, audit.ServerCreate, audit.Failure, "", server.Name, err)
 		serverError(w, err, false)
@@ -144,7 +145,7 @@ func decodeEggInput(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 }
 
 func templateAuditMetadata(template templates.Template) json.RawMessage {
-	metadata, _ := json.Marshal(map[string]any{"source_type": template.SourceType, "compatibility_status": template.Compatibility.Status, "variable_count": len(template.Variables), "installer_type": template.Installer.Type})
+	metadata, _ := json.Marshal(map[string]any{"source_type": template.SourceType, "native_compatibility_status": template.Compatibility.Status, "container_compatibility_status": template.ContainerCompatibility.Status, "variable_count": len(template.Variables), "installer_type": template.Installer.Type})
 	return metadata
 }
 func (s *Server) recordTemplateAudit(r *http.Request, actor auth.User, action, result string, template templates.Template, err error) {
@@ -159,6 +160,7 @@ func (s *Server) recordTemplateAudit(r *http.Request, actor auth.User, action, r
 	if err != nil {
 		input.errorCode = "template_operation_failed"
 		input.errorSummary = "template operation failed"
+		input.err = err
 	}
 	s.recordAudit(r, input)
 }
@@ -210,17 +212,17 @@ func (s *Server) templateHandler(w http.ResponseWriter, r *http.Request) {
 		if path == "analyze/egg" {
 			template, err := s.templates.Analyze(data)
 			if err != nil {
-				s.log.Warn("Egg analysis rejected", "module", "Templates.Analyze", "actor_user_id", actor.ID, "error", err)
+				s.log.Warn("Egg analysis rejected", "module", "Templates.Analyze", "category", logging.CategoryTemplates, "actor_user_id", actor.ID, "error", err)
 				errorOut(w, http.StatusUnprocessableEntity, "invalid_egg", "egg could not be safely normalized")
 				return
 			}
-			s.log.Info("Egg analysis completed", "module", "Templates.Analyze", "actor_user_id", actor.ID, "template_id", template.ID, "compatibility", template.Compatibility.Status)
+			s.log.Info("Egg analysis completed", "module", "Templates.Analyze", "category", logging.CategoryTemplates, "actor_user_id", actor.ID, "template_id", template.ID, "compatibility", template.Compatibility.Status)
 			jsonOut(w, http.StatusOK, template)
 			return
 		}
 		template, err := s.templates.Import(r.Context(), data)
 		if err != nil {
-			s.log.Error("template import failed", "module", "Templates.Import", "actor_user_id", actor.ID, "error", err)
+			s.log.Error("template import failed", "module", "Templates.Import", "category", logging.CategoryTemplates, "actor_user_id", actor.ID, "error", err)
 			s.recordTemplateAudit(r, actor, audit.TemplateImport, audit.Failure, templates.Template{}, err)
 			if errors.Is(err, templates.ErrInvalidEgg) {
 				errorOut(w, http.StatusUnprocessableEntity, "invalid_egg", "egg could not be safely imported")
@@ -230,7 +232,7 @@ func (s *Server) templateHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.recordTemplateAudit(r, actor, audit.TemplateImport, audit.Success, template, nil)
-		s.log.Info("template imported", "module", "Templates.Import", "actor_user_id", actor.ID, "template_id", template.ID)
+		s.log.Info("template imported", "module", "Templates.Import", "category", logging.CategoryTemplates, "actor_user_id", actor.ID, "template_id", template.ID)
 		jsonOut(w, http.StatusCreated, template)
 		return
 	}
@@ -268,7 +270,7 @@ func (s *Server) templateHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err = s.templates.Delete(r.Context(), path); err != nil {
-			s.log.Error("template deletion failed", "module", "Templates.Delete", "actor_user_id", actor.ID, "template_id", path, "error", err)
+			s.log.Error("template deletion failed", "module", "Templates.Delete", "category", logging.CategoryTemplates, "actor_user_id", actor.ID, "template_id", path, "error", err)
 			s.recordTemplateAudit(r, actor, audit.TemplateDelete, audit.Failure, template, err)
 			if errors.Is(err, templates.ErrBuiltinReadOnly) {
 				errorOut(w, http.StatusConflict, "read_only_template", "official and built-in templates cannot be deleted")
@@ -278,7 +280,7 @@ func (s *Server) templateHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.recordTemplateAudit(r, actor, audit.TemplateDelete, audit.Success, template, nil)
-		s.log.Info("template deleted", "module", "Templates.Delete", "actor_user_id", actor.ID, "template_id", path)
+		s.log.Info("template deleted", "module", "Templates.Delete", "category", logging.CategoryTemplates, "actor_user_id", actor.ID, "template_id", path)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		method(w)

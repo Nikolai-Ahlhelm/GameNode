@@ -16,6 +16,7 @@ import (
 var (
 	environmentKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
 	sensitiveKey   = regexp.MustCompile(`(?i)(PASSWORD|PASS($|_)|TOKEN|SECRET|API_?KEY|AUTH)`)
+	containerImage = regexp.MustCompile(`^(?:(?:[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?)(?::[0-9]{1,5})?/)?(?:[a-z0-9][a-z0-9._-]{0,127}/)*[a-z0-9][a-z0-9._-]{0,127}(?::[A-Za-z0-9][A-Za-z0-9_.-]{0,127})?(?:@sha256:[a-f0-9]{64})?$`)
 )
 
 type eggDocument struct {
@@ -198,7 +199,9 @@ func AnalyzeEgg(data []byte) (Template, error) {
 			addFinding(&result, SeverityWarning, "config", "CONFIG_PARSER_UNSUPPORTED", "Egg config "+key+" rules are retained only as a compatibility signal")
 		}
 	}
+	result.ContainerRuntime, result.ContainerCompatibility = analyzeContainerRuntime(egg, result.Variables, knownVariables)
 	finalizeCompatibility(&result)
+	result.NativeCompatibility = result.Compatibility
 	return result, nil
 }
 
@@ -238,7 +241,10 @@ func validateEggStrings(egg eggDocument) error {
 	if len(egg.Tags) > 64 || len(egg.Features) > 64 || len(egg.DockerImages) > 64 || len(egg.FileDenylist) > 64 || len(egg.Config) > 32 {
 		return errors.New("egg collection limit exceeded")
 	}
-	values := []string{egg.Name, egg.Description, egg.Author, egg.UUID, egg.ExportedAt, egg.Meta.Version, egg.Startup, egg.Scripts.Installation.Container, egg.Scripts.Installation.Entrypoint}
+	if len(egg.Scripts.Installation.Script) > MaxContainerScriptBytes {
+		return errors.New("egg installation script exceeds the bounded container limit")
+	}
+	values := []string{egg.Name, egg.Description, egg.Author, egg.UUID, egg.ExportedAt, egg.Meta.Version, egg.Startup, egg.Scripts.Installation.Script, egg.Scripts.Installation.Container, egg.Scripts.Installation.Entrypoint}
 	for key, value := range egg.DockerImages {
 		if len(key) > 1024 || len(value) > 1024 {
 			return errors.New("egg container metadata is too long")
@@ -253,6 +259,227 @@ func validateEggStrings(egg eggDocument) error {
 		}
 	}
 	return nil
+}
+
+// ValidateContainerImageReference accepts only a bounded Docker-style image
+// reference. Schemes, paths to local files, whitespace, and shell syntax are
+// rejected before an image can reach policy or the Engine API.
+func ValidateContainerImageReference(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 512 || strings.ContainsAny(value, "\x00\r\n \t") || strings.Contains(value, "://") || !containerImage.MatchString(value) {
+		return errors.New("invalid container image reference")
+	}
+	return nil
+}
+
+func analyzeContainerRuntime(egg eggDocument, variables []TemplateVariable, known map[string]bool) (*ContainerEggRuntimePlan, Compatibility) {
+	compatibility := Compatibility{Status: Compatible}
+	plan := &ContainerEggRuntimePlan{StartupTemplate: strings.TrimSpace(egg.Startup), StartupShell: "/bin/sh", WorkingRoot: "server_root", ResourceDefaults: ContainerResourceDefaults{MemoryLimitBytes: 1 << 30, CPULimitMillis: 1000, PIDsLimit: 512, TempSizeBytes: 256 << 20}}
+	images := make([]string, 0, len(egg.DockerImages)+1)
+	seen := map[string]bool{}
+	addImage := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		images = append(images, value)
+	}
+	for _, value := range egg.DockerImages {
+		addImage(value)
+	}
+	if err := ValidateContainerImageReference(egg.Scripts.Installation.Container); err == nil {
+		addImage(egg.Scripts.Installation.Container)
+	} else if strings.TrimSpace(egg.Scripts.Installation.Container) != "" {
+		addContainerFinding(&compatibility, SeverityError, "image", "CONTAINER_IMAGE_INVALID", "The Egg installer image is not a valid image reference")
+	}
+	sort.Strings(images)
+	if len(images) == 0 {
+		addContainerFinding(&compatibility, SeverityError, "image", "CONTAINER_IMAGE_MISSING", "The Egg does not declare a usable container image")
+	} else if len(images) > MaxContainerImages {
+		addContainerFinding(&compatibility, SeverityError, "image", "CONTAINER_IMAGE_LIMIT", "The Egg declares too many container images")
+		images = images[:MaxContainerImages]
+	}
+	for _, image := range images {
+		if err := ValidateContainerImageReference(image); err != nil {
+			addContainerFinding(&compatibility, SeverityError, "image", "CONTAINER_IMAGE_INVALID", "The Egg declares an invalid container image reference")
+			break
+		}
+	}
+	plan.Images = images
+	plan.InstallerImage = strings.TrimSpace(egg.Scripts.Installation.Container)
+	if plan.InstallerImage == "" && len(images) > 0 {
+		plan.InstallerImage = images[0]
+	}
+	plan.InstallerEntrypoint = strings.TrimSpace(egg.Scripts.Installation.Entrypoint)
+	if plan.InstallerEntrypoint == "" {
+		plan.InstallerEntrypoint = "/bin/sh"
+	}
+	if !validContainerEntrypoint(plan.InstallerEntrypoint) {
+		addContainerFinding(&compatibility, SeverityError, "installer", "CONTAINER_ENTRYPOINT_UNSUPPORTED", "The Egg installer entrypoint is outside the controlled shell allowlist")
+	}
+	plan.InstallationScript = egg.Scripts.Installation.Script
+	if len(plan.InstallationScript) > MaxContainerScriptBytes {
+		addContainerFinding(&compatibility, SeverityError, "installer", "CONTAINER_INSTALL_SCRIPT_TOO_LARGE", "The Egg installation script exceeds the bounded installer limit")
+	}
+	if strings.TrimSpace(plan.StartupTemplate) == "" {
+		addContainerFinding(&compatibility, SeverityError, "startup", "CONTAINER_STARTUP_MISSING", "The Egg does not declare a container startup command")
+	} else if !balancedShellText(plan.StartupTemplate) || strings.ContainsRune(plan.StartupTemplate, 0) || strings.Contains(plan.StartupTemplate, "$(") || strings.ContainsRune(plan.StartupTemplate, '`') {
+		addContainerFinding(&compatibility, SeverityError, "startup", "CONTAINER_STARTUP_MALFORMED", "The Egg startup command is not a bounded container-internal shell plan")
+	} else if _, err := Expand(plan.StartupTemplate, defaultVariableValues(variables), known); err != nil {
+		addContainerFinding(&compatibility, SeverityError, "startup", "CONTAINER_STARTUP_VARIABLE_UNSUPPORTED", "The Egg startup command references an unknown or unsupported variable")
+	}
+	if operations, ok := analyzeContainerConfig(egg.Config, known); ok {
+		plan.ConfigOperations = operations
+	} else if meaningfulContainerConfig(egg.Config) {
+		addContainerFinding(&compatibility, SeverityError, "config", "CONTAINER_CONFIG_SEMANTICS_UNSUPPORTED", "The Egg requires configuration semantics that GameNode does not understand safely")
+	}
+	if len(egg.Scripts.Installation.Script) > 0 {
+		addContainerFinding(&compatibility, SeverityInfo, "installer", "CONTAINER_INSTALL_SCRIPT_SANDBOXED", "The Egg installation script is available only inside the unprivileged installer container")
+	}
+	finalizeCompatibilityValue(&compatibility)
+	return plan, compatibility
+}
+
+func defaultVariableValues(variables []TemplateVariable) map[string]string {
+	values := make(map[string]string, len(variables))
+	for _, variable := range variables {
+		values[variable.Key] = variable.DefaultValue
+	}
+	return values
+}
+
+func validContainerEntrypoint(value string) bool {
+	switch value {
+	case "sh", "bash", "/bin/sh", "/bin/bash":
+		return true
+	default:
+		return false
+	}
+}
+
+func balancedShellText(value string) bool {
+	quote := rune(0)
+	escaped := false
+	for _, r := range value {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' && quote != '\'' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		if r == '\'' || r == '"' {
+			quote = r
+		}
+	}
+	return quote == 0 && !escaped
+}
+
+func addContainerFinding(compatibility *Compatibility, severity, component, code, summary string) {
+	if len(compatibility.Findings) < MaxFindings {
+		compatibility.Findings = append(compatibility.Findings, Finding{Severity: severity, Component: component, Code: code, Summary: summary})
+	}
+}
+
+func finalizeCompatibilityValue(compatibility *Compatibility) {
+	compatibility.Status = Compatible
+	for _, finding := range compatibility.Findings {
+		if finding.Severity == SeverityError {
+			compatibility.Status = Unsupported
+			return
+		}
+		if finding.Severity == SeverityWarning {
+			compatibility.Status = PartiallyCompatible
+		}
+	}
+}
+
+func analyzeContainerConfig(config map[string]json.RawMessage, known map[string]bool) ([]ContainerConfigOperation, bool) {
+	raw, ok := config["files"]
+	if !ok {
+		return nil, len(config) == 0
+	}
+	for key, value := range config {
+		if key != "files" && meaningfulConfig(value) {
+			return nil, false
+		}
+	}
+	if !meaningfulConfig(raw) {
+		return nil, true
+	}
+	var encoded string
+	if json.Unmarshal(raw, &encoded) == nil {
+		raw = json.RawMessage(encoded)
+	}
+	var files map[string]struct {
+		Parser   string            `json:"parser"`
+		Find     map[string]string `json:"find"`
+		Replace  map[string]string `json:"replace"`
+		Required bool              `json:"required"`
+	}
+	if json.Unmarshal(raw, &files) != nil || len(files) > 32 {
+		return nil, false
+	}
+	var operations []ContainerConfigOperation
+	for target, definition := range files {
+		path := strings.TrimSpace(target)
+		if _, err := ExpandRelativePath(path, defaultVariableValuesFromKnown(known), known); err != nil || path == "" || len(path) > 240 {
+			return nil, false
+		}
+		switch definition.Parser {
+		case "properties", "key-value", "ini":
+			for key, value := range definition.Find {
+				if _, err := Expand(value, defaultVariableValuesFromKnown(known), known); err != nil {
+					return nil, false
+				}
+				operations = append(operations, ContainerConfigOperation{Format: "properties", Target: path, Key: key, Property: value, Required: definition.Required})
+			}
+			for key, value := range definition.Replace {
+				if _, err := Expand(value, defaultVariableValuesFromKnown(known), known); err != nil {
+					return nil, false
+				}
+				operations = append(operations, ContainerConfigOperation{Format: "properties", Target: path, Key: key, Property: value, Required: definition.Required})
+			}
+		case "json":
+			for key, value := range definition.Replace {
+				if _, err := Expand(value, defaultVariableValuesFromKnown(known), known); err != nil {
+					return nil, false
+				}
+				operations = append(operations, ContainerConfigOperation{Format: "json", Target: path, Key: key, Property: value, Required: definition.Required})
+			}
+		default:
+			return nil, false
+		}
+	}
+	if len(operations) == 0 {
+		return nil, false
+	}
+	return operations, true
+}
+
+func defaultVariableValuesFromKnown(known map[string]bool) map[string]string {
+	values := make(map[string]string, len(known))
+	for key := range known {
+		values[key] = "value"
+	}
+	return values
+}
+
+func meaningfulContainerConfig(config map[string]json.RawMessage) bool {
+	for _, raw := range config {
+		if meaningfulConfig(raw) {
+			return true
+		}
+	}
+	return false
 }
 
 func boundedStrings(values []string) []string {
@@ -444,15 +671,5 @@ func addFinding(template *Template, severity, component, code, summary string) {
 	}
 }
 func finalizeCompatibility(template *Template) {
-	status := Compatible
-	for _, f := range template.Compatibility.Findings {
-		if f.Severity == SeverityError {
-			status = Unsupported
-			break
-		}
-		if f.Severity == SeverityWarning {
-			status = PartiallyCompatible
-		}
-	}
-	template.Compatibility.Status = status
+	finalizeCompatibilityValue(&template.Compatibility)
 }

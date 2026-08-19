@@ -4,6 +4,7 @@ config.yaml
 
 # Local Go toolchain caches (the module manifest remains go.mod/go.sum).
 .gocache/
+.gocache*
 .gomodcache/
 
 # Local npm cache and installed frontend dependencies.
@@ -15,3 +16,6 @@ web/.vite/
 # Disposable data created by the Windows acceptance harnesses.
 tmp-e2e-data/
 Builds/
+.claude/worktrees/
+.gocache-v04-gate/
+.gocache-v04-gate/

@@ -17,6 +17,8 @@ Run `go test ./...`, `go test -race ./...`, and `go vet ./...`, then `npm ci`, `
 
 Tenant/RBAC-scope isolation has its own regression suite, `internal/api/cross_tenant_test.go`, run as part of `go test ./internal/api`; it builds two fully independent tenants and asserts uniform `403` cross-tenant denial plus dashboard/list non-leakage. Pure tenant frontend logic (slug derivation, name/slug validation, membership candidate filtering, tenant selector locking) is covered by `web/tests/tenants-helpers.test.ts`, part of `npm run test:helpers`.
 
+Remote Node Foundation (v0.5A) backend coverage lives in `internal/nodeidentity`, `internal/nodes`, `internal/remote` (own package test suites, including `httptest`-backed transport/redirect/timeout/oversized-response cases for the remote client), and `internal/api/node_test.go` (pairing/enrollment end-to-end, machine-auth rejection of a browser session, RBAC/CSRF on the controller-facing registry API). Frontend health/compatibility/capability formatting and endpoint/pairing-token validation are covered by `web/tests/nodes-helpers.test.ts`.
+
 Theme resolution and wallpaper/preference sanitization (`web/src/theme.ts`) are covered by `web/tests/theme.test.ts`; the shared server/health status-to-tone mapping (`web/src/server-status.ts`) is covered by `web/tests/server-status.test.ts`. Both run as part of `npm run test:helpers`. The wallpaper file-processing path (`web/src/wallpaper.ts`) needs a real `createImageBitmap`/canvas and is verified manually in a browser instead (see the UI theme section of `docs/architecture.md`).
 
 ## GitHub Actions CI and releases
@@ -110,8 +112,14 @@ SteamCMD unit tests use mocked downloaders/runners and in-memory archives. Provi
 Run race-sensitive packages explicitly:
 
 ```sh
-go test -race ./internal/steamcmd ./internal/provisioning
+go test -race ./internal/steamcmd ./internal/provisioning ./internal/servers ./internal/serverupdates
 ```
+
+## Manual SteamCMD server update development (v0.2.1)
+
+`internal/serverupdates` tests reuse the `internal/provisioning` conventions (real SQLite via `internal/database`, hand-written fake `Installer` with cancellation channels) but need no `TemplateSource`/ports/config-adapter fixtures. Cover at minimum: successful update, validate on/off, the trusted App ID/plan reaching the installer unchanged, cancellation mid-run, SteamCMD failure, post-update missing-executable failure, running/starting/stopping-server rejection, concurrent same-server rejection, independent-server concurrency, interrupted-job recovery, and an ineligible (no persisted metadata) server. `internal/servers` additionally covers the `BeginUpdate`/release reservation and its Start/Restart/Delete guards, plus `VerifyLaunchExecutablePresent`'s sandbox checks. `internal/api` tests mirror `provisioning_test.go`'s auth/RBAC/CSRF/ownership/audit shape for `/servers/{id}/update` and `/server-update-jobs/{id}`.
+
+When adding or reviewing this feature, verify a template version bump on the Official catalog never changes an existing server's update behavior: a server's `server_steamcmd_provisioning` snapshot is immutable once written, so an update always re-installs the App ID pinned at provisioning time regardless of the current catalog.
 
 An opt-in official bootstrap smoke test is available and is skipped by default:
 
@@ -150,3 +158,12 @@ go test ./internal/provisioning -run '^TestSatisfactoryFullDeploymentIntegration
 ```
 
 The acceptance provisions App ID `1690800`, verifies `FactoryServer.exe`, structured port/player arguments, three registered port rows, start stability, terminate behavior, and restart. It does not claim or configure the server through the game API and does not characterize Windows terminate as graceful.
+# Container development
+
+Normal unit tests use a fake Engine and fake Container installer and do not require
+Docker. Container Egg tests cover image/startup/config analysis, bounded installer
+specification, fake-engine provisioning, snapshot persistence, cancellation and
+cleanup. Real acceptance is opt-in and requires a Linux-accessible Docker Engine
+socket; it should use a small public image and explicitly Pull before Start. Docker
+CLI is not part of the product test path. Real Egg acceptance must use a disposable
+target and must verify that the host process never receives the Egg shell command.

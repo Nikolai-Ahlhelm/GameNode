@@ -42,7 +42,7 @@ func TestManagedGameConfigurationAPICSRFSecretsAuditAndSnapshot(t *testing.T) {
 	definition := templates.ConfigAdapterDefinition{SchemaVersion: 1, ID: "serverconfig", Version: "1.0.0", Format: "xml-properties", Target: "serverconfig.xml", RestartRequired: true, Fields: []templates.ConfigAdapterField{{Key: "NAME", Label: "Server name", Type: "string", Property: "ServerName", Required: true, Validation: templates.Validation{MaxLength: &maxLength}}, {Key: "PASSWORD", Label: "Password", Type: "secret", Property: "ServerPassword", Nullable: true, Sensitive: true, Validation: templates.Validation{MaxLength: &maxLength}}}}
 	raw, _ := json.Marshal(definition)
 	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
-	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "Managed", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "template", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: 1, Version: definition.Version, TemplateID: "template", TemplateVersion: "1.0.0", DefinitionJSON: raw}})
+	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "Managed", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "template", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: 1, Version: definition.Version, TemplateID: "template", TemplateVersion: "1.0.0", DefinitionJSON: raw}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestManagedPostStartINIConfigurationPendingThenAvailable(t *testing.T) {
 	definition := templates.ConfigAdapterDefinition{SchemaVersion: 1, ID: "project-zomboid-server-ini", Version: "1.0.0", Format: "ini-key-values", Target: "Server/gamenode.ini", RestartRequired: true, PostStartOnly: true, Fields: []templates.ConfigAdapterField{{Key: "PZ_PUBLIC_NAME", Label: "Public name", Type: "string", Property: "PublicName", Required: true, Validation: templates.Validation{MaxLength: &maxLength}}, {Key: "PZ_PASSWORD", Label: "Password", Type: "secret", Property: "Password", Nullable: true, Sensitive: true, Validation: templates.Validation{MaxLength: &maxLength}}}}
 	raw, _ := json.Marshal(definition)
 	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
-	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "PZ", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "project-zomboid", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: 1, Version: definition.Version, TemplateID: "project-zomboid", TemplateVersion: "1.1.0", DefinitionJSON: raw}})
+	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "PZ", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "project-zomboid", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: 1, Version: definition.Version, TemplateID: "project-zomboid", TemplateVersion: "1.1.0", DefinitionJSON: raw}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

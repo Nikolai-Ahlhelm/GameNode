@@ -16,6 +16,7 @@ and TCP `3001` for the web interface. `Configs/Network.eco` is generated on the
 first start and is not currently modified by GameNode. Linux installations may
 require the host-provided `libgdiplus` package.
 
-SteamCMD is used for initial installation only. Automatic updates, online
-authentication, RCON management, mod management, firewall changes, and backups
-remain outside this template.
+SteamCMD supports initial installation and explicit manual updates through
+GameNode's Update Server action. Automatic, scheduled, and update-on-start
+updates, online authentication, RCON management, mod management, firewall
+changes, and backups remain outside this template.

@@ -62,7 +62,7 @@ func TestManagedLaunchConfigurationAPISecrecy(t *testing.T) {
 	raw, _ := json.Marshal(definition)
 	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
 	configService := gameconfig.New(db, serverService)
-	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "Valheim API", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate, Arguments: []string{"-nographics"}}, "valheim", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: definition.SchemaVersion, Version: definition.Version, TemplateID: "valheim", TemplateVersion: "1.1.0", DefinitionJSON: raw, Values: []servers.ProvisionedConfigValue{{Key: "SERVER_NAME", Value: "My Valheim"}, {Key: "CROSSPLAY", Value: "1"}}}})
+	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "Valheim API", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate, Arguments: []string{"-nographics"}}, "valheim", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: definition.SchemaVersion, Version: definition.Version, TemplateID: "valheim", TemplateVersion: "1.1.0", DefinitionJSON: raw, Values: []servers.ProvisionedConfigValue{{Key: "SERVER_NAME", Value: "My Valheim"}, {Key: "CROSSPLAY", Value: "1"}}}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestManagedLaunchConfigurationRequiresServerEdit(t *testing.T) {
 	definition := managedLaunchDefinition()
 	raw, _ := json.Marshal(definition)
 	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
-	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "Valheim RBAC", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "valheim", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: definition.SchemaVersion, Version: definition.Version, TemplateID: "valheim", TemplateVersion: "1.1.0", DefinitionJSON: raw, Values: []servers.ProvisionedConfigValue{{Key: "SERVER_NAME", Value: "My Valheim"}, {Key: "CROSSPLAY", Value: "0"}}}})
+	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "Valheim RBAC", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "valheim", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: definition.SchemaVersion, Version: definition.Version, TemplateID: "valheim", TemplateVersion: "1.1.0", DefinitionJSON: raw, Values: []servers.ProvisionedConfigValue{{Key: "SERVER_NAME", Value: "My Valheim"}, {Key: "CROSSPLAY", Value: "0"}}}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

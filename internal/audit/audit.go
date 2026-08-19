@@ -33,54 +33,77 @@ const (
 	System   = "system"
 	Template = "template"
 	Tenant   = "tenant"
+	Node     = "node"
+	Cluster  = "cluster"
+	// RemoteServer/RemoteConsole/RemoteFile cover v0.5B/v0.5C actions the
+	// controller performs against a remote node's own server - distinct
+	// resource types from Server/Console/File above, which always mean a
+	// LOCAL resource on this installation.
+	RemoteServer  = "remote_server"
+	RemoteConsole = "remote_console"
+	RemoteFile    = "remote_file"
 )
 const (
-	Login                   = "auth.login"
-	Logout                  = "auth.logout"
-	ServerCreate            = "server.create"
-	ServerUpdate            = "server.update"
-	ServerDelete            = "server.delete"
-	ServerStart             = "server.start"
-	ServerStop              = "server.stop"
-	ServerRestart           = "server.restart"
-	ServerKill              = "server.kill"
-	PortCreate              = "port.create"
-	PortUpdate              = "port.update"
-	PortDelete              = "port.delete"
-	FileCreate              = "file.create"
-	FileEdit                = "file.edit"
-	FileRename              = "file.rename"
-	FileMove                = "file.move"
-	FileDelete              = "file.delete"
-	FileUpload              = "file.upload"
-	ConsoleInput            = "console.input"
-	UserCreate              = "user.create"
-	UserUpdate              = "user.update"
-	UserEnable              = "user.enable"
-	UserDisable             = "user.disable"
-	UserDelete              = "user.delete"
-	UserPasswordReset       = "user.password_reset"
-	GroupCreate             = "group.create"
-	GroupUpdate             = "group.update"
-	GroupDelete             = "group.delete"
-	GroupMemberAdd          = "group.member_add"
-	GroupMemberRemove       = "group.member_remove"
-	RoleCreate              = "role.create"
-	RoleUpdate              = "role.update"
-	RoleDelete              = "role.delete"
-	RolePermissionsUpdate   = "role.permissions_update"
-	RoleAssignmentAdd       = "role.assignment_add"
-	RoleAssignmentRemove    = "role.assignment_remove"
-	SettingsUpdate          = "settings.update"
-	SettingsLogsClear       = "settings.logs_clear"
-	SupportBundleGenerate   = "support.bundle_generate"
-	TemplateImport          = "template.import"
-	TemplateDelete          = "template.delete"
-	ServerProvisionStart    = "server.provision_start"
-	ServerProvisionRetry    = "server.provision_retry"
-	ServerProvisionComplete = "server.provision_complete"
-	ServerProvisionFail     = "server.provision_fail"
-	ServerProvisionCancel   = "server.provision_cancel"
+	Login                        = "auth.login"
+	Logout                       = "auth.logout"
+	ServerCreate                 = "server.create"
+	ServerUpdate                 = "server.update"
+	ServerDelete                 = "server.delete"
+	ServerStart                  = "server.start"
+	ServerStop                   = "server.stop"
+	ServerRestart                = "server.restart"
+	ServerRestartScheduleCreate  = "server.restart_schedule_create"
+	ServerRestartScheduleUpdate  = "server.restart_schedule_update"
+	ServerRestartScheduleEnable  = "server.restart_schedule_enable"
+	ServerRestartScheduleDisable = "server.restart_schedule_disable"
+	ServerRestartScheduleDelete  = "server.restart_schedule_delete"
+	ServerKill                   = "server.kill"
+	PortCreate                   = "port.create"
+	PortUpdate                   = "port.update"
+	PortDelete                   = "port.delete"
+	FileCreate                   = "file.create"
+	FileEdit                     = "file.edit"
+	FileRename                   = "file.rename"
+	FileMove                     = "file.move"
+	FileDelete                   = "file.delete"
+	FileUpload                   = "file.upload"
+	ConsoleInput                 = "console.input"
+	UserCreate                   = "user.create"
+	UserUpdate                   = "user.update"
+	UserEnable                   = "user.enable"
+	UserDisable                  = "user.disable"
+	UserDelete                   = "user.delete"
+	UserPasswordReset            = "user.password_reset"
+	GroupCreate                  = "group.create"
+	GroupUpdate                  = "group.update"
+	GroupDelete                  = "group.delete"
+	GroupMemberAdd               = "group.member_add"
+	GroupMemberRemove            = "group.member_remove"
+	RoleCreate                   = "role.create"
+	RoleUpdate                   = "role.update"
+	RoleDelete                   = "role.delete"
+	RolePermissionsUpdate        = "role.permissions_update"
+	RoleAssignmentAdd            = "role.assignment_add"
+	RoleAssignmentRemove         = "role.assignment_remove"
+	SettingsUpdate               = "settings.update"
+	SettingsLogsClear            = "settings.logs_clear"
+	SupportBundleGenerate        = "support.bundle_generate"
+	TemplateImport               = "template.import"
+	TemplateDelete               = "template.delete"
+	ServerProvisionStart         = "server.provision_start"
+	ServerProvisionRetry         = "server.provision_retry"
+	ServerProvisionComplete      = "server.provision_complete"
+	ServerProvisionFail          = "server.provision_fail"
+	ServerProvisionCancel        = "server.provision_cancel"
+	// SteamCMD server-update actions (v0.2.1) are deliberately distinct from
+	// ServerUpdate above, which records ordinary server definition edits.
+	// These record the manual "update installed Steam depot" workflow (see
+	// internal/serverupdates): one event when a job starts, one terminal
+	// result (complete/fail), and one on cancellation.
+	ServerSteamCMDUpdateStart    = "server.steamcmd_update_start"
+	ServerSteamCMDUpdateComplete = "server.steamcmd_update_complete"
+	ServerSteamCMDUpdateFail     = "server.steamcmd_update_fail"
+	ServerSteamCMDUpdateCancel   = "server.steamcmd_update_cancel"
 	// Tenant actions are catalogued here for the Tenant Foundation domain
 	// (internal/tenants) ahead of its API layer. No handler records these yet;
 	// see docs/architecture.md and AGENTS.md's audit rules on best-effort,
@@ -90,6 +113,51 @@ const (
 	TenantDelete       = "tenant.delete"
 	TenantMemberAdd    = "tenant.member_add"
 	TenantMemberRemove = "tenant.member_remove"
+	// Node actions cover the Remote Node Foundation (v0.5A): enrolling a
+	// remote node into this controller, changing its registry entry, and
+	// generating a pairing token so ANOTHER controller can enroll THIS
+	// node. Heartbeats/health polls are deliberately not audited (see
+	// AGENTS.md item 26).
+	NodePairingTokenCreate = "node.pairing_token_create"
+	NodeEnroll             = "node.enroll"
+	NodeUpdate             = "node.update"
+	NodeEnable             = "node.enable"
+	NodeDisable            = "node.disable"
+	NodeRemove             = "node.remove"
+	// ClusterPlacementDecision covers the v0.6 Cluster Scheduling placement
+	// DECISION only (which node, if any, is suitable for a tenant's next
+	// server) - never a routine capacity read (see AGENTS.md item 26: no
+	// audit entries for routine polling), and never a Remote Node mutation,
+	// since this milestone never executes anything on a remote node (see
+	// docs/adr/0009-cluster-scheduling-decision-vs-execution.md). Result
+	// (Success/Failure) distinguishes an accepted vs. a rejected decision.
+	ClusterPlacementDecision = "cluster.placement_decide"
+	ClusterPlacementExecute  = "cluster.placement_execute"
+	// Remote server/console/file actions cover v0.5B Remote Server
+	// Management and v0.5C Remote Operational Hardening: every mutation and
+	// lifecycle action the controller forwards to a remote node's own
+	// servers.Service/filesystem sandbox is audited exactly like its local
+	// counterpart above, but under a distinct action/resource type so an
+	// operator can tell local from remote at a glance. Console and file
+	// CONTENT is never audited, only the fact/metadata of the action (see
+	// AGENTS.md item 26/29) - identical to the local Console.Send/Files.*
+	// audit contract. Remote health/status polling is never audited (same
+	// rule as the existing Remote Node heartbeat).
+	RemoteServerCreate  = "remote_server.create"
+	RemoteServerUpdate  = "remote_server.update"
+	RemoteServerDelete  = "remote_server.delete"
+	RemoteServerStart   = "remote_server.start"
+	RemoteServerStop    = "remote_server.stop"
+	RemoteServerRestart = "remote_server.restart"
+	RemoteServerKill    = "remote_server.kill"
+	RemoteConsoleInput  = "remote_console.input"
+	RemoteFileCreate    = "remote_file.create"
+	RemoteFileEdit      = "remote_file.edit"
+	RemoteFileRename    = "remote_file.rename"
+	RemoteFileMove      = "remote_file.move"
+	RemoteFileDelete    = "remote_file.delete"
+	RemoteFileUpload    = "remote_file.upload"
+	RemoteFileDownload  = "remote_file.download"
 )
 
 type Event struct {

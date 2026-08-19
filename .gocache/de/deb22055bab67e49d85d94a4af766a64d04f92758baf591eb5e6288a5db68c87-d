@@ -1,7 +1,0 @@
-./api.go
-./console.go
-./identity.go
-./monitoring.go
-./ports.go
-./rbac.go
-./servers.go

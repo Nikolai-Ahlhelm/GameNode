@@ -29,6 +29,8 @@ func (s *Store) Create(ctx context.Context, template Template) (Template, error)
 	template.UpdatedAt = now
 	metadata, _ := json.Marshal(template.SourceMetadata)
 	installer, _ := json.Marshal(template.Installer)
+	containerCompatibility, _ := json.Marshal(template.ContainerCompatibility)
+	containerRuntime, _ := json.Marshal(template.ContainerRuntime)
 	var launch any
 	if template.Launch != nil {
 		encoded, _ := json.Marshal(template.Launch)
@@ -39,7 +41,7 @@ func (s *Store) Create(ctx context.Context, template Template) (Template, error)
 		return Template{}, err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO game_templates(id,name,description,source_type,source_identifier,source_format_version,source_metadata_json,installer_json,launch_json,compatibility_status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, template.ID, template.Name, template.Description, template.SourceType, template.SourceIdentifier, template.SourceFormatVersion, string(metadata), string(installer), launch, template.Compatibility.Status, stamp(now), stamp(now))
+	_, err = tx.ExecContext(ctx, `INSERT INTO game_templates(id,name,description,source_type,source_identifier,source_format_version,source_metadata_json,installer_json,launch_json,compatibility_status,container_compatibility_json,container_runtime_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, template.ID, template.Name, template.Description, template.SourceType, template.SourceIdentifier, template.SourceFormatVersion, string(metadata), string(installer), launch, template.Compatibility.Status, string(containerCompatibility), string(containerRuntime), stamp(now), stamp(now))
 	if err != nil {
 		return Template{}, fmt.Errorf("create template: %w", err)
 	}
@@ -91,10 +93,10 @@ func (s *Store) List(ctx context.Context) ([]Template, error) {
 
 func (s *Store) Get(ctx context.Context, id string) (Template, error) {
 	var result Template
-	var metadata, installer string
+	var metadata, installer, containerCompatibility, containerRuntime string
 	var launch sql.NullString
 	var created, updated string
-	err := s.db.QueryRowContext(ctx, `SELECT id,name,description,source_type,source_identifier,source_format_version,source_metadata_json,installer_json,launch_json,compatibility_status,created_at,updated_at FROM game_templates WHERE id=?`, id).Scan(&result.ID, &result.Name, &result.Description, &result.SourceType, &result.SourceIdentifier, &result.SourceFormatVersion, &metadata, &installer, &launch, &result.Compatibility.Status, &created, &updated)
+	err := s.db.QueryRowContext(ctx, `SELECT id,name,description,source_type,source_identifier,source_format_version,source_metadata_json,installer_json,launch_json,compatibility_status,container_compatibility_json,container_runtime_json,created_at,updated_at FROM game_templates WHERE id=?`, id).Scan(&result.ID, &result.Name, &result.Description, &result.SourceType, &result.SourceIdentifier, &result.SourceFormatVersion, &metadata, &installer, &launch, &result.Compatibility.Status, &containerCompatibility, &containerRuntime, &created, &updated)
 	if err != nil {
 		return Template{}, err
 	}
@@ -108,6 +110,17 @@ func (s *Store) Get(ctx context.Context, id string) (Template, error) {
 		}
 		result.Launch = &definition
 	}
+	if containerCompatibility != "" && json.Unmarshal([]byte(containerCompatibility), &result.ContainerCompatibility) != nil {
+		return Template{}, errors.New("stored container compatibility data is invalid")
+	}
+	if containerRuntime != "" && containerRuntime != "null" {
+		var plan ContainerEggRuntimePlan
+		if json.Unmarshal([]byte(containerRuntime), &plan) != nil {
+			return Template{}, errors.New("stored container runtime data is invalid")
+		}
+		result.ContainerRuntime = &plan
+	}
+	result.NativeCompatibility = result.Compatibility
 	result.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	result.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
 	variables, err := s.db.QueryContext(ctx, `SELECT name,description,variable_key,default_value,user_viewable,user_editable,variable_type,sensitive,required,nullable,validation_json,raw_rules_json FROM game_template_variables WHERE template_id=? ORDER BY position`, id)
@@ -207,14 +220,22 @@ func (s *Service) List(ctx context.Context) ([]Template, error) {
 	if s.catalog != nil {
 		result = append(result, s.catalog.List().Templates...)
 	}
+	for index := range result {
+		NormalizeCompatibility(&result[index])
+	}
+	for index := range imported {
+		NormalizeCompatibility(&imported[index])
+	}
 	return append(result, imported...), nil
 }
 func (s *Service) Get(ctx context.Context, id string) (Template, error) {
 	if template, ok := s.builtins[id]; ok {
+		NormalizeCompatibility(&template)
 		return template, nil
 	}
 	if s.catalog != nil {
 		if template, ok := s.catalog.Get(id); ok {
+			NormalizeCompatibility(&template)
 			return template, nil
 		}
 	}

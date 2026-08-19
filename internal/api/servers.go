@@ -15,6 +15,7 @@ import (
 	"gamenode/internal/audit"
 	"gamenode/internal/auth"
 	"gamenode/internal/filesystem"
+	"gamenode/internal/logging"
 	"gamenode/internal/rbac"
 	"gamenode/internal/runtime"
 	"gamenode/internal/servers"
@@ -33,6 +34,7 @@ func (s *Server) recordServerAudit(r *http.Request, actor auth.User, action, res
 	in := auditInput{action: action, resourceType: audit.Server, resourceID: resourceID, resourceName: name, serverID: serverID, result: result, actor: &actor}
 	if err != nil {
 		in.errorCode, in.errorSummary = auditFailure(err)
+		in.err = err
 	}
 	s.recordAudit(r, in)
 }
@@ -170,6 +172,10 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[0]
+	if len(parts) >= 2 && parts[1] == "restart-schedules" {
+		s.restartSchedulesHandler(w, r, id, parts[2:])
+		return
+	}
 	if len(parts) == 2 && parts[1] == "access" {
 		if r.Method != http.MethodGet {
 			method(w)
@@ -198,8 +204,35 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 		s.gameConfigurationHandler(w, r, id)
 		return
 	}
+	if len(parts) == 3 && parts[1] == "container" && parts[2] == "pull" {
+		if r.Method != http.MethodPost {
+			method(w)
+			return
+		}
+		u, _, ok := s.requireServerPermission(w, r, "Server.Edit", id, true)
+		if !ok {
+			return
+		}
+		if err := s.servers.PullContainerImage(r.Context(), id); err != nil {
+			s.recordServerAudit(r, u, audit.ServerUpdate, audit.Failure, id, "", err)
+			serverError(w, err, false)
+			return
+		}
+		record, err := s.servers.Get(r.Context(), id)
+		if err != nil {
+			internal(w)
+			return
+		}
+		s.recordServerAudit(r, u, audit.ServerUpdate, audit.Success, id, record.Server.Name, nil)
+		jsonOut(w, http.StatusOK, map[string]string{"image_status": "ready"})
+		return
+	}
 	if len(parts) >= 2 && parts[1] == "ports" {
 		s.portsHandler(w, r, id)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "update" {
+		s.serverUpdateHandler(w, r, id)
 		return
 	}
 	if len(parts) == 3 && parts[1] == "monitoring" && parts[2] == "history" {
@@ -667,7 +700,7 @@ func recursiveDelete(r *http.Request) (bool, error) {
 // Future Files.Edit/Delete/Rename authorization can attach to these action
 // names without coupling permissions to the filesystem implementation.
 func (s *Server) logFileMutation(action, serverID string) {
-	s.log.With("module", "Files.Mutation").Info("file mutation", "action", action, "server_id", serverID)
+	s.log.With("module", "Files.Mutation", "category", logging.CategoryFilesystem).Info("file mutation", "action", action, "server_id", serverID)
 }
 
 func filesystemError(w http.ResponseWriter, err error) {
@@ -717,6 +750,14 @@ func serverError(w http.ResponseWriter, err error, conflict bool) {
 	}
 	if errors.Is(err, runtime.ErrConsoleInterruptFailed) {
 		errorOut(w, http.StatusConflict, runtime.CodeConsoleInterruptFailed, "Windows console interrupt could not be delivered")
+		return
+	}
+	// servers.ErrDuplicateName is always this sanitized sentinel, never raw
+	// SQL/driver text (see servers.Store.NameAvailable/classifyNameConstraint),
+	// so it is safe to surface directly instead of falling through to the
+	// generic bad() below.
+	if errors.Is(err, servers.ErrDuplicateName) {
+		errorOut(w, http.StatusConflict, "name_conflict", err.Error())
 		return
 	}
 	if conflict {

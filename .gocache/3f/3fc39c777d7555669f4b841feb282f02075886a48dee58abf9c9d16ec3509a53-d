@@ -1,4 +1,0 @@
-./atomic_replace_windows.go
-./commit_upload_windows.go
-./filesystem.go
-./reparse_windows.go

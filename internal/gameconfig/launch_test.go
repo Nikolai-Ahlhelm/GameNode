@@ -62,7 +62,7 @@ func newLaunchService(t *testing.T, values []servers.ProvisionedConfigValue) (*g
 		t.Fatal(err)
 	}
 	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
-	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "Valheim", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate, Arguments: []string{"-nographics", "-batchmode"}}, "valheim", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: definition.SchemaVersion, Version: definition.Version, TemplateID: "valheim", TemplateVersion: "1.1.0", DefinitionJSON: raw, Values: values}})
+	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "Valheim", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate, Arguments: []string{"-nographics", "-batchmode"}}, "valheim", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: definition.SchemaVersion, Version: definition.Version, TemplateID: "valheim", TemplateVersion: "1.1.0", DefinitionJSON: raw, Values: values}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestManagedValuesSurviveRestart(t *testing.T) {
 	definition := launchDefinition()
 	raw, _ := json.Marshal(definition)
 	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
-	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "Persisted", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "valheim", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: definition.SchemaVersion, Version: definition.Version, TemplateID: "valheim", TemplateVersion: "1.1.0", DefinitionJSON: raw, Values: fullValues()}})
+	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "Persisted", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "valheim", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: definition.SchemaVersion, Version: definition.Version, TemplateID: "valheim", TemplateVersion: "1.1.0", DefinitionJSON: raw, Values: fullValues()}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestExistingServerKeepsAdapterSnapshot(t *testing.T) {
 			t.Fatal(err)
 		}
 		raw, _ := json.Marshal(definition)
-		record, createErr := serverService.CreateProvisioned(context.Background(), servers.Server{Name: name, WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "valheim", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: definition.SchemaVersion, Version: definition.Version, TemplateID: "valheim", TemplateVersion: "1.1.0", DefinitionJSON: raw, Values: fullValues()}})
+		record, createErr := serverService.CreateProvisioned(context.Background(), servers.Server{Name: name, WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "valheim", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: definition.SchemaVersion, Version: definition.Version, TemplateID: "valheim", TemplateVersion: "1.1.0", DefinitionJSON: raw, Values: fullValues()}}, nil)
 		if createErr != nil {
 			t.Fatal(createErr)
 		}
@@ -358,7 +358,7 @@ func TestFileAdapterIsNotTreatedAsLaunch(t *testing.T) {
 	definition := templates.ConfigAdapterDefinition{SchemaVersion: 1, ID: "file-settings", Version: "1.0.0", Format: templates.FormatINIKeyValues, Target: "server.ini", RestartRequired: true, Fields: []templates.ConfigAdapterField{{Key: "SERVER_NAME", Label: "Server name", Type: "string", Property: "ServerName", Required: true, Validation: templates.Validation{MaxLength: &maxLength}}}}
 	raw, _ := json.Marshal(definition)
 	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
-	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "File", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "file-game", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: 1, Version: definition.Version, TemplateID: "file-game", TemplateVersion: "1.0.0", DefinitionJSON: raw}})
+	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "File", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "file-game", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: 1, Version: definition.Version, TemplateID: "file-game", TemplateVersion: "1.0.0", DefinitionJSON: raw}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +416,7 @@ func TestResolveLaunchUsesOnlyThePersistedSnapshot(t *testing.T) {
 	pinned.Fields[0].Binding = &templates.ConfigAdapterBinding{Type: templates.BindingLaunchValue, Argument: "-legacyname"}
 	raw, _ := json.Marshal(pinned)
 	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
-	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "Pinned Snapshot", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "valheim", nil, nil, []servers.ProvisionedConfigAdapter{{ID: pinned.ID, SchemaVersion: pinned.SchemaVersion, Version: pinned.Version, TemplateID: "valheim", TemplateVersion: "1.1.0", DefinitionJSON: raw, Values: fullValues()}})
+	record, err := serverService.CreateProvisioned(context.Background(), servers.Server{Name: "Pinned Snapshot", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "valheim", nil, nil, []servers.ProvisionedConfigAdapter{{ID: pinned.ID, SchemaVersion: pinned.SchemaVersion, Version: pinned.Version, TemplateID: "valheim", TemplateVersion: "1.1.0", DefinitionJSON: raw, Values: fullValues()}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

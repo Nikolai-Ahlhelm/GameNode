@@ -11,7 +11,7 @@
     "Valheim refuses to advertise a public server without a password. Leave the password empty only for a private server that players join directly.",
     "Valheim documents CTRL+C as the proper shutdown method. GameNode does not model console control events, so this template uses terminate as a bounded fallback and does not claim graceful-save semantics.",
     "The upstream dedicated server also supports Linux, but this template advertises Windows only until the direct Linux executable, required environment, and shutdown behavior are independently acceptance-tested without invoking start_server.sh.",
-    "SteamCMD is used for initial installation only; automatic updates are not enabled."
+    "SteamCMD supports initial installation and explicit manual updates through GameNode's Update Server action; automatic, scheduled, and update-on-start updates are not enabled."
   ],
   "icon": "steamcmd",
   "source_type": "official",

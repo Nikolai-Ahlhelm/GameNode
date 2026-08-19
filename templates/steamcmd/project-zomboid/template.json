@@ -9,7 +9,7 @@
   "known_limitations": [
     "The current Windows Steam build is supported and verified; Linux remains hidden until its direct native launch has been acceptance-tested.",
     "The first start creates Project Zomboid configuration and world data below the isolated server root.",
-    "SteamCMD is used for initial installation only; automatic updates are not enabled."
+    "SteamCMD supports initial installation and explicit manual updates through GameNode's Update Server action; automatic, scheduled, and update-on-start updates are not enabled."
   ],
   "icon": "steamcmd",
   "source_type": "official",

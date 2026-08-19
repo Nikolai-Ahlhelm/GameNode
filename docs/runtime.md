@@ -29,3 +29,94 @@ Automatic restart is opt-in per server. A bounded rolling attempt window and can
 Port preflight runs after the existing `already running` validation and before runtime-state mutation, Console Session creation, or `Runtime.Start`. Manual restart runs it only after the old process has exited and finalized; auto-restart uses this same normal start path. A confirmed collision prevents the new launch, records `last_error`, and is not a process crash, so it does not increase `crash_count` or create a recursive restart loop. Pending auto-restart state is cleared before the attempt. OS availability probes are best effort: a successful temporary bind check cannot guarantee that the game process will later bind the port because of TOCTOU.
 
 Complete 6C runtime test-matrix validation and Windows E2E remain pending on an environment that permits executable test binaries.
+# Container runtime (v0.3)
+
+Container servers remain ordinary `servers.Service` workloads alongside Native
+servers. Docker is controlled only through its Engine API. A container mounts
+only its GameNode server root at `/home/container`, uses bridge networking, and
+receives typed CPU/RAM limits and registered host-to-container ports.
+
+Every operation verifies managed/server/generation/token labels stored in the
+Container StartKey; foreign or stale containers are never adopted. Non-TTY
+Engine attach feeds the existing ConsoleManager. Image Pull is explicit;
+Start never pulls or updates an image. Availability is queried from the Engine,
+and transient pull state is cleared on GameNode restart. Container memory is
+Engine/cgroup usage, not a claim of native RSS equivalence.
+
+# Container-backed Egg provisioning (v0.4)
+
+Pelican/Pterodactyl Egg imports expose separate Native and Container compatibility.
+Container provisioning is never an implicit fallback: the request must select
+`runtime_type: container`, choose a declared image allowed by the node policy, and
+use an available Docker Engine. GameNode explicitly pulls the selected game image
+and the normalized installer image before installation; an existing server's image
+and optional digest remain pinned.
+
+The Egg installation script runs only in a short-lived unprivileged installer
+container. Its command is a fixed allowlisted shell entrypoint plus `-lc` and the
+bounded normalized script. The only persistent mount is the validated server root at
+`/home/container`. No Docker CLI, host shell, daemon socket, host network/PID/IPC,
+devices, capabilities, arbitrary mounts, or registry credentials are available.
+Memory, CPU, PIDs, tmpfs, output, timeout, cancellation, and cleanup are bounded.
+Installer cleanup removes only the ephemeral container; files written below the
+persistent root are retained and reported through `files_may_remain` on failure.
+
+The registered server stores an immutable normalized Egg snapshot containing
+provenance/hash/version, image/digest, startup template/shell, variable sensitivity,
+host/container ports, resource limits, and compiled configuration operations. At
+start, only declared variables and the fixed `/home/container` `SERVER_ROOT` value
+expand the startup template. The host environment, live catalog, generic regex/eval
+configuration, and arbitrary Engine flags are never consulted.
+# Scheduled restart lifecycle
+
+Scheduled restarts are local configuration, not a second runtime. At startup
+GameNode loads enabled rows from SQLite and registers only the next future
+occurrence. If the process was offline at the configured time, that occurrence
+is skipped. Before firing, the scheduler re-reads the schedule and confirms it
+still exists and is enabled, then calls `servers.Service.Restart(serverID)`.
+That service's existing per-server lock, running-state check, stop method,
+identity checks, finalization, and normal start path remain authoritative. A
+stopped server is therefore not implicitly started; the failed or ineligible
+attempt is logged and audited as a scheduled restart.
+
+Daily and weekly times are interpreted in the schedule's stored IANA timezone.
+Nonexistent local times during spring DST transitions are skipped. Ambiguous
+fall-back times are resolved deterministically and guarded so one occurrence
+cannot execute twice within one GameNode process. Editing a schedule replaces
+its timer immediately; disabling or deleting it cancels the timer. Server
+deletion cascades schedule rows. Shutdown cancels timers and waits for their
+bounded scheduler goroutines without touching a runtime directly.
+
+`internal/scheduler` is exclusively this local, single-server restart
+scheduler. It is unrelated to, and untouched by, v0.6's cluster placement
+DECISION engine (`internal/placement`) or v0.5B/v0.5C's remote server
+forwarding (`internal/api/node_servers.go`, `internal/api/remoteservers.go`)
+- there is no shared code, no shared concept of "schedule," and no plan to
+merge them.
+
+# Remote server lifecycle forwarding (v0.5B/v0.5C)
+
+A remote server's runtime is never simulated or duplicated locally. Every
+lifecycle call the controller makes against an enrolled Remote Node
+(`internal/remote.Client.StartServer`/`StopServer`/`RestartServer`/
+`KillServer`) is forwarded, unmodified, to that node's own
+`internal/servers.Service` through the machine-authenticated Node API
+(`internal/api/node_servers.go`) - the exact same lock, running-state check,
+stop method, identity check, and finalization path a local browser session
+on that node would drive. The controller's own database never gains a
+row that claims to be a remote server's authoritative runtime state; every
+read is a bounded, on-demand call, and a failed/unreachable call is
+reported as a transport error (`node_unreachable`, etc.), never presented as
+"the server stopped."
+
+Remote console uses a bounded JSON WebSocket relay with polling fallback:
+`console.Session.Snapshot()` returns the same bounded 1,000-event ring
+buffer the local WebSocket console already uses, so there is no additional
+buffering, background goroutine, or long-lived connection introduced by the
+remote path. Remote files call the exact same
+`internal/filesystem.Service` sandbox as local files, rooted at the target
+server's working directory on the node actually running it - never a
+controller-side filesystem operation. See
+`docs/adr/0010-remote-server-lifecycle-forwarding.md` and
+`docs/adr/0011-remote-operational-hardening.md` for the full decision
+record.

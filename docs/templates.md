@@ -2,17 +2,17 @@
 
 ## Overview
 
-A GameNode template is declarative, untrusted data that describes how a known native game server can be installed, validated, launched, stopped, and presented. A template is not a script, plugin, container definition, or command language. The backend parses and validates every Official file again after download; the JSON Schemas in `templates/schema/` are contributor and IDE aids, not the security boundary.
+A GameNode template is declarative, untrusted data that describes how a known game server can be installed, validated, launched, stopped, and presented. A template is not a plugin or general command language. Native and Container compatibility are separate. A Container Egg plan is still closed data: its installation script can run only inside the controlled unprivileged installer boundary described below, never on the host. The backend parses and validates every Official file again after download; the JSON Schemas in `templates/schema/` are contributor and IDE aids, not the security boundary.
 
 Schema v2 extends v1 without changing the native runtime. Existing v1 catalog/cache data remains readable. Existing servers retain their already-resolved executable, argument array, environment, ports, stop behavior, adapter snapshots, template ID/source/version, and are never migrated when a catalog template changes.
 
 ## Security model
 
-Launches always become one executable plus `arguments[]`. GameNode never joins those values into a shell command. `cmd.exe`, PowerShell, `sh`, `bash`, script hooks, pipes, redirects, command substitution, arbitrary download URLs, Docker/container fields, generic package managers, and user-controlled SteamCMD flags are outside the contract.
+Native launches always become one executable plus `arguments[]`. GameNode never joins native values into a host shell command. `cmd.exe`, PowerShell, host-side `sh`/`bash`, script hooks, pipes, redirects, command substitution, arbitrary download URLs, generic package managers, and user-controlled SteamCMD flags are outside the contract. Container Egg startup is a separate explicit path and accepts only its bounded normalized shell plan inside the container.
 
 Executable, working-directory, expected-file, and configuration metadata paths are server-root-relative. Absolute Windows/Linux paths, drive paths, UNC paths, traversal, NUL/newline data, and symlink targets outside the root fail validation. Shell metacharacters inside an ordinary argument are harmless argv data and are not interpreted. A sensitive variable may be used only where the compiled backend explicitly permits it; Official templates cannot place it in executable paths or arguments. Sensitive values are masked from APIs, audit, logs, installer output, job history, diagnostics, and support bundles.
 
-Official templates use strict JSON decoding: unknown fields fail. Pelican/Pterodactyl Eggs retain their bounded tolerant source parser, then normalize into the existing strict GameNode domain model with compatibility findings. Raw Egg JSON and scripts are not persisted or executed.
+Official templates use strict JSON decoding: unknown fields fail. Pelican/Pterodactyl Eggs retain their bounded tolerant source parser, then normalize into the existing strict GameNode domain model with separate Native/Container findings. Raw Egg JSON is not persisted. Native provisioning never executes the Egg script; an explicitly selected Container provision may execute the normalized bounded script only inside a short-lived unprivileged installer container.
 
 ## Top-level schema
 
@@ -33,7 +33,9 @@ Official templates use strict JSON decoding: unknown fields fail. Pelican/Pterod
 | `requirements` | Typed hard checks and informational hints. |
 | `help`, `known_limitations` | Operator guidance without executable behavior. |
 | `configuration` | References reviewed, same-directory configuration adapters implemented by compiled GameNode code. |
-| `compatibility` | General understanding status and stable findings. |
+| `compatibility` | Backward-compatible Native status and stable findings. |
+| `native_compatibility`, `container_compatibility` | Separate runtime compatibility statuses/findings. |
+| `container_runtime` | Normalized image, installer/startup, resource, and compiled configuration plan; no raw Egg JSON. |
 
 `source_type`, `source_identifier`, `source_format_version`, `source_metadata`, and `read_only` establish provenance. Official files use `source_type: official` and `read_only: true`; catalog metadata must match the downloaded template.
 
@@ -42,6 +44,26 @@ Official templates use strict JSON decoding: unknown fields fail. Pelican/Pterod
 ### `steamcmd`
 
 The nested plan accepts a positive catalog-owned `app_id`, `login_mode: anonymous`, `validate`, `platform` (`native`, `windows`, or `linux`), `install_target: server_root`, and an optional constrained beta-branch variable. Credentials, beta passwords, Steam Guard, Workshop, arbitrary flags, URLs, mirrors, and update-on-start are rejected. GameNode uses its fixed Valve HTTPS sources and structured `exec.CommandContext` invocation.
+
+### `container` Egg execution (v0.4)
+
+Container compatibility is opt-in and independent of the Native SteamCMD plan. The
+normalized plan may contain a strict declared image list, one installer image and
+allowlisted shell entrypoint, a bounded installation script, a bounded startup
+template, declared-variable placeholders, fixed resource defaults, and compiled
+properties/key-value/JSON operations. Unsupported required configuration semantics
+produce a compatibility finding; there is no generic regex, eval, plugin, or script
+configuration engine.
+
+Provisioning requires an explicit `runtime_type: container`. GameNode validates the
+selected and installer images against the administrator registry allowlist and pulls
+them explicitly. Installation runs in a short-lived unprivileged container with only
+the validated persistent server root mounted at `/home/container`; no host shell,
+Docker CLI, socket mount, host network/PID/IPC, devices, capabilities, arbitrary
+mounts, or registry credentials are permitted. The selected image/digest, startup,
+variable sensitivity, ports, resources, config operations, source hash, and template
+version are persisted as an immutable server snapshot. Catalog changes do not mutate
+existing servers.
 
 ### `existing-files`
 

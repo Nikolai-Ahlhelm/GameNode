@@ -1624,7 +1624,7 @@ The initial v0.2 template-import foundation is implemented. Pelican/Pterodactyl 
 
 The follow-up native provisioning milestone is also implemented: a fixed-source managed SteamCMD installation, safe archive extraction, structured anonymous app installation, persisted asynchronous jobs with cancellation/restart interruption handling, per-server template values and sensitivity metadata, provisionability/platform checks, transactional normal-server creation, API/RBAC/audit coverage, and a Create Server wizard with progress/failure states.
 
-Still deferred are automatic/update-on-start lifecycle integration, credentialed Steam login and Steam Guard, dependable port suggestions where Eggs do not provide a normalized source, and encrypted-at-rest environment secrets. Docker/Podman runtimes, generic Egg shell installers, URL/repository synchronization, marketplace functionality, and generic shell startup remain out of scope.
+Still deferred are automatic/update-on-start lifecycle integration, credentialed Steam login and Steam Guard, dependable port suggestions where Eggs do not provide a normalized source, and encrypted-at-rest environment secrets. The v0.3 Docker Container runtime and v0.4 controlled Egg container execution are implemented; Remote Nodes, generic scheduling, URL/repository synchronization, marketplace functionality, and generic host shell startup remain out of scope. Typed local daily/weekly server restart schedules are implemented separately and never schedule remote or cluster work.
 
 # v0.2 — Official Remote Game Library status
 
@@ -1641,3 +1641,114 @@ The Official schema now supports exact platform launch maps, optional safe relat
 Official product data is grouped per game. Templates reference same-directory adapter definitions fetched and cached through the fixed catalog source. Compiled formats now include bounded `xml-properties` and strict, sectionless `ini-key-values`. Project Zomboid template `1.1.0` persists its adapter at provisioning but waits for the first game start to generate `Server/gamenode.ini`; the UI reports this pending state and never invents a partial upstream file. Updates preserve unknown keys, comments, ordering, BOM, and line endings. The Configuration tab validates typed edits, masks secrets, keeps a last-file backup, writes atomically, requires `Server.Edit` plus CSRF, records redacted audit metadata, and never restarts a server automatically. Lua configuration remains outside this milestone.
 
 Automatic NeoForge/Minecraft download, version catalogs, EULA mutation, mod/plugin management, generic script execution, and child-process handoff remain deferred. Real start/help/stop acceptance requires a compatible Java installation on the test host.
+# v0.2.1 — SteamCMD Server Updates status
+
+This is a small, intermediate release, not a new numbered milestone. Manual, operator-triggered SteamCMD updates are now implemented for already-provisioned SteamCMD-managed servers: `internal/serverupdates` reuses `internal/steamcmd.Manager.Install` (the same structured, argv-based `+force_install_dir`/`+login anonymous`/`+app_update`/`+quit` invocation used by initial provisioning) against an existing server's persisted managed root, gated by a new minimal trusted metadata snapshot (`server_steamcmd_provisioning`, migration `023_server_update_metadata.sql`) captured once at provisioning time. The update requires the server to already be stopped, runs as a persisted, cancellable, bounded job (`server_update_jobs`/`server_update_job_events`), and validates the persisted launch executable afterward through `servers.Service.VerifyLaunchExecutablePresent`. It never re-resolves the template, never touches ports/configuration adapters/server identity, and never migrates a server to a newer catalog template version. A new independent `Server.Update` permission (not inherited from `Server.Edit`, `Server.Start`, or `Templates.Manage`) gates `GET/POST /api/v1/servers/{id}/update` and `GET/POST /api/v1/server-update-jobs/{id}[/cancel]`. Servers provisioned before this metadata existed, or provisioned outside the SteamCMD path, are reported ineligible rather than guessed.
+
+Automatic updates, update-on-start, scheduled/periodic updates, and template migration remain explicitly out of scope and are not implemented by this release.
+
+# Local Scheduled Server Restarts
+
+GameNode supports a deliberately narrow local scheduling feature for recurring
+server restarts. Each persisted schedule is daily or weekly, stores an IANA
+timezone and a controlled `HH:MM` wall-clock time, and may be enabled or
+disabled independently. Multiple schedules may be attached to one server.
+The scheduler loads enabled rows at startup, skips missed occurrences, and
+re-reads the row before triggering. Execution always delegates to the normal
+`servers.Service.Restart` lifecycle, so Native, Container, and Egg-backed
+Container servers share the same behavior. There is no generic cron payload,
+scheduled command, update, image pull, provisioning job, Remote Node schedule,
+or cluster placement.
+
+# v0.3 — Container Runtime
+
+v0.3 adds a Linux-first Docker Engine API runtime alongside Native servers.
+It uses typed images, explicit Pull, typed CPU/RAM limits, host-to-container
+ports, ConsoleManager attach, and verified server/generation/token ownership.
+Native remains first-class. The v0.4 container-backed Egg execution milestone below
+extends this runtime without creating a second lifecycle authority.
+
+# v0.4 — Container-backed Egg Runtime
+
+Status: IMPLEMENTATION_COMPLETE, RUNTIME_ACCEPTANCE_PENDING.
+
+v0.4 is implemented. Conservative Pelican/Pterodactyl imports now retain separate
+Native and Container compatibility paths. A user must explicitly select Container
+provisioning; the node validates declared image references against the administrator
+registry allowlist, explicitly pulls the selected game and installer images, and
+persists the selected image/digest when the Engine exposes one. Egg installation runs
+only in a short-lived unprivileged container with the fixed `/home/container` server
+root mount, bounded CPU/memory/PIDs/tmpfs, timeout/cancellation, output redaction,
+and guaranteed cleanup. No Docker CLI, host shell, daemon socket mount, host network,
+host PID/IPC, devices, capabilities, arbitrary mounts, registry credentials, or raw
+Egg JSON is accepted.
+
+Startup expansion is limited to declared template variables and `SERVER_ROOT`; the
+normalized snapshot pins provenance, image/digest, startup, sensitivity, ports,
+resources, and safe configuration operations. Properties/key-value/JSON configuration
+semantics use compiled bounded operations only; unsupported required semantics are
+reported as findings. The existing persisted provisioning jobs, RBAC/CSRF/audit
+boundaries, `files_may_remain`, and owner/admin registration recovery flow are reused.
+The frontend exposes separate compatibility findings, runtime/image/resource
+selection, bounded installer progress, and container port mappings.
+
+Remote Nodes, generic scheduling, automatic updates, and template migration remain v0.5+
+scope; the narrow local restart schedule is documented above and does not
+change the Remote Node boundary. v0.4 and v0.5A were developed concurrently
+on separate branches/worktrees and have since been integrated onto a common
+base (see "Parallel development note" below); v0.4's Egg Container Runtime is
+now advertised as a Remote Node capability (`egg_container_runtime`) without
+`internal/nodes`/`internal/remote` importing any Egg internals.
+
+# v0.5A — Remote Node Foundation status
+
+Status: IMPLEMENTATION_COMPLETE.
+
+v0.5A builds the secure, autonomous Remote Node foundation that later remote server management depends on. It intentionally does **not** implement remote server management itself.
+
+Implemented in this milestone:
+
+- **Durable local Node Identity** (`internal/nodeidentity`): a random `NodeID` generated once and persisted in local SQLite, independent of hostname/IP/database path; an optional operator-set display name; a small integer protocol version (currently `1`), independent of the product version string; and a fixed, reviewed list of typed capability identifiers describing what this build actually implements.
+- **Secure pairing/enrollment** (`internal/nodes`): an operator on the target node generates a single-use, 15-minute pairing token; an operator on the controller side supplies it and the node's endpoint to enroll. The node atomically consumes the token and issues a new machine credential; only salted hashes of tokens/credentials are ever stored, and plaintext values are returned exactly once, never logged or audited.
+- **Authenticated Controller → Node communication**: a machine-authenticated Node API (`GET /api/v1/node/info|health|capabilities`, `POST /api/v1/node/enroll`) structurally separate from the human browser-session/RBAC/CSRF trust domain, and a human-authenticated, RBAC- and CSRF-protected controller-facing registry API (`/api/v1/remote-nodes*`, `POST /api/v1/node/pairing-tokens`).
+- **A narrow typed remote client** (`internal/remote`): `Enroll`/`GetNodeInfo`/`GetHealth`/`GetCapabilities` only, bounded timeouts and response size, real TLS verification, endpoint normalization/validation, and no cross-host redirect following (SSRF/credential-leak mitigation).
+- **Health/connection state** that is presentation-only and never authoritative over a remote node's own server/runtime lifecycle, refreshed by a bounded, periodic, cleanly-cancellable background loop where one unreachable node never blocks another.
+- **RBAC** (`Node.View`/`Node.Manage`, global-only), **audit** for enrollment/registry mutations and pairing-token issuance (never for routine health polls or credentials), and a **read-only Nodes UI** (list, detail, pairing, enrollment).
+- A dedicated ADR (`docs/adr/0007-remote-node-foundation.md`) records the trust/protocol decisions.
+
+Deliberately out of scope for v0.5A: remote Server Create/Edit/Start/Stop/Restart/Kill, remote Console/Files/Ports mutation, remote provisioning/Egg installation, template/secret distribution, server migration, placement/scheduling, failover, and any shared/cluster database state. Every GameNode installation - enrolled or not - keeps its own local SQLite, API, UI, `servers.Service`, runtimes, ConsoleManager, Filesystem service, and lifecycle authority; a controller never gains direct access to a remote node's database or Docker/process runtime.
+
+## Future milestones
+
+- **v0.5B — Remote Server Management**: IMPLEMENTATION_COMPLETE for the scoped typed Node API, controller proxy, RBAC/audit, lifecycle forwarding, tests, and Nodes UI.
+- **v0.5C — Remote Operational Hardening**: IMPLEMENTATION_COMPLETE for bounded console relay with polling fallback, sandboxed text/binary file operations, monitoring, controller UI, RBAC/audit, and tests.
+- **v0.6 — Cluster / Scheduling (Foundation + Container Placement Execution)**: IMPLEMENTATION_COMPLETE for deterministic placement, live bounded capacity, and explicit local/remote native/container execution through the existing typed provisioning path. Migration, failover, controller election, and cluster-wide reservations remain deferred.
+
+# v0.6 — Cluster / Scheduling (Foundation + Container Placement Execution) status
+
+Status: IMPLEMENTATION_COMPLETE for the scope below.
+
+v0.6 adds a deterministic, tenant-isolated, RBAC- and audit-gated cluster placement DECISION engine (`internal/placement`) that evaluates every node this installation knows about - itself plus every node enrolled in the v0.5A Remote Node registry - for one new server of a given runtime type (`native`/`container`) and tenant. `Decide` is pure (no I/O, no clock, no map-order dependency) and is unit-tested with fixed candidate inputs and expected outputs (`internal/placement/placement_test.go`). A second phase adds EXECUTION of that decision: `POST /api/v1/cluster/placement/execute` recomputes the decision server-side and, if a node was selected, dispatches the caller's typed provisioning request to it - locally through the existing, unmodified `provisioning.Service`, or remotely through a new machine-authenticated Node provisioning path. `internal/placement` itself is unchanged by this: it still only ever returns a node selection and has zero I/O, zero Docker/runtime imports, and zero dependency on `internal/provisioning` or `internal/remote` (enforced by a static source-scan test, `TestPlacementPackageNeverImportsRuntimeOrDocker` in `internal/api/cluster_execute_test.go`).
+
+**Container execution uses the existing provisioning path**: `POST /api/v1/node/provisioning` and its controller-side proxy `POST /api/v1/remote-nodes/{id}/provisioning` accept the same bounded, typed fields as local provisioning and forward into the target node's own `provisioning.Service.Start`. v0.5B's separate `/servers` API handles already-existing remote server lifecycle operations; v0.6 placement execution uses the narrower provisioning path for new servers. There is no raw Docker payload, generic engine-flag map, or field for mounts/devices/capabilities/host networking/registry credentials/installer scripts.
+
+**Decision vs. Execution boundary, updated** (see `docs/adr/0009-cluster-scheduling-decision-vs-execution.md` and its addendum `docs/adr/0010-container-placement-execution.md`): `POST /api/v1/cluster/placement` still only ever computes and returns a decision - never creates, starts, or mutates anything, not even for a `local_only` result. `POST /api/v1/cluster/placement/execute` is the new, separate, explicitly-named endpoint that acts on a freshly (server-side) recomputed decision. Every decision still carries an `execution` field: `local_only` (selected node is this installation) or `remote_provisioning` (selected node is a Remote Node reachable through the new machine-authenticated provisioning path - renamed from the foundation phase's `requires_v0.5b`, which is no longer accurate now that this one narrow remote path exists). A rejected decision (`no_eligible_node`, `missing_capability`, etc.) is never executed against anything - the execute endpoint stops and audits the rejection.
+
+**Capacity model**: the local node and reachable Remote Nodes use live bounded server counts, compared against the fixed, non-configurable `DefaultMaxServersPerNode = 50` constant. If a remote typed server listing fails, its capacity is unknown; unknown-capacity nodes remain eligible but rank behind verified spare capacity. No cluster-wide reservation or resource scheduler is introduced.
+
+**API**:
+- `GET /api/v1/cluster/capacity?tenant_id=…` - read-only candidate/capacity listing, `Cluster.View`.
+- `POST /api/v1/cluster/placement` - `{tenant_id, runtime_type}` → a `Decision`, `Cluster.Schedule`, decision only.
+- `POST /api/v1/cluster/placement/execute` - same request shape as the existing template provisioning route (`template_id, server_name, directory_name, variables, tenant_id, runtime_type, image, memory_limit_bytes, cpu_limit_millis, pids_limit, tmpfs_size_bytes`) plus the decision computed from it; requires global `Templates.View` + tenant-scoped `Cluster.Schedule` + tenant-scoped `Server.Create` (the same authorization a normal provisioning request already needs, plus the scheduling permission), CSRF, and returns `{decision, job}` on success (`202 Accepted`) or the same typed provisioning error codes (`not_provisionable`, `container_image_not_declared`, `container_image_policy_blocked`, `port_conflict`, `name_conflict`, …) a local provisioning request already returns.
+- `POST /api/v1/node/provisioning`, `GET /api/v1/node/provisioning/{jobID}`, `POST /api/v1/node/provisioning/{jobID}/cancel` - machine-authenticated (`Authorization: Bearer <credential>`, the same trust domain as every other `/api/v1/node/*` route), on the target node, mirroring the local provisioning job/cancel routes exactly.
+- `POST /api/v1/remote-nodes/{id}/provisioning`, `GET /api/v1/remote-nodes/{id}/provisioning/{jobID}`, `POST /api/v1/remote-nodes/{id}/provisioning/{jobID}/cancel` - ordinary browser-authenticated, RBAC- and CSRF-protected controller proxy for the above. The controller keeps no cluster-wide job/tenant mapping of its own (no new persistent data structure - see "Migrations" below); a status/cancel read trusts only the target node's own `tenant_id` field on the returned job and refuses (`404`) a caller who names a different tenant than the job actually belongs to.
+
+All Cluster/provisioning-tenant permissions accept `global` and `tenant` scope only (no `server` scope - a server does not exist yet at decision/execution time, the same rule `Server.Create` already uses) and are evaluated against the requested tenant before the tenant's existence is even confirmed, so a caller without the permission learns nothing about tenant existence.
+
+**Audit**: one `cluster.placement_decide` event per `POST /api/v1/cluster/placement` request (unchanged), and one new `cluster.placement_execute` event per `POST /api/v1/cluster/placement/execute` request - `Success` only when a node was selected AND the provisioning dispatch was accepted by its target, `Failure` for a rejected decision or a failed dispatch. It never duplicates another route's own audit trail: a local dispatch inside `/execute` records no separate `server.provision_start` event (the underlying `provisioning.Service.Start` call itself is never audited - only the HTTP handler that calls it is, and `/execute` is that one handler here), and calling `POST /api/v1/remote-nodes/{id}/provisioning` directly (bypassing `/execute`) records its own single `server.provision_start`/`server.provision_cancel` event at that call site instead. The read-only capacity listing and routine job-status reads are never audited, matching the existing "no audit for routine reads/health polls" convention.
+
+**Not implemented, on purpose**: any generic cron/job scheduler; any change to the unrelated v0.4 local restart scheduler (`internal/scheduler`, never touched by this milestone); general remote server lifecycle mutation (start/stop/restart/update/delete an existing remote server) beyond the one narrow create-via-provisioning path above; server migration between nodes; failover; controller election; cluster-wide capacity reservations; maintenance drain; automatic re-placement; any direct Docker/shell access from `internal/placement` or from the controller-side proxy (the controller only ever forwards a typed request and returns a typed response - it never interprets container data itself); a native fallback when container provisioning fails (a failed container placement stays failed - it is never silently retried or re-created as a native server).
+
+## Parallel development note
+
+v0.5A was implemented in a separate git worktree from a concurrently developed v0.4 (Container-backed Egg Runtime), then integrated onto v0.4 as a foundation-only merge (`feature/v0.5-remote-node-foundation`). v0.5A touches no Egg parser/importer/normalization/install-script/startup code, no container-backed execution, no provisioning-job internals, and no template/adapter internals; `internal/nodes`/`internal/remote` still do not import Egg internals after integration. `cmd/gamenode/main.go` preserves v0.4's full startup wiring (config/logging/DB, Native/Container/Egg runtime, provisioning, console, filesystem, monitoring, SteamCMD, restart scheduler, server updates) plus v0.5A's Remote Node registry/client/heartbeat wiring, including clean heartbeat shutdown. `internal/rbac/catalog.go`, `internal/audit/audit.go`, and `internal/api/api.go` gained additive entries from both branches (new permissions/actions/routes/struct fields) rather than either side overwriting the other. The only semantic (non-mechanical) integration step was adding the `egg_container_runtime` capability to `internal/nodeidentity.Capabilities()` now that v0.4 is genuinely present on this branch; the Remote Node protocol version was not bumped, since the wire contract itself did not change. The v0.5A migration `023_remote_nodes.sql` was renumbered to `026_remote_nodes.sql` to avoid colliding with v0.4's `023_container_runtime.sql`/`023_server_update_metadata.sql`, `024_egg_container_runtime.sql`, and `025_server_restart_schedules.sql`.

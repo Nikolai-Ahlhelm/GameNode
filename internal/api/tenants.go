@@ -23,6 +23,7 @@ func (s *Server) recordTenantAudit(r *http.Request, actor auth.User, action, id,
 	if err != nil {
 		in.result = audit.Failure
 		in.errorCode, in.errorSummary = tenantAuditFailure(err)
+		in.err = err
 	} else if metadata != nil {
 		in.metadata, _ = json.Marshal(metadata)
 	}

@@ -32,7 +32,9 @@ The consolidated 6D.2 audit surface is Auth, server and port mutations, file mut
 
 Dashboard aggregation is read-only: the API filters visible servers by RBAC before passing existing monitoring snapshots and registered ports to `internal/dashboard`; audit recents are included only with global `Audit.View`.
 
-`internal/settings` is a transport-independent typed settings service backed by SQLite. Its whitelist covers instance name/subtitle/favicon, monitoring interval/history, logging level, and bounded password minimum/maximum lengths. Favicon bytes are stored separately from the settings response and support bundle; only a boolean presence flag is exposed there. Compiled defaults are overlaid by YAML startup configuration where applicable, then by valid persisted SQLite overrides; unknown database keys are ignored while invalid known persisted values fail the settings load rather than being silently accepted. The API supplies global-only Settings.View/Settings.Manage authorization and records one best-effort `settings.update` event after each mutation. Monitoring construction still consumes its options at process startup and is marked restart-required; branding, logging, and password-policy changes are read live and apply immediately.
+`internal/settings` is a transport-independent typed settings service backed by SQLite. Its whitelist covers instance name/subtitle/favicon, monitoring interval/history, logging level, a fixed set of named logging-category enable/disable switches (`logging.categories.{http,database,runtime,auth,filesystem,provisioning,steamcmd,templates,general}`, each a plain `bool` field - not an arbitrary map), a `logging.detailed_errors` flag, and bounded password minimum/maximum lengths. Favicon bytes are stored separately from the settings response and support bundle; only a boolean presence flag is exposed there. Compiled defaults are overlaid by YAML startup configuration where applicable, then by valid persisted SQLite overrides; unknown database keys are ignored while invalid known persisted values fail the settings load rather than being silently accepted, and a request body naming an unrecognized field (including inside the nested `logging.categories` object) is rejected outright by the existing `DisallowUnknownFields` decoder - the whitelist is never widened by what a client sends. The API supplies global-only Settings.View/Settings.Manage authorization and records one best-effort `settings.update` event after each mutation. Monitoring construction still consumes its options at process startup and is marked restart-required; branding, logging (level, categories, detailed-error logging), and password-policy changes are read live and apply immediately via `settings.Service.SetOnUpdate`, which `cmd/gamenode/main.go` uses to re-sync `internal/logging.Manager`'s level, category set, and detailed-errors flag on every settings change.
+
+`internal/logging` is the single structured logger composition: a `debug`/`info`/`warn`/`error` level (existing), plus a lightweight, fixed set of log categories layered on top via a `category` attribute (`logging.WithCategory` for a whole subsystem's logger, or an inline attribute per call site) and a live enable/disable map on `logging.Manager`. Category filtering only ever mutes `info`-and-below entries - `warn`/`error` records are always recorded regardless of category state, so muting `http` (for example) can quiet routine access logging but can never hide a genuine 5xx. A parallel, independent `underlying_error` structured field (`logging.ErrorDetail`) lets a call site attach a trusted internal error (for example a raw SQLite error) unconditionally; the log handler strips that specific field before it reaches the log file, in-memory buffer, or console unless `Manager.DetailedErrors()` is enabled, so no caller can bypass the setting. This composition intentionally stays inside `internal/logging`/`internal/settings`; it is not a new logging framework, and business/domain packages depend only on the standard `log/slog` interface they already used, never on the HTTP layer, to log.
 
 `internal/diagnostics` is a transport-independent read-only summary service. It reads safe Go runtime/build information, process uptime, OS/architecture, SQLite migration state, and existing monitoring/settings values. Release builds inject the version tag, commit SHA, and build time through linker flags; these safe values are exposed in the application summary. The API enforces global-only `Settings.View`; Diagnostics uses no HTTP dependency, shell commands, environment dump, path disclosure, or network enumeration.
 
@@ -40,7 +42,7 @@ Dashboard aggregation is read-only: the API filters visible servers by RBAC befo
 
 The port transport routes call `ports.Service`, which validates assignments, checks registry collisions, and performs best-effort temporary OS availability probes. `servers.Service.start` performs port preflight after lifecycle validation but before state mutation, process-instance/console creation, and `Runtime.Start`. Manual restart finalizes the old process before normal start/preflight; auto-restart follows finalizer, delay, and that same start path. Runtime, ConsoleManager, and HTTP transport do not implement collision logic themselves.
 
-v0.1 provides server-root-scoped directory listing, bounded text reads, safe create/edit/move/delete operations, streaming upload/download transport through `internal/filesystem`, and a Files tab with a bounded Monaco text editor. Filesystem sandboxing stays independent from RBAC: RBAC authorizes an action while `internal/filesystem` validates every path. Archive browsing, cluster operation, and Docker remain out of scope.
+v0.1 provides server-root-scoped directory listing, bounded text reads, safe create/edit/move/delete operations, streaming upload/download transport through `internal/filesystem`, and a Files tab with a bounded Monaco text editor. Filesystem sandboxing stays independent from RBAC: RBAC authorizes an action while `internal/filesystem` validates every path. Archive browsing, cluster operation, and Remote Nodes remain out of scope; the v0.3/v0.4 Docker Engine boundary is documented below.
 # Template import architecture
 
 The normalized Template contract is declarative data, never executable code.
@@ -59,11 +61,11 @@ Egg JSON -> structural validation -> compatibility analysis
          -> GameNode Template -> native installer/launch plans
 ```
 
-`internal/templates` is transport-independent. Its `Template` owns provenance metadata, an installer definition, an optional structured launch definition, typed variables, and deterministic compatibility findings. The SQLite store persists the normalized root plus ordered variable and finding rows. Only a SHA-256 provenance hash is retained from the original input; raw Egg JSON and install scripts are not the runtime source of truth and are not persisted.
+`internal/templates` is transport-independent. Its `Template` owns provenance metadata, an installer definition, an optional structured launch definition, typed variables, separate Native/Container compatibility findings, and a normalized Container Egg plan when available. The SQLite store persists the normalized root plus ordered variable and finding rows. Only a SHA-256 provenance hash is retained from the original input; raw Egg JSON is not the runtime source of truth and is not persisted.
 
 The installer definition supports a detected SteamCMD plan (`app_id`, `validate`, `login_mode`, `platform`, beta branch/password variable references, and semantic `server_root`). Container paths such as `/mnt/server` and `/home/container` collapse to `server_root` semantics and never become host paths.
 
-The launch analyzer tokenizes only a single direct process into `Executable` plus `Arguments[]`. A safe prefix before a shell operator may be retained with a partial-compatibility finding; the remaining shell tail is discarded. Runtime code remains independent of Eggs and continues to use the existing native server model.
+The launch analyzer tokenizes only a single direct Native process into `Executable` plus `Arguments[]`. A safe prefix before a shell operator may be retained with a partial-compatibility finding; the remaining shell tail is discarded and reported. Container analysis separately accepts only a bounded declared startup template, shell allowlist, image refs, and compiled config operations. Runtime code remains independent of Egg formats and uses the ordinary server model for both runtime types.
 
 # Native SteamCMD provisioning architecture
 
@@ -72,17 +74,23 @@ The launch analyzer tokenizes only a single direct process into `Executable` plu
 `internal/provisioning` coordinates a short persisted job record and in-memory execution state:
 
 ```
-validate template/request -> reserve <data>/servers/<directory>
+validate template/request -> validate variables -> resolve ports
+  -> port preflight -> reserve <data>/servers/<directory>
   -> ensure managed SteamCMD -> install with structured arguments
-  -> expand direct launch fields -> transactionally create server + variable metadata
+  -> expand direct launch fields -> final port recheck + transactionally
+     create server + variable metadata
   -> release reservation and finalize exactly once
 ```
+
+Requested ports are resolved from validated template variables before anything is reserved or downloaded, and immediately checked with `internal/ports`' authoritative collision/availability logic (the same logic `Ports.Add`/`Update`/`Check` use). A known conflict - another GameNode server already owning the protocol/port, or the OS best-effort probe reporting it in use - fails the provisioning request synchronously: no job row, no reserved target directory, and no SteamCMD invocation. This is a fail-fast usability check only, not a reservation, since GameNode never holds the OS sockets open between checks; the final server registration inside `CreateProvisioned`'s transaction re-runs the same collision check and remains the authoritative gate against the unavoidable TOCTOU window between preflight and registration.
+
+The requested server name gets the identical treatment: `servers.name` is `COLLATE NOCASE UNIQUE`, so a name already owned by another GameNode server is just as knowable up front. `internal/servers.Service.NameAvailable` (backed by `Store.NameAvailable`, the same case-insensitive check `Store.Create` and `Store.CreateProvisioned` use) runs right alongside the port preflight, before any target reservation or SteamCMD download. It is likewise a usability check only; `CreateProvisioned`'s transaction re-checks the name immediately before its insert and remains authoritative for the same TOCTOU window.
 
 Actual variable values live only in the existing server environment record; `server_template_variables` retains template ID, source, version, key, and sensitivity metadata. A normal server row is inserted only after installation and final launch validation. Filesystem writes cannot participate in the SQLite transaction, so a failed final database insert can leave installed files; the job reports this explicitly and GameNode never performs unowned recursive cleanup.
 
 Jobs persist safe phase, actor/template identity, directory name, result, and server ID, but not raw output, values, credentials, or an absolute host path. Active jobs are marked failed/interrupted during startup; v0.2 intentionally has no resume engine. In-memory cancellation terminates the SteamCMD process and gates final server creation. A per-target reservation allows different roots in parallel, while the SteamCMD manager serializes first bootstrap/update access.
 
-Provisionability is narrower than general template compatibility: a partially compatible Egg may proceed only when its native SteamCMD plan, anonymous authentication, current-host launch, variables, and direct launch definition are sufficient. Unsupported templates, beta passwords, credentialed login, absent host launch definitions, and arbitrary flags are rejected before execution.
+Provisionability is narrower than general template compatibility: Native may proceed only when its SteamCMD plan, anonymous authentication, current-host launch, variables, and direct launch definition are sufficient. Container may proceed only after explicit runtime selection, image policy/Engine checks, a normalized installer/startup plan, and bounded resources are valid. Unsupported templates, beta passwords, credentialed login, absent host launch definitions, arbitrary flags, untrusted image refs, and unsupported required config semantics are rejected before execution.
 
 Compatibility is `compatible`, `partially_compatible`, or `unsupported`. Findings contain stable severity, component, code, and summary fields. Warnings yield partial compatibility and errors yield unsupported status, making the result deterministic and suitable for API/UI rendering and tests.
 
@@ -95,6 +103,24 @@ The NeoForge Official template uses a named resolver rather than a version-speci
 Official SteamCMD templates use the same template and provisioning services. `platform_launches.windows` and `.linux` are explicit; no executable is inferred from an Egg or another platform. The selected executable and optional working directory are resolved beneath the managed server root, symlinks are evaluated, and the expected executable must be a regular file after installation. Declared ports are resolved from validated integer variables and inserted with the server and template provenance in one database transaction. Existing provisioned servers retain their concrete executable, arguments, ports, stop settings, and source/version snapshot when a catalog template changes.
 
 Project Zomboid demonstrates a script-backed upstream distribution without script execution. The Windows Steam depot exposes `StartServer64.bat` plus `ProjectZomboid64.json`; the Official template translates the reviewed launcher data into the bundled `jre64/bin/java.exe` and a fixed argument slice. Its Windows Java classpath is one argv value containing relative entries separated by `;`. Validation permits that separator only immediately after `-cp`/`-classpath`, rejects absolute/traversal entries, and never parses it as command syntax. `-cachedir=.` keeps generated configuration, saves, logs, and first-boot state in the managed server root.
+
+# Manual SteamCMD server updates architecture (v0.2.1)
+
+`internal/serverupdates` is a small, transport-independent domain package modeled on `internal/provisioning`'s job/store/service shape, but deliberately scoped down: it never resolves a template, never touches ports or configuration adapters, and never creates a server row. It reuses `internal/steamcmd.Manager.Install` unchanged - re-running the same structured `+force_install_dir <root> +login anonymous +app_update <app_id> [validate] +quit` invocation against an existing server's root is exactly SteamCMD's native update behavior, so no second SteamCMD implementation or argv builder exists.
+
+The trusted inputs an update needs - Steam App ID, login mode, default validate behavior, beta branch, and template provenance - are captured exactly once, in the same transaction as the server row, in `server_steamcmd_provisioning` (`migrations/023_server_update_metadata.sql`, `servers.ProvisionedSteamCMD`). This is the sole source of truth at update time: the live Official catalog is never consulted to recover or reconstruct this information, so an update remains possible when the catalog is offline, and a server whose template has since published a newer version is never silently migrated. A server with no such row - custom/adopted servers, non-SteamCMD templates, or a server provisioned before this metadata existed - is reported ineligible rather than guessed from directory contents.
+
+```
+check eligibility (persisted metadata + server state)
+  -> reserve the server (servers.Service.BeginUpdate)
+  -> re-verify stopped -> run SteamCMD with the trusted plan
+  -> validate the persisted launch executable still exists safely
+  -> release the reservation and finalize exactly once
+```
+
+`servers.Service` gained a `BeginUpdate`/release reservation (mirroring its existing deletions/restarts `sync.Map` idioms) that `Start`, `start` (also used by `Restart`), and `Delete` all check, so a manual update can never race a lifecycle action against the same server's files - without a broad global lock; independent servers/roots remain independently updateable. Post-update validation reuses `Server.ResolvedExecutable`/`inside`'s existing sandbox rules through `servers.Service.VerifyLaunchExecutablePresent` rather than a second symlink/traversal implementation.
+
+Jobs persist safe status/phase, actor identity, and the trusted App ID/template provenance in `server_update_jobs`/`server_update_job_events` - never raw SteamCMD output, command lines, secrets, or an absolute host path. Live SteamCMD stdout/stderr is exposed through `Service.Get`'s `InstallerOutput` field for operator visibility (approximate progress, not a percentage), but it lives only in an in-memory, per-job bounded buffer (same caps as provisioning's) that is never written to the database and is empty again after a GameNode restart. Cancellation stops the in-flight SteamCMD process through the existing context-cancellation path and finalizes exactly once; it cannot roll back files SteamCMD already changed. Active jobs are marked failed/interrupted during startup, matching provisioning's conservative restart philosophy - GameNode never resumes SteamCMD or auto-starts the server after an interruption. Updating the Steam depot never touches `servers`, `server_config_adapters`, `server_config_values`, or `server_ports`: the server's pinned template version, executable, arguments, environment, ports, stop behavior, and configuration adapter snapshots are unaffected. Template migration - re-resolving launch/ports/adapters from a newer catalog template - is an explicitly separate, unimplemented workflow.
 
 # Versioned game configuration adapters
 
@@ -213,3 +239,124 @@ Theme, sidebar-collapsed, and wallpaper choices are a **personal, browser-local 
 The optional wallpaper image follows the same browser-local model instead of a server upload. `web/src/wallpaper.ts`'s `processWallpaperFile` accepts only `image/png`, `image/jpeg`, or `image/webp` (SVG is never in the accepted-type list), decodes the file with `createImageBitmap` (which rejects anything that isn't real raster image data regardless of its claimed MIME type - the actual defense against a mislabeled or polyglot upload), redraws it onto a canvas capped at 1920px, and re-exports it as a bounded PNG/JPEG data URL. That data URL must additionally pass `theme.ts`'s `isValidWallpaperImage` allow-list (`data:image/(png|jpeg|webp);base64,...`, size-capped) before it is ever written into a CSS custom property or persisted - so it is also safe to interpolate directly into `--wallpaper-image` without further escaping. The wallpaper is purely decorative (`position:fixed`, negative `z-index`, `pointer-events:none`) and never influences any business or RBAC logic; cards and panels keep their own opaque backgrounds so content stays readable under blur/dim.
 
 The application shell gained a reusable `AppTopbar` (`web/src/ui.tsx`) rendered once above the existing per-page content in `DashboardModern` - a breadcrumb/page title plus the theme switch and sidebar collapse toggle, so no page rebuilds this chrome itself. The sidebar supports an icon-only collapsed state (`[data-sidebar="collapsed"]` on `<html>`) with labels kept in the accessibility tree (via `title`) instead of removed. None of this touched routing: navigation is still the existing component-state switch in `DashboardModern`.
+# Container runtime (v0.3)
+
+`servers.Service` dispatches ordinary lifecycle work to either the Native
+runtime or the Container runtime. The latter speaks only to Docker's Engine
+API and retains the host-side server root for the Files API. It uses verified
+ownership labels/token/generation, ConsoleManager attach, typed limits, and
+registered host-to-container port mappings; it is not a separate manager.
+
+# Container-backed Egg runtime (v0.4)
+
+The v0.4 path extends the existing provisioning job and server model rather than
+adding an Egg runtime. The flow is:
+
+```text
+analyze Egg -> separate Native/Container compatibility
+  -> explicit Container selection + image policy
+  -> Pull selected game/installer images
+  -> bounded one-shot installer container
+  -> validate persistent root -> create ordinary container server
+```
+
+The installer container receives only the validated tenant server root at the fixed
+`/home/container` mount and a normalized environment containing declared variables.
+Its shell entrypoint, script, memory/CPU/PIDs/tmpfs, timeout, output and ownership
+labels are constructed by compiled GameNode code. Docker Engine API is the only
+control boundary; the host process never invokes Docker CLI or a host shell. The
+installer is removed exactly once after completion or cancellation, while the
+persistent root is never recursively removed as automatic recovery.
+
+The registered `servers.Server` has `runtime_type: container` and retains a closed
+`ContainerConfig` plus an immutable `EggRuntimeSnapshot`: provenance/hash/version,
+selected image/digest, startup template/shell, variable sensitivity, host/container
+ports, resource limits, and compiled config operations. Startup expansion is done
+immediately before `Runtime.Start` from declared values and fixed `SERVER_ROOT`; no
+host environment or live catalog is consulted. Existing rows remain pinned when a
+template/catalog version changes. `files_may_remain` and the existing owner/admin
+registration-recovery flow cover installation failures without widening cleanup or
+creating a second job system.
+# Local scheduled restart architecture
+
+`internal/scheduler` is a deliberately narrow local time-based component. A
+`server_restart_schedules` row stores one daily or weekly recurrence, a
+controlled `HH:MM` wall-clock time, an IANA timezone, and enabled state;
+multiple rows may belong to one server. On startup the scheduler loads enabled
+rows, calculates the next strictly-future occurrence, and skips missed times.
+When a timer fires it re-reads the row and then calls only
+`servers.Service.Restart`; it never calls Native, Container, Docker, Egg, or
+OS process APIs. The existing per-server lifecycle lock and state rules decide
+whether the server is eligible. Schedule updates replace timers, disabling and
+deleting cancel them, and deletion of a server cascades the rows.
+
+DST behavior is deterministic: nonexistent local times are skipped and the
+in-process occurrence guard prevents a repeated fall-back wall-clock time from
+executing twice. Scheduled restarts carry `origin=scheduled` in the existing
+`server.restart` audit event. This is not a generic cron or job scheduler and
+has no remote-node or cluster placement behavior.
+
+# Remote Node Foundation (v0.5A)
+
+v0.5A adds the secure, autonomous Remote Node foundation later remote server management (v0.5B+) depends on, without implementing that management itself. See `docs/adr/0007-remote-node-foundation.md` for the trust-model decision this section documents the "how" of.
+
+## New packages
+
+- `internal/nodeidentity`: this installation's own `NodeID` (random, persisted once in `node_identity`, independent of hostname/IP/database path), optional display name, `ProtocolVersion` constant, and the fixed `Capabilities()` list this build actually implements.
+- `internal/nodes`: two roles in one package, both transport-free. Pairing/trust for THIS node being enrolled (`node_pairing_tokens`, `node_trusted_callers`) and the registry of remote nodes THIS installation enrolled as a controller (`remote_nodes`). Only salted hashes of tokens/credentials are ever persisted.
+- `internal/remote`: the typed `Client` (`Enroll`, `GetNodeInfo`, `GetHealth`, `GetCapabilities`) plus `ValidateEndpoint`. Bounded timeout (8s default) and response size (1 MiB), real TLS verification, and `CheckRedirect` stops at the first response rather than following a cross-host redirect with the `Authorization` header attached.
+
+## API surface
+
+`internal/api/node.go` adds the machine-authenticated Node-facing routes (`GET /api/v1/node/info|health|capabilities`, `POST /api/v1/node/enroll`) behind `requireMachineAuth` (a bearer credential checked against `nodes.Service.AuthenticateCaller`, structurally separate from `requireAuth`'s cookie/CSRF path) and the human-authenticated `POST /api/v1/node/pairing-tokens` (`Node.Manage` + CSRF). `internal/api/remotenodes.go` adds the controller-facing registry routes (`GET/POST /api/v1/remote-nodes`, `GET/PATCH/DELETE /api/v1/remote-nodes/{id}`, `POST /api/v1/remote-nodes/{id}/refresh`), all ordinary `Node.View`/`Node.Manage` + CSRF like every other product mutation. `internal/api/node_refresh.go` classifies remote errors into `nodes.Health` and runs the bounded periodic refresh loop (`Server.StartHeartbeat`, started/stopped once in `cmd/gamenode/main.go`).
+
+## Database
+
+Migration `026_remote_nodes.sql` adds `node_identity` (single row), `node_pairing_tokens`, `node_trusted_callers`, and `remote_nodes`. None of these tables replicate or shadow a remote node's own schema; `remote_nodes` stores only configuration and last-known status the controller is allowed to cache for presentation. It was renumbered from its original `023_remote_nodes.sql` during v0.4/v0.5A integration because v0.4 already occupies `023_container_runtime.sql`, `023_server_update_metadata.sql`, `024_egg_container_runtime.sql`, and `025_server_restart_schedules.sql`.
+
+## Frontend surface
+
+`web/src/nodes.tsx`/`nodes-helpers.ts` add a read-only-management Nodes page using the same shared primitives as the Tenants page (`PageHeader`, `SectionHeader`, `EmptyState`, `LoadingState`, `.data-table`) plus a dedicated `nodes.css` for its six-column table and capability chips. It is gated by `Node.View`/`Node.Manage` (`nodeCapabilities` in `nodes-helpers.ts`, mirroring `tenantCapabilities`) and reachable from the sidebar only when `Node.View` is present. The pairing-token panel and enroll form are the only two mutating surfaces; neither ever displays a previously issued secret again.
+
+## What v0.5A deliberately does not add
+
+The v0.5A foundation itself has no remote server DTOs or runtime control. v0.5B/v0.5C add typed remote server, console, file, and monitoring DTOs and APIs, but they still make no `servers.Service` or container-runtime authority change: every operation is forwarded to the target node's own services. Remote health/capabilities remain cached registry data. Now that v0.4's Egg Container Runtime is integrated onto this branch, `internal/nodeidentity.Capabilities()` additionally advertises `egg_container_runtime` as a fixed, unconditional entry; `internal/nodes`/`internal/remote` still never import Egg internals to determine it.
+
+# Cluster Scheduling foundation and container placement execution (v0.6)
+
+v0.6 adds `internal/placement`, a deterministic placement DECISION engine over the node candidates v0.5A already exposes (this installation plus every enrolled Remote Node), and, in a second phase, EXECUTION of that decision through the existing typed provisioning path. See `docs/adr/0009-cluster-scheduling-decision-vs-execution.md` for the original Decision vs. Execution boundary, `docs/adr/0010-container-placement-execution.md` for how execution was added without reopening it, and `PROJECT_PLAN.md`'s "v0.6 — Cluster / Scheduling (Foundation + Container Placement Execution) status" for the full v0.5B/v0.5C gap analysis.
+
+## New package
+
+`internal/placement` is transport-free and has no database handle. `Decide(Request) Decision` is a pure function: no I/O, no clock, deterministic tie-breaking (`NodeID` ascending) so identical input always produces identical output - this is what makes `internal/placement/placement_test.go` an exact input/output unit-test suite rather than an integration test. `NodeCandidate` is the bounded, already-fetched-by-the-caller view of one node (kind, enabled, healthy, capabilities, capacity); building the real candidate list from live services (`LocalCandidate`, `RemoteCandidates`) is a separate, thin step the API layer performs before calling `Decide`.
+
+**Algorithm**: exclude disabled, unhealthy, or capability-mismatched candidates; exclude capacity-known candidates with zero spare capacity; among the remainder, prefer capacity-known candidates (most spare capacity first) over capacity-unknown ones; break every remaining tie by `NodeID` ascending.
+
+**`internal/placement` is not `internal/scheduler`.** `internal/scheduler` (v0.4) is the typed local daily/weekly restart scheduler; it only calls `servers.Service.Restart` on a timer and has no concept of nodes or placement. The two packages are unrelated, and this milestone does not touch `internal/scheduler`.
+
+## Capacity model
+
+The local node and reachable Remote Nodes use live bounded server counts from the existing typed server-listing path, compared against a fixed `placement.DefaultMaxServersPerNode = 50` constant. If a remote listing fails, capacity is unknown; the node remains eligible but ranks behind verified spare capacity. No per-node resource configuration or cluster-wide reservation model is introduced.
+
+## API surface: decision
+
+`internal/api/cluster.go` adds `GET /api/v1/cluster/capacity?tenant_id=…` (`Cluster.View`, read-only candidate/capacity listing) and `POST /api/v1/cluster/placement` (`Cluster.Schedule` + CSRF, body `{"tenant_id":"...","runtime_type":"native"|"container"}` → a `Decision`). Both permissions are evaluated against the requested tenant's scope (`rbac.Scope{Type:"tenant", ID:&tenantID}`, or an effective global grant) before the tenant's existence is checked, matching the existing tenant-scoped route pattern in `internal/api/provisioning.go`. Neither route creates, starts, stops, or otherwise mutates a server - see ADR 0009 for why this holds even for a `local_only` decision.
+
+## API surface: execution
+
+`internal/api/cluster.go` also adds `POST /api/v1/cluster/placement/execute`: global `Templates.View` + tenant-scoped `Cluster.Schedule` + tenant-scoped `Server.Create` + CSRF. It recomputes the decision server-side (never trusts a caller-supplied decision), stops and audits without dispatching anything if the decision is rejected, and otherwise dispatches the caller's typed provisioning fields - the same fields the existing `POST /api/v1/templates/{id}/provision` route accepts - to whichever node `placement.Decide` selected:
+
+- **`local_only`**: calls `provisioning.Service.Start` directly, the exact same call the existing browser-facing provisioning route makes. This is true for both `runtime_type=native` and `runtime_type=container` - there is no separate native-vs-container branch beyond what `provisioning.Service.Start` already handles.
+- **`remote_provisioning`**: calls `dispatchRemoteProvisioning`, which looks up the selected Remote Node's stored endpoint/credential (`nodes.Service.Credential`) and calls `internal/remote.Client.StartProvisioning` - the machine-authenticated Node API described below. The controller-side handler never interprets container/Egg data, never talks to the target's database, and never calls Docker.
+
+`internal/api/node_provisioning.go` adds the target-node side of the remote path: `POST /api/v1/node/provisioning` (+ `GET`/`POST .../{jobID}[/cancel]`), machine-authenticated exactly like every other `/api/v1/node/*` route (see the "Remote Node Foundation" section above), forwarding straight into that node's own, unmodified `provisioning.Service.Start`/`Get`/`Cancel`. `internal/api/remote_provisioning.go` adds the controller-side proxy: `POST /api/v1/remote-nodes/{id}/provisioning` (+ `GET`/`POST .../{jobID}[/cancel]`), ordinary browser-authenticated/RBAC/CSRF API that authenticates, checks tenant scope, and forwards through the same `internal/remote.Client` methods `/execute` uses - reachable directly (not only through `/execute`) for an operator who wants a remote container placed without going through the scheduler. Neither new route accepts anything beyond `provisioning.Request`'s existing fields; there is no raw JSON payload, generic engine-flag map, or field for mounts/devices/capabilities/host networking/registry credentials/installer scripts anywhere on this path. `internal/remote.Client` gains a matching `*ProvisioningError` type so a target's typed provisioning rejection (invalid image, resource limits, non-provisionable template, …) surfaces to the controller's caller with the same code/message a local rejection already has, instead of collapsing into one generic transport error.
+
+The controller keeps no new persistent job/tenant mapping: a status/cancel read against the proxy route requires `tenant_id` and trusts only the *target's own* `tenant_id` field on the job it returns, refusing (`404`) a caller who names a tenant the job does not actually belong to.
+
+## Database
+
+None. Capacity is computed live from data `servers.Service`/`internal/nodes` already persist; provisioning jobs (local and remote-originated alike) reuse the existing `provisioning_jobs`/`provisioning_job_events` tables and target-directory conflict protection - there is no new migration and no new cluster-wide reservation table.
+
+## What v0.6 deliberately does not add
+
+No automatic re-placement of a `local_only` or `remote_provisioning` decision beyond the one explicit `/execute` call the caller makes. No server migration between nodes, no failover, no controller election, no cluster-wide capacity reservations, no maintenance drain, no change to `internal/scheduler`'s local restart scheduling, and no generic cron/job scheduler. No native fallback when container provisioning fails - a failed container placement stays failed. v0.5B/v0.5C remote lifecycle, console, files, and monitoring remain bounded forwarding to the target node and are not cluster orchestration.

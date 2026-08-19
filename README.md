@@ -1,8 +1,8 @@
 # GameNode
 
-GameNode is a self-contained, single-node game-server management platform for Windows and Linux. It manages existing native applications through a local web interface; it does not require containers, templates, or a central controller.
+GameNode is a self-contained, single-node game-server management platform for Windows and Linux. It manages native applications and explicit Linux-first Docker Container servers through a local web interface; it does not require a central controller.
 
-The current implementation covers the foundation, native runtime, live console, server-root file browser, RBAC, tenant-scoped multi-tenancy, monitoring and health state, auto-restart, port management, audit log, dashboards, typed settings, diagnostics, support bundles, the Official Game Library, safe Egg template import, and native SteamCMD provisioning. When an existing database has pending schema migrations, startup creates a consistent `*.pre-migration-*.db` SQLite copy beside it before changing the schema; this is an upgrade safeguard, not a general backup system. Cluster/controller operation, Docker/Podman, a marketplace, automatic server updates, backups, scheduling, and firewall/NAT automation are intentionally out of scope.
+The current implementation covers the foundation, Native and Linux-first Docker Container runtimes, live console, server-root file browser, RBAC, tenant-scoped multi-tenancy, monitoring and health state, auto-restart, port management, audit log, dashboards, typed settings, diagnostics, support bundles, the Official Game Library, safe Egg template import, native SteamCMD provisioning, container-backed Egg provisioning, and manual SteamCMD server updates. Container servers use explicit image pull, typed CPU/RAM limits, host-to-container port mappings, and ownership-safe rediscovery. Container Egg installation/startup scripts run only inside a short-lived, unprivileged, resource- and time-bounded container with the managed server root mounted; they never run on the host. SteamCMD supports initial provisioning and explicit manual updates of eligible existing SteamCMD-managed servers; automatic, scheduled, and update-on-start behavior remains unsupported. When an existing database has pending schema migrations, startup creates a consistent `*.pre-migration-*.db` SQLite copy beside it before changing the schema; this is an upgrade safeguard, not a general backup system. Docker CLI execution, privileged mode, arbitrary mounts, socket mounts, registry credentials, general cluster/controller server management (start/stop/restart/edit/delete an existing remote server, migration, failover, controller election), marketplace functionality, automatic updates, backups, scheduling, and firewall/NAT automation remain out of scope. A narrow exception exists for deterministic cluster placement and remote server *creation* via provisioning - see [Cluster Scheduling](#cluster-scheduling-v06) below.
 
 ## Capabilities
 
@@ -19,7 +19,9 @@ The current implementation covers the foundation, native runtime, live console, 
 - Switch between dark, light, and system themes, collapse the sidebar, and optionally set a local background wallpaper (PNG/JPEG/WebP, processed and validated entirely in the browser) from Settings → Appearance. These are personal, browser-local preferences, not shared instance settings.
 - Analyze and persist Pelican/Pterodactyl Eggs as normalized GameNode templates with compatibility reports and native SteamCMD/launch plans.
 - Provision supported templates asynchronously through a managed SteamCMD installation, then create an ordinary native GameNode server.
+- Manually update an eligible, already-provisioned SteamCMD-managed server's installed game files in place, without migrating its pinned template, ports, or configuration.
 - Adopt an existing Minecraft NeoForge installation through the Official read-only template and a conservative launcher resolver.
+- Enroll another GameNode installation as a Remote Node: durable node identity, secure pairing-token enrollment, an authenticated machine-to-machine Node API, health/capability status, remote server lifecycle, bounded console/files/monitoring operations, and typed native/container provisioning on the selected node - without giving up local autonomy. See [Remote Nodes](#remote-nodes-v05a) and [Cluster Scheduling](#cluster-scheduling-v06) below.
 
 ## Security model
 
@@ -65,6 +67,37 @@ Open the Vite URL, complete the one-time administrator setup, then use the local
 
 Without a configuration file, GameNode listens on `127.0.0.1:8443` and stores SQLite data under `./data`. The example configuration contains the listener, data/database locations, logging level, maximum multipart upload size, and monitoring defaults. Server definitions belong in SQLite, not in YAML.
 
+### Linux: download a release and start it
+
+Release builds are self-contained Linux amd64 binaries; Go and Node.js are not
+required on the target machine. Set `VERSION` to a published release tag, then
+run this one-shot installation from a normal user account:
+
+```bash
+VERSION=vX.Y.Z
+INSTALL_DIR="${HOME}/gamenode"
+BASE_URL="https://github.com/Nikolai-Ahlhelm/GameNode/releases/download/${VERSION}"
+
+mkdir -p "${INSTALL_DIR}" \
+  && curl --fail --location --proto '=https' --tlsv1.2 "${BASE_URL}/gamenode-linux-amd64" -o "${INSTALL_DIR}/gamenode-linux-amd64" \
+  && curl --fail --location --proto '=https' --tlsv1.2 "${BASE_URL}/SHA256SUMS.txt" -o "${INSTALL_DIR}/SHA256SUMS.txt" \
+  && (cd "${INSTALL_DIR}" && sha256sum -c SHA256SUMS.txt --ignore-missing) \
+  && chmod 0755 "${INSTALL_DIR}/gamenode-linux-amd64" \
+  && exec "${INSTALL_DIR}/gamenode-linux-amd64"
+```
+
+On first start, GameNode creates `${HOME}/gamenode/config.yaml`, its SQLite
+database, and data directories beside the binary. Open
+`http://127.0.0.1:8443` and complete the administrator setup. The default
+listener is loopback-only; configure TLS and/or a local reverse proxy before
+making the dashboard reachable from another machine. For a persistent service,
+run the binary under `systemd` with an explicit `-config` path instead of
+keeping it attached to the terminal.
+
+If no release has been published yet, use the development/source quick start
+above or build the release artifact locally as described in [Production-style
+local build](#production-style-local-build).
+
 ## Production-style local build
 
 Build the embedded frontend before compiling the Go binary:
@@ -86,6 +119,20 @@ For TLS terminated by a reverse proxy on the same machine, keep GameNode bound t
 Create a server from **Servers** by supplying an existing working directory, a directly executable native program, an argument array, optional child-process environment values, and a stop timeout. **Adopt Existing** only registers this metadata; it never installs, relocates, or alters server files.
 
 The **Files** tab is scoped to that server's working directory. It supports non-recursive directory listing, bounded text reads and edits, creation, atomic uploads, streaming downloads, rename/move, and explicit recursive deletion. Filesystem authorization and path validation are enforced independently by the backend; frontend path checks are usability affordances only.
+
+### Scheduled restarts
+
+Server Detail includes **Scheduled Restarts** for operators with `Server.Edit`.
+Schedules are typed daily or weekly recurrences with an explicit IANA timezone,
+for example `Every Sunday · 04:00 · Europe/Berlin`. They are local to this
+GameNode, persist in SQLite, and invoke the same `servers.Service.Restart`
+lifecycle used by a manual restart. A stopped or otherwise ineligible server is
+not started implicitly; the attempt is logged and audited as a scheduled
+restart. Missed occurrences are skipped after a GameNode restart, and a
+nonexistent DST wall-clock time is skipped rather than retried.
+
+Scheduled restarts are not a generic job system: they do not run commands,
+pull images, update SteamCMD, provision Eggs, or schedule work on Remote Nodes.
 
 ## Verification
 
@@ -140,10 +187,23 @@ Release binaries expose the tag in Diagnostics and also include the build commit
 
 ## Operational limitations
 
-GameNode is intentionally a local, single-node product. It provides no distributed controller, remote-node protocol, automatic firewall/NAT management, permanent port reservation, container runtime, or generic installer beyond the reviewed native template flows described below. Port availability probes are best effort and retain the normal bind-time TOCTOU window. A process discovered after GameNode restarts can be identity-verified but remains console-detached. Review [docs/runtime.md](docs/runtime.md) and [docs/security.md](docs/security.md) when deploying under a service account.
+GameNode is intentionally a local-first, single-node-autonomous product. It now has Remote Node server lifecycle, bounded console/files/monitoring operations, and deterministic placement decision+execution. Remote container creation uses the target node's typed provisioning path; no controller-side Docker/runtime control, automatic firewall/NAT management, or permanent port reservation exists. Port availability probes are best effort and retain the normal bind-time TOCTOU window. A process discovered after GameNode restarts can be identity-verified but remains console-detached. Review [docs/runtime.md](docs/runtime.md) and [docs/security.md](docs/security.md) when deploying under a service account.
+
+# Remote Nodes (v0.5A)
+
+Every GameNode installation remains fully autonomous - its own SQLite database, API, UI, and lifecycle authority - whether or not it is ever enrolled with a controller. A controller talks to a Remote Node only through an authenticated Node API; it never opens the remote node's database or controls its Docker/process runtime directly.
+
+Enrollment is deliberate and pairing-based: an operator generates a single-use, 15-minute pairing token on the node being enrolled (`Node.Manage`), and an operator on the controller side supplies that token plus the node's endpoint to enroll it. A successful enrollment issues a durable machine credential (never a browser session/CSRF token) that authenticates future `GET /api/v1/node/info|health|capabilities` calls. The controller's Nodes UI shows identity, protocol/version compatibility, capabilities, health, and last contact for each enrolled node, refreshed on a bounded periodic schedule.
+
+v0.5A is the identity and registry foundation. v0.5B/v0.5C add typed remote server create/edit/delete/start/stop/restart/kill, bounded console relay with polling fallback, sandboxed text/binary files, monitoring, RBAC/audit, and controller-facing Nodes UI. v0.6 adds deterministic placement and typed local/remote provisioning. See [`docs/adr/0007-remote-node-foundation.md`](docs/adr/0007-remote-node-foundation.md) for the trust model.
+
+# Cluster Scheduling (v0.6)
+
+`POST /api/v1/cluster/placement` computes a deterministic, tenant-isolated, capacity-aware DECISION - which node (this installation, or an enrolled Remote Node) is suitable for a new server of a given runtime type - without creating, starting, or mutating anything. `POST /api/v1/cluster/placement/execute` acts on that decision: it recomputes the decision itself server-side and dispatches the caller's typed provisioning request (the same fields the existing Templates provisioning UI already sends) to whichever node was selected - locally through the existing `provisioning.Service`, or remotely through a new machine-authenticated Node provisioning path (`POST /api/v1/node/provisioning`, proxied by `POST /api/v1/remote-nodes/{id}/provisioning`). The target node stays the sole authority for template/Egg validation, the image allowlist, resource limits, its tenant/filesystem sandbox, and the container installer - remote provisioning reaches no container capability the local provisioning API could not already reach, and a failed container placement is never silently retried as a native server. Migration, failover, controller election, cluster-wide capacity reservations, and general remote server lifecycle mutation remain out of scope. See [`docs/adr/0009-cluster-scheduling-decision-vs-execution.md`](docs/adr/0009-cluster-scheduling-decision-vs-execution.md) and [`docs/adr/0010-container-placement-execution.md`](docs/adr/0010-container-placement-execution.md).
+
 # Egg template import foundation (v0.2)
 
-GameNode can analyze and import Pelican/Pterodactyl v2 Egg JSON files into a normalized, persisted GameNode template. Eggs are an import format only: the native runtime never reads Egg JSON, executes Egg shell scripts, starts Docker images, or maps container paths onto the host. The Templates UI provides upload, compatibility preview, variable inspection, import, detail, and delete workflows protected by independent global `Templates.View` and `Templates.Manage` permissions.
+GameNode can analyze and import Pelican/Pterodactyl v2 Egg JSON files into a normalized, persisted GameNode template. Native and Container compatibility are reported separately. Native provisioning never reads Egg scripts; an explicitly selected Container path may run a bounded, reviewed Egg installation/startup plan only inside the controlled unprivileged installer/server container boundary. The Templates UI provides upload, compatibility preview, variable/image inspection, import, detail, and delete workflows protected by independent global `Templates.View` and `Templates.Manage` permissions.
 
 The importer recognizes a conservative SteamCMD pattern and creates a native installer plan containing the App ID, validation flag, login mode, platform, optional beta-variable references, and the semantic `server_root` target. Startup is imported only when a direct executable and argument array can be extracted safely; shell operators and command substitution are reported and never executed.
 
@@ -151,7 +211,11 @@ The importer recognizes a conservative SteamCMD pattern and creates a native ins
 
 Templates with a supported anonymous SteamCMD plan and a safe launch definition can be provisioned from the Templates UI. GameNode bootstraps SteamCMD from a fixed official Valve HTTPS source into `<data>/tools/steamcmd`, installs game files into `<data>/servers/<directory>`, expands only declared template variables, and transactionally creates a normal GameNode server after installation succeeds. Jobs expose bounded phase/status information, support cancellation, prevent concurrent use of the same target, and retain a clear `files_may_remain` signal after failure.
 
-Egg scripts, arbitrary URLs, free-form SteamCMD flags, credentialed login, Docker images, and update-on-start hooks are not executed. Sensitive values are masked by the server API and excluded from audit/support output; this version stores environment values in the existing SQLite server record without application-level at-rest encryption. Provisioning jobs interrupted by a GameNode restart are marked failed rather than resumed. See [architecture](docs/architecture.md), [security](docs/security.md), and [API](docs/api.md) for the precise boundary.
+Native Egg scripts, arbitrary URLs, free-form SteamCMD flags, credentialed login, and update-on-start hooks are not executed. Container Egg installation uses only declared allowlisted images, explicit pulls, fixed resource/mount policy, bounded output/timeouts, and no registry credentials. Sensitive values are masked by the server API and excluded from audit/support output; this version stores environment values in the existing SQLite server record without application-level at-rest encryption. Provisioning jobs interrupted by a GameNode restart are marked failed rather than resumed; installed container targets can use the existing owner-only registration-recovery flow. See [architecture](docs/architecture.md), [security](docs/security.md), and [API](docs/api.md) for the precise boundary.
+
+# Manual SteamCMD server updates (v0.2.1)
+
+SteamCMD supports initial provisioning and explicit manual updates of eligible existing SteamCMD-managed servers. Automatic, scheduled, and update-on-start behavior remains unsupported. An operator can trigger "Update Server" from Server Detail on an already-provisioned, stopped SteamCMD server; GameNode re-runs the same structured `+force_install_dir`/`+login anonymous`/`+app_update`/`+quit` invocation against the server's existing managed root, using only the App ID, validate flag, and template provenance captured once at provisioning time. Updating the Steam depot never migrates the server's pinned template version, executable, arguments, environment, ports, stop behavior, or configuration adapter snapshots - those stay exactly as provisioned even if the Official catalog has since published a newer template version. The server must already be stopped; GameNode never stops or restarts it automatically. The update runs as a persisted, cancellable job and validates the launch executable still exists safely afterward. Servers provisioned before this metadata existed, or provisioned outside the SteamCMD path, are reported ineligible rather than guessed from directory contents.
 
 # Official Game Library and Minecraft NeoForge (v0.2)
 

@@ -11,7 +11,7 @@
     "No dedicated configuration file is documented upstream. Server name, admin/whitelist management, and save handling are not exposed as GameNode variables.",
     "The upstream server requires the Visual C++ 2012/2013/2015-2022 redistributables and DirectX End-User Runtimes on the host; GameNode does not install these prerequisites.",
     "Upstream references an optional TCP RCON listener on the game port without documenting how to enable or authenticate it; this template does not configure or use RCON.",
-    "SteamCMD is used for initial installation only; automatic updates are not enabled.",
+    "SteamCMD supports initial installation and explicit manual updates through GameNode's Update Server action; automatic, scheduled, and update-on-start updates are not enabled.",
     "Only the documented 64-bit Windows build is advertised; Linux is not offered upstream."
   ],
   "icon": "steamcmd",

@@ -6,7 +6,7 @@
   "version": "2.0.0",
   "category": "steamcmd",
   "minimum_gamenode_version": "0.2.0",
-  "known_limitations": ["Initial installation is large and can take a significant amount of time.", "SteamCMD is used for initial installation only; automatic updates are not enabled."],
+  "known_limitations": ["Initial installation is large and can take a significant amount of time.", "SteamCMD supports initial installation and explicit manual updates through GameNode's Update Server action; automatic, scheduled, and update-on-start updates are not enabled."],
   "icon": "steamcmd",
   "source_type": "official",
   "source_identifier": "7-days-to-die",
@@ -42,7 +42,7 @@
     {"type":"steamcmd","level":"hard","value":"anonymous","description":"Managed SteamCMD with anonymous login is required for installation."},
     {"type":"disk","level":"informational","description":"Ensure sufficient free storage for the current dedicated-server build."}
   ],
-  "help": {"summary":"SteamCMD performs initial installation only; GameNode starts the resulting native binary directly.","notes":["Automatic updates are outside this template contract."]},
+  "help": {"summary":"SteamCMD performs initial installation, plus explicit manual updates through GameNode's Update Server action; GameNode starts the resulting native binary directly.","notes":["Automatic, scheduled, and update-on-start updates are outside this template contract."]},
   "configuration": {"adapters":[{"id":"7dtd-serverconfig","schema_version":1,"file":"serverconfig.adapter.json"}]},
   "compatibility": {"status":"compatible","findings":[]},
   "read_only": true,
