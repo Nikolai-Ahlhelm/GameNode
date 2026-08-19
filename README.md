@@ -226,3 +226,84 @@ The Official catalog includes **Minecraft NeoForge**, **7 Days to Die**, **Proje
 Official games may also ship versioned declarative configuration adapters in their own game directory. 7 Days to Die maps selected settings to `serverconfig.xml`; Project Zomboid template `2.0.0` maps a reviewed subset of its generated `Server/gamenode.ini`; Palworld uses the compiled `section-tuple-key-values` format and safely seeds its missing target from the installed default. GameNode persists the exact adapter with each server and exposes typed Game Settings on the Configuration tab. A post-start adapter remains clearly pending until the game creates its file. Remote JSON may select only the compiled `xml-properties`, strict flat `ini-key-values`, or bounded `section-tuple-key-values` implementation; it cannot provide XPath, parser code, scripts, hooks, or escaping paths. Writes are bounded, format-aware, backed up, atomic, audit-recorded, and never return secret values. Project Zomboid's executable `SandboxVars.lua` remains unmanaged.
 
 The template does not download Minecraft or NeoForge, write `eula.txt`, overwrite the server directory, or interpret arbitrary launcher syntax. It verifies but does not execute free-form `user_jvm_args.txt`; typed minimum/maximum memory replace the reference file's empty defaults. It also supports `nogui` and graceful `stop` over the attached console with a timeout/kill fallback. The local `server-test` reference resolves as NeoForge `26.2.0.59` for Minecraft `26.2`.
+
+## Version history
+
+### v0.9.0
+
+GameNode v0.9.0 brings together the current server-management, provisioning,
+remote-node, and cluster-placement capabilities in one release.
+
+#### Server management
+
+- Native server registration and adoption of existing installations.
+- Linux-first Docker Container runtime with explicit image pulls and typed
+  CPU, memory, PID, temporary-storage, and port limits.
+- Start, stop, restart, and kill with PID plus OS start-identity verification.
+- Crash auto-restart, lifecycle locking, race protection, and process
+  rediscovery after a GameNode restart.
+- Server-root file management with strict path and filesystem sandboxing.
+- Port registration, collision checks, process health, and resource monitoring.
+
+#### Console and operations
+
+- Authenticated live stdout/stderr console over WebSocket.
+- Separate Console View and Console Send permissions.
+- Bounded console history and detached-process handling.
+- Monitoring history with CPU, memory, thread, handle, and health data.
+- Typed settings, structured logs, diagnostics, and sanitized support bundles.
+
+#### Templates and provisioning
+
+- Official Game Library with validated, versioned templates and last-good
+  caching.
+- Conservative Pelican/Pterodactyl Egg import and compatibility analysis.
+- Native SteamCMD provisioning with bounded, cancellable jobs.
+- Controlled Egg installation inside short-lived, unprivileged containers.
+- Manual SteamCMD updates for eligible, already-provisioned servers.
+- Declarative, format-aware game configuration adapters.
+
+#### Scheduled restarts
+
+- Persistent daily and weekly restart schedules.
+- Explicit IANA timezone support and deterministic DST handling.
+- Enable, disable, edit, and delete without restarting GameNode.
+- Missed occurrences are skipped after a GameNode restart.
+- Scheduled restarts use the same normal server lifecycle as manual restarts.
+
+#### Remote Nodes
+
+- Secure pairing-token enrollment and machine-authenticated Node API.
+- Remote Node identity, health, and capability reporting.
+- Remote server creation, editing, deletion, start, stop, restart, and kill.
+- Remote Native and Container provisioning.
+- Remote console, sandboxed file operations, and monitoring snapshots.
+- Tenant validation remains authoritative on the target Node.
+
+#### Cluster placement
+
+- Deterministic, tenant-isolated placement decisions across local and Remote
+  Nodes.
+- Capability, health, and capacity-aware node selection.
+- Local and remote provisioning execution through the existing typed
+  provisioning path.
+- No direct Docker or runtime control from the placement layer.
+
+#### Authentication, RBAC, and audit
+
+- Opaque HttpOnly sessions and Argon2id password hashing.
+- CSRF and same-origin protection for browser mutations.
+- Global-, tenant-, and server-scoped permissions.
+- Tenant-isolated server access and storage roots.
+- Semantic audit events for lifecycle, provisioning, remote, and scheduled
+  operations.
+
+#### Web interface
+
+- Server dashboard with lifecycle, console, files, monitoring, ports, and
+  configuration views.
+- Scheduled Restart management.
+- Remote Node and Remote Server management.
+- Official Game Library and provisioning workflows.
+- Tenant, user, group, role, audit, settings, logs, and diagnostics screens.
+- Dark, light, and system themes with browser-local appearance preferences.
