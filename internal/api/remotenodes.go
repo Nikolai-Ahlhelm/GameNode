@@ -115,6 +115,10 @@ func remoteErrorMessage(kind remote.Kind) string {
 		return "the remote node's protocol version is incompatible"
 	case remote.KindOversizedResponse:
 		return "the remote node's response exceeded the size limit"
+	case remote.KindResourceNotFound:
+		return "the requested resource was not found on the remote node"
+	case remote.KindResourceConflict:
+		return "the remote node rejected the request because of the resource's current state"
 	default:
 		return "the remote node returned an unexpected response"
 	}
@@ -204,25 +208,29 @@ func (s *Server) enrollRemoteNode(w http.ResponseWriter, r *http.Request) {
 }
 
 // remoteNodeHandler implements /api/v1/remote-nodes/{id} and its
-// sub-resources /refresh and /provisioning[/{jobID}[/cancel]].
+// sub-resource /refresh.
 func (s *Server) remoteNodeHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/remote-nodes/")
 	parts := strings.Split(path, "/")
-	if parts[0] == "" || len(parts) > 4 {
+	if parts[0] == "" || len(parts) > 6 {
 		notFound(w)
 		return
 	}
 	id := parts[0]
-	if len(parts) == 2 && parts[1] == "refresh" {
-		s.refreshRemoteNode(w, r, id)
+	if len(parts) >= 2 && parts[1] == "servers" {
+		s.remoteServersRouter(w, r, id, parts[2:])
 		return
 	}
-	if len(parts) >= 2 && parts[1] == "provisioning" {
-		s.remoteNodeProvisioningHandler(w, r, id, parts[2:])
-		return
-	}
-	if len(parts) > 1 {
+	if len(parts) > 2 {
 		notFound(w)
+		return
+	}
+	if len(parts) == 2 {
+		if parts[1] != "refresh" {
+			notFound(w)
+			return
+		}
+		s.refreshRemoteNode(w, r, id)
 		return
 	}
 	switch r.Method {

@@ -106,8 +106,17 @@ func TestPermissionScopeMatrix(t *testing.T) {
 	// Cluster.View/Cluster.Schedule (v0.6) share the same "global and tenant
 	// only" rule as Server.Create: a placement decision is evaluated before
 	// any server exists, so a per-server scope is meaningless.
-	globalAndTenantOnly := map[string]bool{"Server.Create": true, "Cluster.View": true, "Cluster.Schedule": true}
-	if len(Catalog) != 39 {
+	globalAndTenantOnly := map[string]bool{
+		"Server.Create": true, "Cluster.View": true, "Cluster.Schedule": true,
+		// RemoteServer/RemoteConsole/RemoteFiles/RemoteMonitoring (v0.5B/v0.5C)
+		// have no local per-remote-server assignment row to scope against -
+		// see internal/rbac/catalog.go's isRemoteServerPermission.
+		"RemoteServer.View": true, "RemoteServer.Manage": true,
+		"RemoteConsole.View": true, "RemoteConsole.Send": true,
+		"RemoteFiles.View": true, "RemoteFiles.Edit": true, "RemoteFiles.Upload": true, "RemoteFiles.Download": true, "RemoteFiles.Delete": true, "RemoteFiles.Rename": true,
+		"RemoteMonitoring.View": true,
+	}
+	if len(Catalog) != 48 {
 		t.Fatalf("catalog contains %d permissions; update the explicit scope matrix test", len(Catalog))
 	}
 	for _, permission := range Catalog {

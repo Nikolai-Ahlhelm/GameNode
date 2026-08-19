@@ -9,10 +9,11 @@ import (
 
 	"gamenode/internal/audit"
 	"gamenode/internal/auth"
+	"gamenode/internal/nodes"
 	"gamenode/internal/placement"
-	"gamenode/internal/provisioning"
 	"gamenode/internal/rbac"
 	"gamenode/internal/remote"
+	"gamenode/internal/servers"
 	"gamenode/internal/tenants"
 )
 
@@ -86,7 +87,22 @@ func (s *Server) buildPlacementCandidates(ctx context.Context) ([]placement.Node
 	}
 	candidates := make([]placement.NodeCandidate, 0, 1+len(remoteNodes))
 	candidates = append(candidates, placement.LocalCandidate(info, allServers))
-	candidates = append(candidates, placement.RemoteCandidates(remoteNodes)...)
+	remoteCandidates := placement.RemoteCandidates(remoteNodes)
+	for i := range remoteCandidates {
+		for _, n := range remoteNodes {
+			if n.ID != remoteCandidates[i].NodeID || !n.Enabled || n.LastHealth != nodes.HealthReachable || !containsCapability(n.Capabilities, "remote_server_management") {
+				continue
+			}
+			list, err := s.remoteClient.ListServers(ctx, n.Endpoint, n.Credential)
+			if err == nil {
+				remoteCandidates[i].CapacityKnown = true
+				remoteCandidates[i].UsedServers = len(list)
+				remoteCandidates[i].MaxServers = placement.DefaultMaxServersPerNode
+			}
+			break
+		}
+	}
+	candidates = append(candidates, remoteCandidates...)
 	return candidates, nil
 }
 
@@ -200,6 +216,95 @@ func (s *Server) clusterPlacementHandler(w http.ResponseWriter, r *http.Request)
 	jsonOut(w, http.StatusOK, map[string]any{"decision": toPublicDecision(decision)})
 }
 
+type clusterPlacementExecuteRequest struct {
+	TenantID    string                   `json:"tenant_id"`
+	RuntimeType string                   `json:"runtime_type"`
+	Server      remote.CreateServerInput `json:"server"`
+}
+
+// clusterPlacementExecuteHandler is the explicit execution step following a
+// placement decision. It recomputes placement from current node state and
+// then delegates creation to the selected node: local servers.Service.Create
+// or the enrolled node's typed machine API. The decision endpoint above stays
+// read-only and never turns into an implicit orchestrator.
+func (s *Server) clusterPlacementExecuteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		method(w)
+		return
+	}
+	var in clusterPlacementExecuteRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	tenantID := strings.TrimSpace(in.TenantID)
+	if tenantID == "" {
+		tenantID = tenants.DefaultTenantID
+	}
+	actor, ok := s.requireClusterTenantPermission(w, r, "Cluster.Schedule", tenantID, true)
+	if !ok {
+		return
+	}
+	runtimeType := strings.TrimSpace(in.RuntimeType)
+	if runtimeType == "" {
+		runtimeType = strings.TrimSpace(in.Server.RuntimeType)
+	}
+	if runtimeType == "" {
+		runtimeType = "native"
+	}
+	if runtimeType != "native" && runtimeType != "container" {
+		bad(w, "runtime_type must be 'native' or 'container'")
+		return
+	}
+	if runtimeType == "container" {
+		bad(w, "container placement execution requires the existing typed provisioning contract")
+		return
+	}
+	if in.Server.TenantID == "" {
+		in.Server.TenantID = tenantID
+	}
+	if in.Server.TenantID != tenantID {
+		forbidden(w, "server tenant does not match placement tenant")
+		return
+	}
+	in.Server.RuntimeType = runtimeType
+	candidates, err := s.buildPlacementCandidates(r.Context())
+	if err != nil {
+		internal(w)
+		return
+	}
+	decision := placement.Decide(placement.Request{TenantID: tenantID, RequiredCapabilities: []string{placement.RuntimeCapability(runtimeType)}, Candidates: candidates})
+	if decision.Rejected || decision.Selected == nil {
+		s.recordClusterPlacementAudit(r, actor, tenantID, runtimeType, decision)
+		jsonOut(w, http.StatusConflict, map[string]any{"decision": toPublicDecision(decision)})
+		return
+	}
+	if decision.Selected.Kind == placement.NodeLocal {
+		local := servers.Server{TenantID: tenantID, CreationMode: servers.CreationCustom, Name: in.Server.Name, Description: in.Server.Description, WorkingDirectory: in.Server.WorkingDirectory, Executable: in.Server.Executable, Arguments: in.Server.Arguments, EnvironmentVariables: in.Server.EnvironmentVariables, RuntimeType: runtimeType, AutoStart: in.Server.AutoStart, RestartPolicy: in.Server.RestartPolicy, StopMethod: in.Server.StopMethod, StopCommand: in.Server.StopCommand, StopTimeoutSeconds: in.Server.StopTimeoutSeconds}
+		record, err := s.servers.Create(r.Context(), local)
+		if err != nil {
+			s.recordClusterPlacementExecutionAudit(r, actor, tenantID, decision, err)
+			serverError(w, err, false)
+			return
+		}
+		s.recordClusterPlacementExecutionAudit(r, actor, tenantID, decision, nil)
+		jsonOut(w, http.StatusCreated, map[string]any{"decision": toPublicDecision(decision), "node_id": "local", "server_id": record.Server.ID, "server": record.Server})
+		return
+	}
+	node, err := s.nodes.Get(r.Context(), decision.Selected.NodeID)
+	if err != nil || !node.Enabled || node.LastHealth != nodes.HealthReachable {
+		errorOut(w, http.StatusConflict, "node_unavailable", "selected remote node is no longer available")
+		return
+	}
+	created, err := s.remoteClient.CreateServer(r.Context(), node.Endpoint, node.Credential, in.Server)
+	if err != nil {
+		s.recordClusterPlacementExecutionAudit(r, actor, tenantID, decision, err)
+		remoteServerError(w, err)
+		return
+	}
+	s.recordClusterPlacementExecutionAudit(r, actor, tenantID, decision, nil)
+	jsonOut(w, http.StatusCreated, map[string]any{"decision": toPublicDecision(decision), "node_id": node.ID, "server": created})
+}
+
 func toPublicDecision(d placement.Decision) publicDecision {
 	out := publicDecision{TenantID: d.TenantID, Rejected: d.Rejected, Reason: string(d.Reason), Execution: string(d.Execution)}
 	if d.Selected != nil {
@@ -232,167 +337,16 @@ func (s *Server) recordClusterPlacementAudit(r *http.Request, actor auth.User, t
 	})
 }
 
-// errRemoteExecuteDispatchFailed is an internal-only sentinel used solely to
-// mark recordClusterPlacementExecuteAudit's result as Failure when
-// dispatchRemoteProvisioning has already written the caller-facing error
-// response itself (see dispatchRemoteProvisioning's doc comment). It is
-// never logged, serialized, or exposed to a caller.
-var errRemoteExecuteDispatchFailed = errors.New("remote placement execution dispatch failed")
-
-// requireClusterExecutePermission authorizes an explicit placement EXECUTION
-// request: it must satisfy every permission a normal provisioning request
-// already requires (global Templates.View, tenant-scoped Server.Create - see
-// requireTenantProvisionPermission) AND tenant-scoped Cluster.Schedule, since
-// this endpoint both computes a placement decision and, unlike
-// POST /api/v1/cluster/placement, acts on it. CSRF is checked exactly once
-// here.
-func (s *Server) requireClusterExecutePermission(w http.ResponseWriter, r *http.Request, tenantID string) (auth.User, bool) {
-	actor, _, ok := s.requireGlobalPermission(w, r, "Templates.View", true)
-	if !ok {
-		return auth.User{}, false
+func (s *Server) recordClusterPlacementExecutionAudit(r *http.Request, actor auth.User, tenantID string, decision placement.Decision, err error) {
+	resourceID := tenantID
+	in := auditInput{action: audit.ClusterPlacementExecute, resourceType: audit.Cluster, resourceID: &resourceID, resourceName: tenantID, actor: &actor, result: audit.Success}
+	if decision.Selected != nil {
+		metadata, _ := json.Marshal(map[string]any{"tenant_id": tenantID, "node_id": decision.Selected.NodeID, "kind": decision.Selected.Kind})
+		in.metadata = metadata
 	}
-	for _, permission := range [...]string{"Cluster.Schedule", "Server.Create"} {
-		allowed, err := s.allowed(r.Context(), actor, permission, rbac.Scope{Type: "tenant", ID: &tenantID})
-		if err != nil {
-			internal(w)
-			return auth.User{}, false
-		}
-		if !allowed {
-			forbidden(w, "permission denied")
-			return auth.User{}, false
-		}
-	}
-	if _, err := s.tenants.Get(r.Context(), tenantID); err != nil {
-		if errors.Is(err, tenants.ErrTenantNotFound) {
-			notFound(w)
-		} else {
-			internal(w)
-		}
-		return auth.User{}, false
-	}
-	return actor, true
-}
-
-// clusterPlacementExecuteHandler implements
-// POST /api/v1/cluster/placement/execute: the v0.6 container placement
-// EXECUTION path. The flow is always: (1) deterministically compute the
-// placement decision server-side - a caller can never supply or influence a
-// prior decision; (2) if rejected, stop, execute nothing, and audit the
-// rejection; (3) validate the requested tenant and (implicitly, through
-// placement.Decide) the selected node; (4) for a local target, dispatch
-// through the ordinary, already-reviewed provisioning.Service.Start - the
-// exact same call the browser-facing POST /api/v1/templates/{id}/provision
-// route makes; (5) for a Remote Node target, dispatch through the
-// machine-authenticated Node provisioning path
-// (dispatchRemoteProvisioning/internal/remote.Client.StartProvisioning).
-// internal/placement is never given (and never needs) a Docker or runtime
-// handle - it only ever selects a node; this handler is the one and only
-// place a selected node's identity turns into an actual provisioning call,
-// and that call always goes through provisioning.Service, on the local node
-// or the remote one, never a second container-lifecycle implementation.
-// Exactly one ClusterPlacementExecute audit event is recorded per request.
-func (s *Server) clusterPlacementExecuteHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		method(w)
-		return
-	}
-	var in nodeProvisioningRequest
-	if !decodeNodeProvisioningInput(w, r, &in) {
-		return
-	}
-	tenantID := strings.TrimSpace(in.TenantID)
-	if tenantID == "" {
-		tenantID = tenants.DefaultTenantID
-	}
-	runtimeType := strings.TrimSpace(in.RuntimeType)
-	if runtimeType == "" {
-		runtimeType = "native"
-	}
-	if runtimeType != "native" && runtimeType != "container" {
-		bad(w, "runtime_type must be 'native' or 'container'")
-		return
-	}
-	actor, ok := s.requireClusterExecutePermission(w, r, tenantID)
-	if !ok {
-		return
-	}
-	candidates, err := s.buildPlacementCandidates(r.Context())
 	if err != nil {
-		internal(w)
-		return
-	}
-	decision := placement.Decide(placement.Request{
-		TenantID:             tenantID,
-		RequiredCapabilities: []string{placement.RuntimeCapability(runtimeType)},
-		Candidates:           candidates,
-	})
-	if decision.Rejected {
-		s.recordClusterPlacementExecuteAudit(r, actor, tenantID, runtimeType, decision, "", nil)
-		errorOut(w, http.StatusUnprocessableEntity, "no_eligible_node", "no eligible node is available for this placement request")
-		return
-	}
-
-	switch decision.Selected.Kind {
-	case placement.NodeLocal:
-		job, err := s.provisioning.Start(r.Context(), provisioning.Request{
-			TemplateID: in.TemplateID, ServerName: in.ServerName, DirectoryName: in.DirectoryName, Values: in.Variables,
-			ActorUserID: actor.ID, ActorUsername: actor.Username, RecoverExisting: in.RecoverExisting,
-			TenantID: tenantID, RuntimeType: runtimeType, Image: in.Image,
-			MemoryLimitBytes: in.MemoryLimitBytes, CPULimitMillis: in.CPULimitMillis, PIDsLimit: in.PIDsLimit, TmpfsSizeBytes: in.TmpfsSizeBytes,
-		})
-		if err != nil {
-			s.recordClusterPlacementExecuteAudit(r, actor, tenantID, runtimeType, decision, "", err)
-			provisioningError(w, err)
-			return
-		}
-		s.recordClusterPlacementExecuteAudit(r, actor, tenantID, runtimeType, decision, job.ID, nil)
-		jsonOut(w, http.StatusAccepted, map[string]any{"decision": toPublicDecision(decision), "job": job})
-	case placement.NodeRemote:
-		req := remote.ProvisioningRequest{
-			TemplateID: in.TemplateID, ServerName: in.ServerName, DirectoryName: in.DirectoryName, Variables: in.Variables,
-			RecoverExisting: in.RecoverExisting, TenantID: tenantID, RuntimeType: runtimeType, Image: in.Image,
-			MemoryLimitBytes: in.MemoryLimitBytes, CPULimitMillis: in.CPULimitMillis, PIDsLimit: in.PIDsLimit, TmpfsSizeBytes: in.TmpfsSizeBytes,
-		}
-		job, dispatched := s.dispatchRemoteProvisioning(w, r, decision.Selected.NodeID, req)
-		if !dispatched {
-			// dispatchRemoteProvisioning already wrote the caller-facing
-			// error response; only the audit record remains.
-			s.recordClusterPlacementExecuteAudit(r, actor, tenantID, runtimeType, decision, "", errRemoteExecuteDispatchFailed)
-			return
-		}
-		s.recordClusterPlacementExecuteAudit(r, actor, tenantID, runtimeType, decision, job.ID, nil)
-		jsonOut(w, http.StatusAccepted, map[string]any{"decision": toPublicDecision(decision), "job": job})
-	default:
-		internal(w)
-	}
-}
-
-func (s *Server) recordClusterPlacementExecuteAudit(r *http.Request, actor auth.User, tenantID, runtimeType string, decision placement.Decision, jobID string, dispatchErr error) {
-	metadata := map[string]any{"tenant_id": tenantID, "runtime_type": runtimeType}
-	result := audit.Success
-	if decision.Rejected {
-		result = audit.Failure
-		metadata["reason"] = string(decision.Reason)
-	} else {
-		metadata["selected_node_id"] = decision.Selected.NodeID
-		metadata["selected_kind"] = string(decision.Selected.Kind)
-		metadata["execution"] = string(decision.Execution)
-		if jobID != "" {
-			metadata["job_id"] = jobID
-		}
-		if dispatchErr != nil {
-			result = audit.Failure
-		}
-	}
-	metaJSON, _ := json.Marshal(metadata)
-	tenantResourceID := tenantID
-	in := auditInput{
-		action: audit.ClusterPlacementExecute, resourceType: audit.Cluster, resourceID: &tenantResourceID,
-		resourceName: tenantID, result: result, metadata: metaJSON, actor: &actor,
-	}
-	if dispatchErr != nil {
-		in.errorCode = "placement_execution_failed"
-		in.errorSummary = "cluster placement execution failed"
+		in.result = audit.Failure
+		in.errorCode, in.errorSummary = auditFailure(err)
 	}
 	s.recordAudit(r, in)
 }

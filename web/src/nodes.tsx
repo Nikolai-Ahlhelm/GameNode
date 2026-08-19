@@ -4,6 +4,7 @@ import { EmptyState, LoadingState, PageHeader, SectionHeader } from './ui';
 import { compatibilityLabel, compatibilityTone, formatCapability, healthLabel, healthTone, listOrEmpty, nodeCapabilities, relativeTime, RemoteNode, validateEndpoint, validatePairingToken } from './nodes-helpers';
 import './tenants.css';
 import './nodes.css';
+import { RemoteServersPanel } from './remote-servers';
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/v1${path}`, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) }, ...init });
@@ -31,12 +32,13 @@ export function NodesPage({ token, capabilities }: { token: string; capabilities
   };
   useEffect(() => { if (rights.view) void load(); else setLoading(false); }, [rights.view]);
   if (!rights.view) return <section><PageHeader eyebrow="Remote management" title="Nodes" description="Other GameNode installations enrolled with this controller." /><EmptyState icon={Network} title="Remote nodes unavailable" description="Node.View is required to browse enrolled remote nodes." /></section>;
-  if (selected) return <NodeDetail initial={selected} token={token} manage={rights.manage} onBack={() => { setSelected(undefined); void load(); }} onRemoved={() => { setSelected(undefined); void load(); }} />;
+  if (selected) return <NodeDetail initial={selected} token={token} permissions={capabilities} manage={rights.manage} onBack={() => { setSelected(undefined); void load(); }} onRemoved={() => { setSelected(undefined); void load(); }} />;
   return <section className="tenants-page">
     <PageHeader eyebrow="Remote management" title="Nodes" description="Every GameNode installation remains autonomous. Enrolling a remote node only lets this controller read its identity, health, and capabilities - it never takes over its database or local server lifecycle." actions={rights.manage ? <div className="page-actions"><button className="quiet" onClick={() => setPairing(true)}><KeyRound />Pairing token for this node</button><button onClick={() => setEnrolling(true)}><Plus />Enroll remote node</button></div> : undefined} />
     {error && <p className="error notice">{error}</p>}
     {pairing && <PairingTokenPanel token={token} onClose={() => setPairing(false)} />}
     {enrolling && <EnrollNode token={token} onCancel={() => setEnrolling(false)} onEnrolled={node => { setEnrolling(false); setSelected(node); }} />}
+    <ClusterPlacementPanel token={token} permissions={capabilities} />
     {loading ? <LoadingState label="Loading remote nodes" /> : items.length === 0 ? <EmptyState icon={Network} title="No remote nodes enrolled" description="Enroll another GameNode installation to view its identity, health, and capabilities from here." action={rights.manage ? <button onClick={() => setEnrolling(true)}>Enroll remote node</button> : undefined} /> : <div className="data-table nodes-table">
       <div className="table-head"><span>Node</span><span>Endpoint</span><span>Health</span><span>Last seen</span><span>Version</span><span>Actions</span></div>
       {items.map(node => <div className="table-row" key={node.id}>
@@ -97,7 +99,7 @@ function EnrollNode({ token, onCancel, onEnrolled }: { token: string; onCancel: 
   </form>;
 }
 
-function NodeDetail({ initial, token, manage, onBack, onRemoved }: { initial: RemoteNode; token: string; manage: boolean; onBack: () => void; onRemoved: () => void }) {
+function NodeDetail({ initial, token, permissions, manage, onBack, onRemoved }: { initial: RemoteNode; token: string; permissions?: string[]; manage: boolean; onBack: () => void; onRemoved: () => void }) {
   const [node, setNode] = useState(initial); const [error, setError] = useState(''); const [notice, setNotice] = useState('');
   const [name, setName] = useState(initial.display_name); const [saving, setSaving] = useState(false); const [refreshing, setRefreshing] = useState(false);
   useEffect(() => { void api<{ remote_node: RemoteNode }>(`/remote-nodes/${initial.id}`).then(r => setNode(r.remote_node)).catch(e => setError(errorMessage(e))); }, [initial.id]);
@@ -155,5 +157,18 @@ function NodeDetail({ initial, token, manage, onBack, onRemoved }: { initial: Re
       <SectionHeader title="Danger zone" description="Removing a node only deletes this controller's registry entry. It never deletes the remote node, its data, or its running servers - which remain fully autonomous (see AGENTS.md)." />
       <div className="danger-actions"><div><strong>Remove this node</strong><p>This controller will stop tracking its status until re-enrolled.</p></div><button className="danger" onClick={() => void remove()}>Remove node</button></div>
     </section>}
+    <RemoteServersPanel node={node} token={token} permissions={permissions} />
   </section>;
+}
+
+type PlacementCandidate = { node_id: string; display_name: string; kind: string; selected: boolean; reason?: string; capacity_known: boolean; available?: number; used_servers?: number; max_servers?: number };
+type PlacementDecision = { rejected: boolean; reason?: string; execution?: string; selected?: PlacementCandidate; candidates: PlacementCandidate[] };
+
+function ClusterPlacementPanel({ token, permissions }: { token: string; permissions?: string[] }) {
+  const canView = permissions?.includes('Cluster.View') ?? false; const canSchedule = permissions?.includes('Cluster.Schedule') ?? false;
+  const [tenantID, setTenantID] = useState('default'); const [runtimeType, setRuntimeType] = useState('native'); const [name, setName] = useState(''); const [workingDirectory, setWorkingDirectory] = useState(''); const [executable, setExecutable] = useState(''); const [decision, setDecision] = useState<PlacementDecision>(); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+  if (!canView && !canSchedule) return null;
+  async function decide() { setBusy(true); setError(''); try { const result = await api<{ decision: PlacementDecision }>(`/cluster/placement`, { method: 'POST', headers: csrf(token), body: JSON.stringify({ tenant_id: tenantID, runtime_type: runtimeType }) }); setDecision(result.decision); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); } }
+  async function execute() { setBusy(true); setError(''); try { const result = await api<{ decision: PlacementDecision }>(`/cluster/placement/execute`, { method: 'POST', headers: csrf(token), body: JSON.stringify({ tenant_id: tenantID, runtime_type: runtimeType, server: { tenant_id: tenantID, name, working_directory: workingDirectory, executable, runtime_type: runtimeType } }) }); setDecision(result.decision); setName(''); } catch (reason) { setError(errorMessage(reason)); } finally { setBusy(false); } }
+  return <section className="detail-card cluster-placement"><SectionHeader title="Cluster placement" description="Review live node capacity and explicitly execute a typed placement. The decision endpoint never mutates a server." /><div className="form-grid"><label>Tenant ID<input value={tenantID} onChange={e => setTenantID(e.target.value)} /></label><label>Runtime<select value={runtimeType} onChange={e => setRuntimeType(e.target.value)}><option value="native">Native</option><option value="container">Container</option></select></label></div>{error && <p className="error notice">{error}</p>}<div className="actions">{canView && <button className="quiet" disabled={busy} onClick={() => void decide()}>Compute decision</button>}</div>{decision && <><p className={decision.rejected ? 'error' : 'success'}>{decision.rejected ? `Rejected: ${decision.reason}` : `Selected: ${decision.selected?.display_name} · ${decision.execution}`}</p><div className="data-table"><div className="table-head"><span>Node</span><span>Kind</span><span>Capacity</span><span>Result</span></div>{decision.candidates.map(candidate => <div className="table-row" key={`${candidate.kind}-${candidate.node_id}`}><strong>{candidate.display_name}</strong><span>{candidate.kind}</span><span>{candidate.capacity_known ? `${candidate.available ?? 0} available` : 'Unknown'}</span><span>{candidate.selected ? 'Selected' : candidate.reason ?? 'Eligible'}</span></div>)}</div>{canSchedule && !decision.rejected && runtimeType === 'native' && <div className="panel form-panel"><SectionHeader title="Execute native placement" description="Creation is delegated to the selected node and uses its normal server validation." /><div className="form-grid"><label>Name<input value={name} onChange={e => setName(e.target.value)} /></label><label>Working directory<input value={workingDirectory} onChange={e => setWorkingDirectory(e.target.value)} /></label><label>Executable<input value={executable} onChange={e => setExecutable(e.target.value)} /></label></div><button disabled={busy || !name.trim() || !workingDirectory.trim() || !executable.trim()} onClick={() => void execute()}>Execute placement</button></div>}</>}</section>;
 }

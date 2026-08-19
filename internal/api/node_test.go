@@ -16,7 +16,6 @@ import (
 	"gamenode/internal/auth"
 	"gamenode/internal/database"
 	"gamenode/internal/identity"
-	"gamenode/internal/provisioning"
 	"gamenode/internal/rbac"
 	"gamenode/internal/remote"
 	"gamenode/internal/runtime"
@@ -26,24 +25,53 @@ import (
 // fakeRemoteClient is a controllable stand-in for internal/remote.Client so
 // controller-facing API tests never make a real network call.
 type fakeRemoteClient struct {
-	enrollResult remote.EnrollResult
-	enrollErr    error
-	infoResult   remote.NodeInfo
-	infoErr      error
+	enrollResult     remote.EnrollResult
+	enrollErr        error
+	enrollByEndpoint map[string]remote.EnrollResult
+	infoResult       remote.NodeInfo
+	infoErr          error
 
-	startJob    provisioning.Job
-	startErr    error
-	getJob      provisioning.Job
-	getErr      error
-	cancelJob   provisioning.Job
-	cancelErr   error
-	lastStart   remote.ProvisioningRequest
-	startCalls  int
-	getCalls    int
-	cancelCalls int
+	// Remote Server Management (v0.5B) / Operational Hardening (v0.5C) test
+	// hooks. servers is keyed by server ID; listErr/getErr/... let a test
+	// force a specific internal/remote.Error outcome without a real network
+	// call.
+	serversByID       map[string]remote.ServerSummary
+	serversByEndpoint map[string]map[string]remote.ServerSummary
+	listErr           error
+	getErr            error
+	createResult      remote.ServerSummary
+	createErr         error
+	updateResult      remote.ServerSummary
+	updateErr         error
+	deleteErr         error
+	lifecycleResult   remote.ServerSummary
+	lifecycleErr      error
+	consoleSnapshot   remote.ConsoleSnapshot
+	consoleErr        error
+	consoleSendErr    error
+	monitoring        remote.MonitoringSnapshot
+	monitoringErr     error
+	fileEntries       []remote.FileEntry
+	fileListErr       error
+	fileContent       remote.FileContent
+	fileReadErr       error
+	fileWriteErr      error
+	fileCreateErr     error
+	fileMkdirErr      error
+	fileMoveErr       error
+	fileDeleteErr     error
 }
 
 func (f *fakeRemoteClient) Enroll(ctx context.Context, endpoint, pairingToken string) (remote.EnrollResult, error) {
+	// enrollByEndpoint lets a test enroll two distinct registry rows (each
+	// getting its own node_id) against the same fake, keyed by the
+	// operator-supplied endpoint - needed for node-isolation tests where two
+	// "remote nodes" must remain distinguishable.
+	if f.enrollByEndpoint != nil {
+		if result, ok := f.enrollByEndpoint[endpoint]; ok {
+			return result, f.enrollErr
+		}
+	}
 	return f.enrollResult, f.enrollErr
 }
 func (f *fakeRemoteClient) GetNodeInfo(ctx context.Context, endpoint, credential string) (remote.NodeInfo, error) {
@@ -52,18 +80,97 @@ func (f *fakeRemoteClient) GetNodeInfo(ctx context.Context, endpoint, credential
 func (f *fakeRemoteClient) GetHealth(ctx context.Context, endpoint, credential string) (remote.HealthResult, error) {
 	return remote.HealthResult{Status: "healthy"}, f.infoErr
 }
-func (f *fakeRemoteClient) StartProvisioning(ctx context.Context, endpoint, credential string, req remote.ProvisioningRequest) (provisioning.Job, error) {
-	f.startCalls++
-	f.lastStart = req
-	return f.startJob, f.startErr
+
+// byEndpoint returns this fake's per-node server map, keyed by endpoint, so
+// a node-isolation test can enroll two distinct registry rows against the
+// same fake and prove a server ID valid on one is never visible through the
+// other's endpoint (see TestRemoteServerNodeIsolation). When unset, every
+// endpoint shares the flat serversByID map, matching the previous
+// single-node test behavior.
+func (f *fakeRemoteClient) byEndpoint(endpoint string) map[string]remote.ServerSummary {
+	if f.serversByEndpoint != nil {
+		return f.serversByEndpoint[endpoint]
+	}
+	return f.serversByID
 }
-func (f *fakeRemoteClient) GetProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error) {
-	f.getCalls++
-	return f.getJob, f.getErr
+
+func (f *fakeRemoteClient) ListServers(ctx context.Context, endpoint, credential string) ([]remote.ServerSummary, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	servers := f.byEndpoint(endpoint)
+	out := make([]remote.ServerSummary, 0, len(servers))
+	for _, v := range servers {
+		out = append(out, v)
+	}
+	return out, nil
 }
-func (f *fakeRemoteClient) CancelProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error) {
-	f.cancelCalls++
-	return f.cancelJob, f.cancelErr
+func (f *fakeRemoteClient) GetServer(ctx context.Context, endpoint, credential, serverID string) (remote.ServerSummary, error) {
+	if f.getErr != nil {
+		return remote.ServerSummary{}, f.getErr
+	}
+	if v, ok := f.byEndpoint(endpoint)[serverID]; ok {
+		return v, nil
+	}
+	if f.serversByEndpoint != nil {
+		return remote.ServerSummary{}, &remote.Error{Kind: remote.KindResourceNotFound, Detail: "status 404"}
+	}
+	v, ok := f.serversByID[serverID]
+	if !ok {
+		return remote.ServerSummary{}, &remote.Error{Kind: remote.KindResourceNotFound, Detail: "status 404"}
+	}
+	return v, nil
+}
+func (f *fakeRemoteClient) CreateServer(ctx context.Context, endpoint, credential string, in remote.CreateServerInput) (remote.ServerSummary, error) {
+	return f.createResult, f.createErr
+}
+func (f *fakeRemoteClient) UpdateServer(ctx context.Context, endpoint, credential, serverID string, in remote.UpdateServerInput) (remote.ServerSummary, error) {
+	return f.updateResult, f.updateErr
+}
+func (f *fakeRemoteClient) DeleteServer(ctx context.Context, endpoint, credential, serverID string) error {
+	return f.deleteErr
+}
+func (f *fakeRemoteClient) StartServer(ctx context.Context, endpoint, credential, serverID string) (remote.ServerSummary, error) {
+	return f.lifecycleResult, f.lifecycleErr
+}
+func (f *fakeRemoteClient) StopServer(ctx context.Context, endpoint, credential, serverID string) (remote.ServerSummary, error) {
+	return f.lifecycleResult, f.lifecycleErr
+}
+func (f *fakeRemoteClient) RestartServer(ctx context.Context, endpoint, credential, serverID string) (remote.ServerSummary, error) {
+	return f.lifecycleResult, f.lifecycleErr
+}
+func (f *fakeRemoteClient) KillServer(ctx context.Context, endpoint, credential, serverID string) (remote.ServerSummary, error) {
+	return f.lifecycleResult, f.lifecycleErr
+}
+func (f *fakeRemoteClient) GetConsoleSnapshot(ctx context.Context, endpoint, credential, serverID string) (remote.ConsoleSnapshot, error) {
+	return f.consoleSnapshot, f.consoleErr
+}
+func (f *fakeRemoteClient) SendConsoleInput(ctx context.Context, endpoint, credential, serverID, data string) error {
+	return f.consoleSendErr
+}
+func (f *fakeRemoteClient) GetMonitoringSnapshot(ctx context.Context, endpoint, credential, serverID string) (remote.MonitoringSnapshot, error) {
+	return f.monitoring, f.monitoringErr
+}
+func (f *fakeRemoteClient) ListFiles(ctx context.Context, endpoint, credential, serverID, path string) ([]remote.FileEntry, error) {
+	return f.fileEntries, f.fileListErr
+}
+func (f *fakeRemoteClient) ReadFile(ctx context.Context, endpoint, credential, serverID, path string) (remote.FileContent, error) {
+	return f.fileContent, f.fileReadErr
+}
+func (f *fakeRemoteClient) WriteFile(ctx context.Context, endpoint, credential, serverID, path, content string) error {
+	return f.fileWriteErr
+}
+func (f *fakeRemoteClient) CreateFile(ctx context.Context, endpoint, credential, serverID, path, content string) error {
+	return f.fileCreateErr
+}
+func (f *fakeRemoteClient) CreateDirectory(ctx context.Context, endpoint, credential, serverID, path string) error {
+	return f.fileMkdirErr
+}
+func (f *fakeRemoteClient) MoveFile(ctx context.Context, endpoint, credential, serverID, source, destination string) error {
+	return f.fileMoveErr
+}
+func (f *fakeRemoteClient) DeleteFile(ctx context.Context, endpoint, credential, serverID, path string, recursive bool) error {
+	return f.fileDeleteErr
 }
 
 func newNodeTestServer(t *testing.T, fake *fakeRemoteClient) (http.Handler, *sql.DB) {

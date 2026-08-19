@@ -298,13 +298,12 @@ Every route below requires `Authorization: Bearer <machine credential>` validate
 
 # Cluster Scheduling API (v0.6)
 
-`GET`/`POST /api/v1/cluster/placement` are ordinary human-authenticated, tenant-scoped API - `Cluster.View`/`Cluster.Schedule` accept a `global` or `tenant` assignment (never `server`; a server does not exist yet at decision time). Neither route creates, starts, stops, or otherwise mutates a server. `POST /api/v1/cluster/placement/execute` is the separate EXECUTION endpoint described below. See `docs/architecture.md`'s "Cluster Scheduling foundation (v0.6)" section, `docs/adr/0009-cluster-scheduling-decision-vs-execution.md`, and its addendum `docs/adr/0010-container-placement-execution.md`.
+Both routes are ordinary human-authenticated, tenant-scoped API - `Cluster.View`/`Cluster.Schedule` accept a `global` or `tenant` assignment (never `server`; a server does not exist yet at decision time). Neither route creates, starts, stops, or otherwise mutates a server. See `docs/architecture.md`'s "Cluster Scheduling foundation (v0.6)" section and `docs/adr/0009-cluster-scheduling-decision-vs-execution.md`.
 
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/api/v1/cluster/capacity?tenant_id=…` | `Cluster.View`; returns `{"tenant_id":"...","candidates":[...]}` - every known node (this installation plus every enrolled Remote Node) with its capability list, health, and capacity (`capacity_known`, `used_servers`, `max_servers`, `available` when known) |
-| `POST` | `/api/v1/cluster/placement` | `Cluster.Schedule` + CSRF; body `{"tenant_id":"...","runtime_type":"native"|"container"}` (`tenant_id` defaults to the default tenant, `runtime_type` defaults to `native`); returns `{"decision": {...}}`. Decision only - never executes anything. |
-| `POST` | `/api/v1/cluster/placement/execute` | global `Templates.View` + tenant-scoped `Cluster.Schedule` + tenant-scoped `Server.Create` + CSRF; body is the decision fields above plus the same typed provisioning fields `POST /api/v1/templates/{id}/provision` accepts: `{"tenant_id":"...","runtime_type":"native"|"container","template_id":"...","server_name":"...","directory_name":"...","variables":{...},"recover_existing":false,"image":"...","memory_limit_bytes":0,"cpu_limit_millis":0,"pids_limit":0,"tmpfs_size_bytes":0}`. Computes the decision server-side (a caller cannot supply or influence a prior decision), and on a `202 Accepted` returns `{"decision": {...}, "job": {...}}` where `job` is the same `provisioning.Job` shape `/api/v1/provisioning/jobs/{id}` returns - poll that same route (local target) or the mirrored `GET /api/v1/remote-nodes/{id}/provisioning/{jobID}` (remote target) for status. A rejected decision returns `422 no_eligible_node` and executes nothing. A rejected provisioning request returns the same typed error codes `POST /api/v1/templates/{id}/provision` already returns (`not_provisionable`, `container_image_not_declared`, `container_image_policy_blocked`, `port_conflict`, `name_conflict`, `target_conflict`, `invalid_tenant`, `container_runtime_unavailable`), and an unreachable/disabled remote target returns `502` with a `node_unreachable`-family code. |
+| `POST` | `/api/v1/cluster/placement` | `Cluster.Schedule` + CSRF; body `{"tenant_id":"...","runtime_type":"native"|"container"}` (`tenant_id` defaults to the default tenant, `runtime_type` defaults to `native`); returns `{"decision": {...}}` |
 
 A `Decision` is:
 
@@ -318,31 +317,23 @@ A `Decision` is:
 }
 ```
 
-`execution` is `"local_only"` or `"remote_provisioning"` (selected node is a Remote Node reachable through the machine-authenticated provisioning path below - this replaces the placement-decision-only foundation phase's `"requires_v0.5b"` value, since that node is now actually actionable through this one narrow path).
+`execution` is `"local_only"` or `"remote_executable"`. `POST /api/v1/cluster/placement` remains a read-only decision; explicit `POST /api/v1/cluster/placement/execute` accepts `{tenant_id,runtime_type,server}` and recomputes current placement before delegating creation to the selected node's normal create authority. When `rejected` is `true`, `selected`/`execution` are omitted and `reason` is `no_eligible_node`; each candidate's own reason explains why it was skipped. Decision and explicit execution are audited separately as `cluster.placement_decide` and `cluster.placement_execute`; the `GET` capacity read is never audited.
 
-## Remote Node provisioning proxy (v0.6)
+### Remote Server Management (v0.5B) / Operational Hardening (v0.5C)
 
-The controller-side counterpart of the machine-authenticated Node route below. Ordinary human-authenticated, RBAC- and CSRF-protected API; the controller never interprets container/Egg data itself and never talks to the target node's database or Docker - it authenticates, checks RBAC/CSRF/tenant scope, forwards the typed request through `internal/remote.Client`, and returns the bounded job status the target reports.
+Controller-facing, browser-authenticated (RBAC `RemoteServer.View`/`RemoteServer.Manage`, `RemoteConsole.View`/`RemoteConsole.Send`, `RemoteFiles.View`/`.Edit`/`.Upload`/`.Download`/`.Delete`/`.Rename`, `RemoteMonitoring.View`; CSRF required for every mutation):
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| `POST` | `/api/v1/remote-nodes/{id}/provisioning` | global `Templates.View` + tenant-scoped `Server.Create` + CSRF; same typed body as `/execute` above (minus the decision fields); `202 Accepted` with the target's `provisioning.Job`, or the same typed provisioning error codes, or `502` if the node is unreachable/disabled. |
-| `GET` | `/api/v1/remote-nodes/{id}/provisioning/{jobID}?tenant_id=…` | same permission as above, no CSRF; forwards to the target's job status. Trusts only the target's own `tenant_id` on the returned job - a caller naming a different tenant than the job actually belongs to gets `404`, not the job. |
-| `POST` | `/api/v1/remote-nodes/{id}/provisioning/{jobID}/cancel?tenant_id=…` | same permission as above + CSRF; forwards to the target's job cancel, same tenant check as the status route. |
+- `GET /api/v1/remote-nodes/{id}/servers` - bounded, tenant-filtered list of the node's own servers.
+- `POST /api/v1/remote-nodes/{id}/servers` - create (global scope only, mirrors `Server.Create`'s own-arbitrary-path restriction).
+- `GET/PATCH/DELETE /api/v1/remote-nodes/{id}/servers/{serverID}`.
+- `POST /api/v1/remote-nodes/{id}/servers/{serverID}/{start|stop|restart|kill}`.
+- `GET/POST /api/v1/remote-nodes/{id}/servers/{serverID}/console` plus `GET .../console/ws` - bounded polling fallback / bounded input send and the fixed JSON WebSocket relay (see docs/adr/0011-remote-operational-hardening.md).
+- `GET /api/v1/remote-nodes/{id}/servers/{serverID}/monitoring` - bounded snapshot, never audited.
+- `GET/PUT/POST/DELETE /api/v1/remote-nodes/{id}/servers/{serverID}/files[...]` plus `POST .../files/upload` and `GET .../files/download` - sandboxed text/binary operations; binary transfers are capped at 64 MiB.
 
-## Node provisioning API (v0.6, machine-authenticated)
+Every call resolves the target node from the URL only, re-authorizes tenant scope against the NODE's own authoritative answer (never a cached tenant id), and maps every remote/transport failure to a controlled code (`node_unreachable`, `node_authentication_failed`, `node_protocol_incompatible`, `node_disabled`, `node_capability_unsupported`, `node_resource_not_found`, `node_resource_conflict`) - never a raw error. Every mutation/lifecycle action is audited under the `remote_server`/`remote_console`/`remote_file` resource types with the node id in metadata; console/file content is never audited. See docs/adr/0010-remote-server-lifecycle-forwarding.md and docs/adr/0011-remote-operational-hardening.md.
 
-`/api/v1/node/provisioning...` joins `/api/v1/node/info|health|capabilities|enroll|pairing-tokens` in the machine-authenticated trust domain (`Authorization: Bearer <credential>`, never a cookie/CSRF check - see the "Remote Node API" section above). It forwards straight into this node's own, unmodified `provisioning.Service` - the sole authority for template/Egg validation, the image allowlist, resource limits, the tenant/filesystem sandbox, the container installer, job persistence, and final registration through `servers.Service`.
-
-| Method | Path | Notes |
-| --- | --- | --- |
-| `POST` | `/api/v1/node/provisioning` | machine-authenticated; body is the same typed provisioning fields as `/api/v1/templates/{id}/provision` plus `template_id` (no per-template URL segment here); `202 Accepted` with a `provisioning.Job`, or the same typed provisioning error codes as the local route. |
-| `GET` | `/api/v1/node/provisioning/{jobID}` | machine-authenticated; returns the `provisioning.Job`. |
-| `POST` | `/api/v1/node/provisioning/{jobID}/cancel` | machine-authenticated; forwards to `provisioning.Service.Cancel`. |
-
-Jobs created through this path carry a fixed synthetic actor identity (`"remote-controller"`) instead of a local user account, since Remote Node machine-auth carries no per-caller user identity.
-
-`execution` is `"local_only"` (act on the decision through the ordinary `POST /api/v1/servers`/provisioning API - this route never does it for you) or `"requires_v0.5b"` (the selected node is a Remote Node; there is currently no way to act on it). When `rejected` is `true`, `selected`/`execution` are omitted and `reason` is one of `no_eligible_node`; each candidate's own `reason` (`disabled`, `unhealthy`, `missing_capability`, `capacity_exhausted`) explains why it was skipped. One `cluster.placement_decide` audit event is recorded per `POST` (`Success` or `Failure`); the `GET` capacity read is never audited.
+The corresponding Node-facing (machine-authenticated) endpoints are `/api/v1/node/servers[...]`, forwarding every call to that node's own `internal/servers.Service`/`internal/filesystem.Service`/console session - never a second lifecycle implementation.
 
 Every registry response includes a derived (never stored) `compatibility` field - `compatible`, `limited_capabilities`, `incompatible`, or `unknown` - computed from the remote node's `protocol_version` against this controller's own `nodeidentity.ProtocolVersion`.
 

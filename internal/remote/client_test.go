@@ -3,7 +3,7 @@ package remote_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -183,95 +183,97 @@ func TestEnrollDoesNotSendAuthorizationHeader(t *testing.T) {
 	}
 }
 
+// --- Remote Server Management (v0.5B) / Operational Hardening (v0.5C) ---
+
+func TestListAndGetServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/node/servers":
+			json.NewEncoder(w).Encode(map[string]any{"servers": []remote.ServerSummary{{ID: "s1", TenantID: "default", Name: "Alpha"}}})
+		case "/api/v1/node/servers/s1":
+			json.NewEncoder(w).Encode(map[string]any{"server": remote.ServerSummary{ID: "s1", TenantID: "default", Name: "Alpha"}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	c := remote.New()
+	list, err := c.ListServers(context.Background(), srv.URL, "cred")
+	if err != nil || len(list) != 1 || list[0].ID != "s1" {
+		t.Fatalf("ListServers: %v, %+v", err, list)
+	}
+	one, err := c.GetServer(context.Background(), srv.URL, "cred", "s1")
+	if err != nil || one.Name != "Alpha" {
+		t.Fatalf("GetServer: %v, %+v", err, one)
+	}
+}
+
+func TestGetServerNotFoundMapsToResourceNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	c := remote.New()
+	_, err := c.GetServer(context.Background(), srv.URL, "cred", "missing")
+	var remoteErr *remote.Error
+	if !asRemoteError(err, &remoteErr) || remoteErr.Kind != remote.KindResourceNotFound {
+		t.Fatalf("expected KindResourceNotFound, got %v", err)
+	}
+}
+
+func TestStartServerConflictMapsToResourceConflict(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+	}))
+	defer srv.Close()
+	c := remote.New()
+	_, err := c.StartServer(context.Background(), srv.URL, "cred", "s1")
+	var remoteErr *remote.Error
+	if !asRemoteError(err, &remoteErr) || remoteErr.Kind != remote.KindResourceConflict {
+		t.Fatalf("expected KindResourceConflict, got %v", err)
+	}
+}
+
+func TestSendConsoleInputEncodesBodyAndPath(t *testing.T) {
+	var gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+	}))
+	defer srv.Close()
+	c := remote.New()
+	if err := c.SendConsoleInput(context.Background(), srv.URL, "cred", "s1", "say hi\n"); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/api/v1/node/servers/s1/console" {
+		t.Fatalf("unexpected path: %s", gotPath)
+	}
+	if !strings.Contains(gotBody, "say hi") {
+		t.Fatalf("expected console input in request body, got %s", gotBody)
+	}
+}
+
+func TestListFilesEscapesQueryPath(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		json.NewEncoder(w).Encode(map[string]any{"entries": []remote.FileEntry{}})
+	}))
+	defer srv.Close()
+	c := remote.New()
+	if _, err := c.ListFiles(context.Background(), srv.URL, "cred", "s1", "sub dir/a"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotQuery, "path=sub+dir%2Fa") {
+		t.Fatalf("expected escaped path query, got %q", gotQuery)
+	}
+}
+
 func asRemoteError(err error, target **remote.Error) bool {
 	if e, ok := err.(*remote.Error); ok {
 		*target = e
 		return true
 	}
 	return false
-}
-
-func TestStartProvisioningSendsTypedRequestAndReturnsJob(t *testing.T) {
-	var receivedPath, receivedAuth string
-	var receivedBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedPath = r.URL.Path
-		receivedAuth = r.Header.Get("Authorization")
-		json.NewDecoder(r.Body).Decode(&receivedBody)
-		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]any{"id": "job-1", "runtime_type": "container", "status": "pending"})
-	}))
-	defer srv.Close()
-	c := remote.New()
-	job, err := c.StartProvisioning(context.Background(), srv.URL, "cred", remote.ProvisioningRequest{
-		TemplateID: "t1", ServerName: "s", DirectoryName: "d", RuntimeType: "container", Image: "ghcr.io/example/game:1",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if receivedPath != "/api/v1/node/provisioning" || receivedAuth != "Bearer cred" {
-		t.Fatalf("unexpected request: path=%q auth=%q", receivedPath, receivedAuth)
-	}
-	if receivedBody["template_id"] != "t1" || receivedBody["image"] != "ghcr.io/example/game:1" {
-		t.Fatalf("unexpected forwarded body: %+v", receivedBody)
-	}
-	if job.ID != "job-1" || job.RuntimeType != "container" {
-		t.Fatalf("unexpected job: %+v", job)
-	}
-}
-
-func TestStartProvisioningReturnsTypedProvisioningError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "container_image_not_declared", "message": "the selected image is not declared by the Egg"}})
-	}))
-	defer srv.Close()
-	c := remote.New()
-	_, err := c.StartProvisioning(context.Background(), srv.URL, "cred", remote.ProvisioningRequest{TemplateID: "t1"})
-	var provErr *remote.ProvisioningError
-	if !errors.As(err, &provErr) {
-		t.Fatalf("expected a *remote.ProvisioningError, got %T: %v", err, err)
-	}
-	if provErr.Code != "container_image_not_declared" || provErr.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("unexpected provisioning error: %+v", provErr)
-	}
-}
-
-func TestStartProvisioningUnauthorizedIsAuthenticationFailed(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer srv.Close()
-	c := remote.New()
-	_, err := c.StartProvisioning(context.Background(), srv.URL, "bad-cred", remote.ProvisioningRequest{TemplateID: "t1"})
-	var remoteErr *remote.Error
-	if !errors.As(err, &remoteErr) || remoteErr.Kind != remote.KindAuthenticationFailed {
-		t.Fatalf("expected KindAuthenticationFailed, got %v", err)
-	}
-}
-
-func TestGetAndCancelProvisioningJob(t *testing.T) {
-	var gotMethod, gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod, gotPath = r.Method, r.URL.Path
-		json.NewEncoder(w).Encode(map[string]any{"id": "job-1", "status": "installing"})
-	}))
-	defer srv.Close()
-	c := remote.New()
-
-	job, err := c.GetProvisioningJob(context.Background(), srv.URL, "cred", "job-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotMethod != http.MethodGet || gotPath != "/api/v1/node/provisioning/job-1" || job.ID != "job-1" {
-		t.Fatalf("unexpected get: method=%q path=%q job=%+v", gotMethod, gotPath, job)
-	}
-
-	job, err = c.CancelProvisioningJob(context.Background(), srv.URL, "cred", "job-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotMethod != http.MethodPost || gotPath != "/api/v1/node/provisioning/job-1/cancel" || job.ID != "job-1" {
-		t.Fatalf("unexpected cancel: method=%q path=%q job=%+v", gotMethod, gotPath, job)
-	}
 }

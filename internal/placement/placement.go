@@ -37,20 +37,16 @@ const (
 	// existing servers.Service/provisioning create path can be used to act
 	// on the decision; nothing about that path is changed or bypassed here.
 	ExecutionLocalOnly Execution = "local_only"
-	// ExecutionRemoteProvisioning means the selected node is a Remote Node
-	// and POST /api/v1/cluster/placement/execute can act on this decision
-	// through the machine-authenticated Node provisioning path
-	// (POST /api/v1/node/provisioning on the target, proxied by
-	// POST /api/v1/remote-nodes/{id}/provisioning on the controller) - the
-	// target node's own provisioning.Service remains the sole authority for
-	// template/Egg validation, resource limits, and server registration.
-	// This is deliberately narrower than full v0.5B Remote Server
-	// Management: there is still no way to start, stop, restart, update, or
-	// delete an already-existing server on a Remote Node through this
-	// product - only the initial create-via-template/Egg flow is reachable
-	// remotely, and only through this one typed path. See
-	// docs/adr/0009-cluster-scheduling-decision-vs-execution.md.
-	ExecutionRemoteProvisioning Execution = "remote_provisioning"
+	// ExecutionRemoteExecutable means the selected node is a Remote Node
+	// that now HAS a working remote server creation path (v0.5B Remote
+	// Server Management, see docs/adr/0010-remote-server-lifecycle-forwarding.md):
+	// a caller COULD act on this decision through
+	// POST /api/v1/remote-nodes/{id}/servers. This package still never does
+	// so itself - it is a status/capability label only, not an execution
+	// trigger. Before v0.5B this value was named/spelled "requires_v0.5b";
+	// it is renamed now that the prerequisite genuinely exists (see
+	// PROJECT_PLAN.md's v0.5B section).
+	ExecutionRemoteExecutable Execution = "remote_executable"
 )
 
 // Reason enumerates why a candidate node was excluded, or why no node could
@@ -178,7 +174,7 @@ func Decide(req Request) Decision {
 	if selected.Kind == NodeLocal {
 		decision.Execution = ExecutionLocalOnly
 	} else {
-		decision.Execution = ExecutionRemoteProvisioning
+		decision.Execution = ExecutionRemoteExecutable
 	}
 	for i := range results {
 		if results[i].NodeID == selected.NodeID && results[i].Kind == selected.Kind {

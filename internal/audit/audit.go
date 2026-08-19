@@ -35,6 +35,13 @@ const (
 	Tenant   = "tenant"
 	Node     = "node"
 	Cluster  = "cluster"
+	// RemoteServer/RemoteConsole/RemoteFile cover v0.5B/v0.5C actions the
+	// controller performs against a remote node's own server - distinct
+	// resource types from Server/Console/File above, which always mean a
+	// LOCAL resource on this installation.
+	RemoteServer  = "remote_server"
+	RemoteConsole = "remote_console"
+	RemoteFile    = "remote_file"
 )
 const (
 	Login                        = "auth.login"
@@ -125,19 +132,32 @@ const (
 	// docs/adr/0009-cluster-scheduling-decision-vs-execution.md). Result
 	// (Success/Failure) distinguishes an accepted vs. a rejected decision.
 	ClusterPlacementDecision = "cluster.placement_decide"
-	// ClusterPlacementExecute covers one explicit
-	// POST /api/v1/cluster/placement/execute request end to end: computing
-	// the decision AND, if a node was selected, dispatching the typed
-	// provisioning request to it (locally via provisioning.Service, or
-	// remotely via the machine-authenticated Node provisioning proxy).
-	// Exactly one event is recorded per request - Success only when a node
-	// was selected AND the provisioning request was accepted by its
-	// target, Failure for a rejected decision or a failed dispatch. It
-	// never duplicates the target's own audit trail (a local dispatch
-	// records no separate event of its own here; a remote dispatch's own
-	// proxy endpoint, reached directly rather than through placement
-	// execute, records its own single event under ServerProvisionStart).
-	ClusterPlacementExecute = "cluster.placement_execute"
+	ClusterPlacementExecute  = "cluster.placement_execute"
+	// Remote server/console/file actions cover v0.5B Remote Server
+	// Management and v0.5C Remote Operational Hardening: every mutation and
+	// lifecycle action the controller forwards to a remote node's own
+	// servers.Service/filesystem sandbox is audited exactly like its local
+	// counterpart above, but under a distinct action/resource type so an
+	// operator can tell local from remote at a glance. Console and file
+	// CONTENT is never audited, only the fact/metadata of the action (see
+	// AGENTS.md item 26/29) - identical to the local Console.Send/Files.*
+	// audit contract. Remote health/status polling is never audited (same
+	// rule as the existing Remote Node heartbeat).
+	RemoteServerCreate  = "remote_server.create"
+	RemoteServerUpdate  = "remote_server.update"
+	RemoteServerDelete  = "remote_server.delete"
+	RemoteServerStart   = "remote_server.start"
+	RemoteServerStop    = "remote_server.stop"
+	RemoteServerRestart = "remote_server.restart"
+	RemoteServerKill    = "remote_server.kill"
+	RemoteConsoleInput  = "remote_console.input"
+	RemoteFileCreate    = "remote_file.create"
+	RemoteFileEdit      = "remote_file.edit"
+	RemoteFileRename    = "remote_file.rename"
+	RemoteFileMove      = "remote_file.move"
+	RemoteFileDelete    = "remote_file.delete"
+	RemoteFileUpload    = "remote_file.upload"
+	RemoteFileDownload  = "remote_file.download"
 )
 
 type Event struct {

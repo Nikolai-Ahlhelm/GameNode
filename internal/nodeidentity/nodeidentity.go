@@ -46,6 +46,25 @@ const (
 	CapabilityMonitoring              Capability = "monitoring"
 	CapabilityProvisioning            Capability = "provisioning"
 	CapabilityPorts                   Capability = "ports"
+	// CapabilityRemoteServerManagement means this node exposes the bounded
+	// /api/v1/node/servers* endpoints (list/get/start/stop/restart/kill) to
+	// an authenticated remote controller, forwarding every lifecycle call to
+	// this node's own internal/servers.Service - see
+	// docs/adr/0010-remote-server-lifecycle-forwarding.md. It is purely
+	// additive: absence means a controller must treat every remote-server
+	// operation against this node as unsupported, never attempt it, and
+	// never crash trying.
+	CapabilityRemoteServerManagement Capability = "remote_server_management"
+	// CapabilityRemoteConsole means this node exposes bounded remote console
+	// read/send endpoints and the fixed JSON WebSocket relay for its servers.
+	CapabilityRemoteConsole Capability = "remote_console"
+	// CapabilityRemoteFiles means this node exposes remote filesystem
+	// endpoints for its local servers, forwarding every call to this node's
+	// own internal/filesystem sandbox.
+	CapabilityRemoteFiles Capability = "remote_files"
+	// CapabilityRemoteMonitoring means this node exposes bounded remote
+	// monitoring/health snapshot endpoints for its local servers.
+	CapabilityRemoteMonitoring Capability = "remote_monitoring"
 )
 
 // Capabilities lists every capability this build of GameNode actually
@@ -67,6 +86,10 @@ func Capabilities() []Capability {
 		CapabilityMonitoring,
 		CapabilityProvisioning,
 		CapabilityPorts,
+		CapabilityRemoteServerManagement,
+		CapabilityRemoteConsole,
+		CapabilityRemoteFiles,
+		CapabilityRemoteMonitoring,
 	}
 }
 

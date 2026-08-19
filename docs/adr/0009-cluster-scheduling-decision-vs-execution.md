@@ -1,8 +1,18 @@
 # 0009. Cluster Scheduling: Decision vs. Execution boundary (v0.6)
 
+> **Update (v0.5B/v0.6 execution):** v0.5B Remote Server Management has since
+> been implemented. The `requires_v0.5b` execution value described below
+> was renamed to `remote_executable` to reflect that a caller now CAN act
+> on a remote selection through `POST /api/v1/remote-nodes/{id}/servers` -
+> this is a status/capability label update. The placement decision endpoint
+> remains read-only; the separate explicit
+> `POST /api/v1/cluster/placement/execute` endpoint recomputes the decision
+> and delegates creation to the selected node's normal create path.
+> `internal/placement` remains pure and never executes anything itself.
+
 ## Problem
 
-v0.6 asks for "Cluster / Scheduling": multi-node placement, capacity-awareness, and a deterministic scheduling algorithm across every node this installation knows about (itself plus any enrolled Remote Node). But v0.5A (`internal/nodes`, `internal/remote`) deliberately implemented only a read-only Node registry, health, and capability API - there is no way, in this codebase, to create, start, stop, or otherwise mutate a server on a Remote Node. That is v0.5B (Remote Server Management), which has not been started (see `PROJECT_PLAN.md`). A placement feature that silently created servers on remote nodes would therefore either be fake (nothing actually happens) or would have to smuggle in v0.5B's remote mutation surface through the back door of a "scheduling" milestone - exactly the kind of undocumented scope creep `AGENTS.md` §20 forbids.
+v0.6 adds multi-node placement, capacity-awareness, and a deterministic scheduling algorithm across every node this installation knows about. Remote creation is now available through v0.5B's authenticated Node API; this ADR keeps it behind an explicit execution endpoint rather than making a read-only decision request mutate state.
 
 ## Options considered
 
@@ -14,9 +24,9 @@ v0.6 asks for "Cluster / Scheduling": multi-node placement, capacity-awareness, 
 
 - **`internal/placement`** is a new, pure, deterministic package: `Decide(Request) Decision` takes an already-built list of `NodeCandidate` values (capacity, health, capability, tenant scope already resolved by the caller) and returns a `Decision` with zero I/O, zero side effects, and zero dependency on wall-clock time or map iteration order. This is what makes the placement algorithm exactly unit-testable with fixed inputs (see `internal/placement/placement_test.go`) - the same reason `internal/scheduler` (the unrelated v0.4 LOCAL restart scheduler) keeps its trigger-evaluation logic separate from the DB/clock plumbing around it.
 - **`internal/placement` is not `internal/scheduler`.** `internal/scheduler` is the v0.4 typed daily/weekly LOCAL restart scheduler; it only ever calls `servers.Service.Restart` on an existing local server on a timer and has no concept of nodes, placement, or capacity. `internal/placement` never touches restart schedules and never calls anything in `internal/scheduler`. Neither package imports the other.
-- **Every decision carries an `Execution` field**: `local_only` when the selected node is this installation (the ordinary `servers.Service`/provisioning create path can act on the decision - unchanged, not bypassed, not duplicated by this package), or `requires_v0.5b` when the selected node is a Remote Node (there is currently no way to act on it; the decision is a proposal only).
+- **Every decision carries an `Execution` field**: `local_only` when the selected node is this installation, or `remote_executable` when the selected node is a Remote Node. These are contract metadata only; the pure placement package never executes a create.
 - **The placement API (`POST /api/v1/cluster/placement`) never creates, starts, stops, or otherwise mutates any server, on the local node or a remote one.** This holds even when the decision is `local_only`. A caller who wants to act on a `local_only` decision issues a normal `POST /api/v1/servers` (or a provisioning request) afterward, informed by the decision - exactly the boundary `AGENTS.md` §4 draws ("Templates and provisioning must end by creating an ordinary `servers.Server`... Do not create a second... lifecycle").
-- **Capacity is read-only and additive only for the local node.** `placement.LocalCandidate` counts this node's own already-tracked servers via the existing `servers.Service.List` - no new data source. For a Remote Node, capacity is always `CapacityKnown = false`: v0.5A's Node API (`GetNodeInfo`/`GetHealth`/`GetCapabilities`) does not expose server counts or resource usage, and this milestone deliberately does **not** add a remote capacity/listing call - that would be new remote-facing surface belonging to v0.5B/v0.5C, not a scheduling decision engine. A capacity-unknown candidate is still eligible (so an enrolled Remote Node can still be proposed) but is always ranked below every candidate with verified spare capacity, and its proposal is always `requires_v0.5b`.
+- **Capacity is read-only and additive.** `placement.LocalCandidate` counts this node's servers via `servers.Service.List`; reachable remote nodes use the bounded v0.5B server listing and fall back to unknown capacity when unavailable. A capacity-unknown candidate remains eligible but ranks below verified spare capacity.
 - **RBAC and tenant isolation are enforced by the API layer, not by `internal/placement`.** Two new permissions, `Cluster.View` (read capacity/candidates) and `Cluster.Schedule` (compute a decision), both accept `global` and `tenant` scope only (no `server` scope - a server does not exist yet at decision time, the same reasoning `Server.Create` already uses). A placement request is always evaluated against the requested tenant's scope before the tenant is even confirmed to exist, so a caller without the permission learns nothing about whether the tenant exists.
 - **Audit records the decision, not the polling.** One `cluster.placement_decide` audit event is recorded per placement request, `Success` when a node was selected and `Failure` when none was eligible - never for the read-only capacity listing (`GET /api/v1/cluster/capacity`), matching the existing "no audit for routine reads/health polls" convention (`AGENTS.md` §9, and v0.5A's node heartbeat).
 
@@ -26,6 +36,6 @@ Stopping at the decision means v0.6 does not, by itself, make multi-node placeme
 
 ## Consequences
 
-- A future v0.5B (Remote Server Management) can turn a `requires_v0.5b` decision into an actual remote creation without redesigning `internal/placement`: it would add a remote-facing create call in `internal/remote`/`internal/nodes`, then let a caller (or, later, this same cluster API) invoke it after receiving the decision - `internal/placement.Decide` itself would not change.
+- The explicit placement execution endpoint can create through the existing local service or the authenticated v0.5B Node API without changing `internal/placement.Decide`.
 - A future capacity model (operator-configurable max servers per node, real remote capacity via a v0.5B/v0.5C read call, resource-based scoring instead of server-count scoring) can replace `placement.LocalCandidate`/`placement.RemoteCandidates` and `DefaultMaxServersPerNode` without changing `Decide`'s algorithm or its test contract.
 - Server migration, failover, and controller election remain explicitly out of scope; nothing in this package assumes a server can move between nodes.

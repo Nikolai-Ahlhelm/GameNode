@@ -14,6 +14,15 @@ var Catalog = []Permission{
 	{"Tenants.View", "Tenants", "View tenant entities"}, {"Tenants.Manage", "Tenants", "Create, update, and delete tenant entities"},
 	{"Node.View", "Node", "View this node's remote node registry and pairing status"}, {"Node.Manage", "Node", "Enroll, rename, enable/disable, and remove remote nodes; generate pairing tokens for this node"},
 	{"Cluster.View", "Cluster", "View cluster placement candidates and capacity for a tenant"}, {"Cluster.Schedule", "Cluster", "Compute a cluster placement decision for a tenant"},
+	// RemoteServer/RemoteConsole/RemoteFiles/RemoteMonitoring (v0.5B/v0.5C)
+	// govern the controller-side forwarding surface against an enrolled
+	// remote node's own servers - never local servers, which stay governed
+	// by Server.*/Console.*/Files.*/Monitoring.View above. See
+	// docs/adr/0010-remote-server-lifecycle-forwarding.md.
+	{"RemoteServer.View", "RemoteServer", "View remote servers on enrolled nodes"}, {"RemoteServer.Manage", "RemoteServer", "Create, edit, delete, and control the lifecycle of remote servers on enrolled nodes"},
+	{"RemoteConsole.View", "RemoteConsole", "View a remote server's console output"}, {"RemoteConsole.Send", "RemoteConsole", "Send input to a remote server's console"},
+	{"RemoteFiles.View", "RemoteFiles", "View files on a remote server"}, {"RemoteFiles.Edit", "RemoteFiles", "Edit and create files on a remote server"}, {"RemoteFiles.Upload", "RemoteFiles", "Upload files to a remote server"}, {"RemoteFiles.Download", "RemoteFiles", "Download files from a remote server"}, {"RemoteFiles.Delete", "RemoteFiles", "Delete files on a remote server"}, {"RemoteFiles.Rename", "RemoteFiles", "Move and rename files on a remote server"},
+	{"RemoteMonitoring.View", "RemoteMonitoring", "View monitoring data for a remote server"},
 }
 
 func Known(key string) bool {
@@ -75,7 +84,26 @@ func AllowedScopes(key string) []string {
 		// scope is meaningless for either permission.
 		return []string{"global", "tenant"}
 	}
+	if isRemoteServerPermission(key) {
+		// Remote servers live in a remote node's own database, not this
+		// installation's local servers table, so there is no local
+		// per-remote-server assignment row to scope against (see
+		// internal/api/remoteservers.go's tenant-based authorization
+		// instead of a "server" scope). Only global and tenant grants are
+		// meaningful.
+		return []string{"global", "tenant"}
+	}
 	return []string{"global", "tenant", "server"}
+}
+
+func isRemoteServerPermission(key string) bool {
+	switch key {
+	case "RemoteServer.View", "RemoteServer.Manage", "RemoteConsole.View", "RemoteConsole.Send",
+		"RemoteFiles.View", "RemoteFiles.Edit", "RemoteFiles.Upload", "RemoteFiles.Download", "RemoteFiles.Delete", "RemoteFiles.Rename", "RemoteMonitoring.View":
+		return true
+	default:
+		return false
+	}
 }
 
 // ScopeAllowed reports whether a permission may become effective through an

@@ -86,3 +86,37 @@ cannot execute twice within one GameNode process. Editing a schedule replaces
 its timer immediately; disabling or deleting it cancels the timer. Server
 deletion cascades schedule rows. Shutdown cancels timers and waits for their
 bounded scheduler goroutines without touching a runtime directly.
+
+`internal/scheduler` is exclusively this local, single-server restart
+scheduler. It is unrelated to, and untouched by, v0.6's cluster placement
+DECISION engine (`internal/placement`) or v0.5B/v0.5C's remote server
+forwarding (`internal/api/node_servers.go`, `internal/api/remoteservers.go`)
+- there is no shared code, no shared concept of "schedule," and no plan to
+merge them.
+
+# Remote server lifecycle forwarding (v0.5B/v0.5C)
+
+A remote server's runtime is never simulated or duplicated locally. Every
+lifecycle call the controller makes against an enrolled Remote Node
+(`internal/remote.Client.StartServer`/`StopServer`/`RestartServer`/
+`KillServer`) is forwarded, unmodified, to that node's own
+`internal/servers.Service` through the machine-authenticated Node API
+(`internal/api/node_servers.go`) - the exact same lock, running-state check,
+stop method, identity check, and finalization path a local browser session
+on that node would drive. The controller's own database never gains a
+row that claims to be a remote server's authoritative runtime state; every
+read is a bounded, on-demand call, and a failed/unreachable call is
+reported as a transport error (`node_unreachable`, etc.), never presented as
+"the server stopped."
+
+Remote console uses a bounded JSON WebSocket relay with polling fallback:
+`console.Session.Snapshot()` returns the same bounded 1,000-event ring
+buffer the local WebSocket console already uses, so there is no additional
+buffering, background goroutine, or long-lived connection introduced by the
+remote path. Remote files call the exact same
+`internal/filesystem.Service` sandbox as local files, rooted at the target
+server's working directory on the node actually running it - never a
+controller-side filesystem operation. See
+`docs/adr/0010-remote-server-lifecycle-forwarding.md` and
+`docs/adr/0011-remote-operational-hardening.md` for the full decision
+record.

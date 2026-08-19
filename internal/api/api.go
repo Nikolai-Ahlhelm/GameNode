@@ -80,16 +80,27 @@ type remoteNodeClient interface {
 	Enroll(ctx context.Context, endpoint, pairingToken string) (remote.EnrollResult, error)
 	GetNodeInfo(ctx context.Context, endpoint, credential string) (remote.NodeInfo, error)
 	GetHealth(ctx context.Context, endpoint, credential string) (remote.HealthResult, error)
-	// StartProvisioning/GetProvisioningJob/CancelProvisioningJob are the
-	// typed remote provisioning path (see internal/remote.Client and
-	// docs/adr/0009-cluster-scheduling-decision-vs-execution.md). There is
-	// no generic remote server-create method here by design - the only
-	// remote-facing server creation this product supports goes through the
-	// existing, fully-validated provisioning.Service, never a bare
-	// servers.Server payload.
-	StartProvisioning(ctx context.Context, endpoint, credential string, req remote.ProvisioningRequest) (provisioning.Job, error)
-	GetProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error)
-	CancelProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error)
+
+	// Remote Server Management (v0.5B) / Operational Hardening (v0.5C).
+	ListServers(ctx context.Context, endpoint, credential string) ([]remote.ServerSummary, error)
+	GetServer(ctx context.Context, endpoint, credential, serverID string) (remote.ServerSummary, error)
+	CreateServer(ctx context.Context, endpoint, credential string, in remote.CreateServerInput) (remote.ServerSummary, error)
+	UpdateServer(ctx context.Context, endpoint, credential, serverID string, in remote.UpdateServerInput) (remote.ServerSummary, error)
+	DeleteServer(ctx context.Context, endpoint, credential, serverID string) error
+	StartServer(ctx context.Context, endpoint, credential, serverID string) (remote.ServerSummary, error)
+	StopServer(ctx context.Context, endpoint, credential, serverID string) (remote.ServerSummary, error)
+	RestartServer(ctx context.Context, endpoint, credential, serverID string) (remote.ServerSummary, error)
+	KillServer(ctx context.Context, endpoint, credential, serverID string) (remote.ServerSummary, error)
+	GetConsoleSnapshot(ctx context.Context, endpoint, credential, serverID string) (remote.ConsoleSnapshot, error)
+	SendConsoleInput(ctx context.Context, endpoint, credential, serverID, data string) error
+	GetMonitoringSnapshot(ctx context.Context, endpoint, credential, serverID string) (remote.MonitoringSnapshot, error)
+	ListFiles(ctx context.Context, endpoint, credential, serverID, path string) ([]remote.FileEntry, error)
+	ReadFile(ctx context.Context, endpoint, credential, serverID, path string) (remote.FileContent, error)
+	WriteFile(ctx context.Context, endpoint, credential, serverID, path, content string) error
+	CreateFile(ctx context.Context, endpoint, credential, serverID, path, content string) error
+	CreateDirectory(ctx context.Context, endpoint, credential, serverID, path string) error
+	MoveFile(ctx context.Context, endpoint, credential, serverID, source, destination string) error
+	DeleteFile(ctx context.Context, endpoint, credential, serverID, path string, recursive bool) error
 }
 
 type setupConfigStore interface {
@@ -360,13 +371,13 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/node/capabilities", s.nodeCapabilitiesHandler)
 	mux.HandleFunc("/api/v1/node/enroll", s.nodeEnrollHandler)
 	mux.HandleFunc("/api/v1/node/pairing-tokens", s.nodePairingTokensHandler)
+	mux.HandleFunc("/api/v1/node/servers", s.nodeServersHandler)
+	mux.HandleFunc("/api/v1/node/servers/", s.nodeServerHandler)
 	mux.HandleFunc("/api/v1/remote-nodes", s.remoteNodesHandler)
 	mux.HandleFunc("/api/v1/remote-nodes/", s.remoteNodeHandler)
 	mux.HandleFunc("/api/v1/cluster/capacity", s.clusterCapacityHandler)
 	mux.HandleFunc("/api/v1/cluster/placement", s.clusterPlacementHandler)
 	mux.HandleFunc("/api/v1/cluster/placement/execute", s.clusterPlacementExecuteHandler)
-	mux.HandleFunc("/api/v1/node/provisioning", s.nodeProvisioningHandler)
-	mux.HandleFunc("/api/v1/node/provisioning/", s.nodeProvisioningJobHandler)
 	mux.Handle("/", static)
 	return s.logRequests(mux)
 }
@@ -666,7 +677,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, http.StatusOK, response)
 }
 
-var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Server.Update", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View", "Tenants.View", "Tenants.Manage", "Node.View", "Node.Manage", "Cluster.View", "Cluster.Schedule"}
+var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Server.Update", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View", "Tenants.View", "Tenants.Manage", "Node.View", "Node.Manage", "Cluster.View", "Cluster.Schedule", "RemoteServer.View", "RemoteServer.Manage", "RemoteConsole.View", "RemoteConsole.Send", "RemoteFiles.View", "RemoteFiles.Edit", "RemoteFiles.Upload", "RemoteFiles.Download", "RemoteFiles.Delete", "RemoteFiles.Rename", "RemoteMonitoring.View"}
 
 func (s *Server) allowed(ctx context.Context, u auth.User, permission string, scope rbac.Scope) (bool, error) {
 	return s.rbac.Allowed(ctx, u.ID, permission, scope)
