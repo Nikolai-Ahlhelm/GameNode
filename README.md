@@ -67,6 +67,37 @@ Open the Vite URL, complete the one-time administrator setup, then use the local
 
 Without a configuration file, GameNode listens on `127.0.0.1:8443` and stores SQLite data under `./data`. The example configuration contains the listener, data/database locations, logging level, maximum multipart upload size, and monitoring defaults. Server definitions belong in SQLite, not in YAML.
 
+### Linux: download a release and start it
+
+Release builds are self-contained Linux amd64 binaries; Go and Node.js are not
+required on the target machine. Set `VERSION` to a published release tag, then
+run this one-shot installation from a normal user account:
+
+```bash
+VERSION=vX.Y.Z
+INSTALL_DIR="${HOME}/gamenode"
+BASE_URL="https://github.com/Nikolai-Ahlhelm/GameNode/releases/download/${VERSION}"
+
+mkdir -p "${INSTALL_DIR}" \
+  && curl --fail --location --proto '=https' --tlsv1.2 "${BASE_URL}/gamenode-linux-amd64" -o "${INSTALL_DIR}/gamenode-linux-amd64" \
+  && curl --fail --location --proto '=https' --tlsv1.2 "${BASE_URL}/SHA256SUMS.txt" -o "${INSTALL_DIR}/SHA256SUMS.txt" \
+  && (cd "${INSTALL_DIR}" && sha256sum -c SHA256SUMS.txt --ignore-missing) \
+  && chmod 0755 "${INSTALL_DIR}/gamenode-linux-amd64" \
+  && exec "${INSTALL_DIR}/gamenode-linux-amd64"
+```
+
+On first start, GameNode creates `${HOME}/gamenode/config.yaml`, its SQLite
+database, and data directories beside the binary. Open
+`http://127.0.0.1:8443` and complete the administrator setup. The default
+listener is loopback-only; configure TLS and/or a local reverse proxy before
+making the dashboard reachable from another machine. For a persistent service,
+run the binary under `systemd` with an explicit `-config` path instead of
+keeping it attached to the terminal.
+
+If no release has been published yet, use the development/source quick start
+above or build the release artifact locally as described in [Production-style
+local build](#production-style-local-build).
+
 ## Production-style local build
 
 Build the embedded frontend before compiling the Go binary:

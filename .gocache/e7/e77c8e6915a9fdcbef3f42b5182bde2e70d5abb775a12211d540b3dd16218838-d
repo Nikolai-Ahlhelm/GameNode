@@ -1,6 +1,0 @@
-./metrics_windows.go
-./native_common.go
-./native_windows.go
-./runtime.go
-./native_common_test.go
-./runtime_windows_test.go
