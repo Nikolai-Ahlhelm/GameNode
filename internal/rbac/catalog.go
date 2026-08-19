@@ -12,6 +12,7 @@ var Catalog = []Permission{
 	{"Templates.View", "Templates", "View imported game templates"}, {"Templates.Manage", "Templates", "Analyze, import, and delete game templates"},
 	{"Monitoring.View", "Monitoring", "View monitoring"}, {"Audit.View", "Audit", "View audit"},
 	{"Tenants.View", "Tenants", "View tenant entities"}, {"Tenants.Manage", "Tenants", "Create, update, and delete tenant entities"},
+	{"Node.View", "Node", "View this node's remote node registry and pairing status"}, {"Node.Manage", "Node", "Enroll, rename, enable/disable, and remove remote nodes; generate pairing tokens for this node"},
 }
 
 func Known(key string) bool {
@@ -37,7 +38,7 @@ func Known(key string) bool {
 // tenant, per GameNode_Tenant_Foundation_Prompt.md section 3.3.
 func GlobalOnly(key string) bool {
 	switch key {
-	case "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Audit.View", "Tenants.View", "Tenants.Manage":
+	case "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Audit.View", "Tenants.View", "Tenants.Manage", "Node.View", "Node.Manage":
 		return true
 	default:
 		return false

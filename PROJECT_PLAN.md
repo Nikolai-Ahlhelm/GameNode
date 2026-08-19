@@ -1670,6 +1670,8 @@ extends this runtime without creating a second lifecycle authority.
 
 # v0.4 — Container-backed Egg Runtime
 
+Status: IMPLEMENTATION_COMPLETE, RUNTIME_ACCEPTANCE_PENDING.
+
 v0.4 is implemented. Conservative Pelican/Pterodactyl imports now retain separate
 Native and Container compatibility paths. A user must explicitly select Container
 provisioning; the node validates declared image references against the administrator
@@ -1691,5 +1693,37 @@ The frontend exposes separate compatibility findings, runtime/image/resource
 selection, bounded installer progress, and container port mappings.
 
 Remote Nodes, generic scheduling, automatic updates, and template migration remain v0.5+
-scope and were not implemented here; the narrow local restart schedule is
-documented above and does not change the Remote Node boundary.
+scope; the narrow local restart schedule is documented above and does not
+change the Remote Node boundary. v0.4 and v0.5A were developed concurrently
+on separate branches/worktrees and have since been integrated onto a common
+base (see "Parallel development note" below); v0.4's Egg Container Runtime is
+now advertised as a Remote Node capability (`egg_container_runtime`) without
+`internal/nodes`/`internal/remote` importing any Egg internals.
+
+# v0.5A — Remote Node Foundation status
+
+Status: IMPLEMENTATION_COMPLETE.
+
+v0.5A builds the secure, autonomous Remote Node foundation that later remote server management depends on. It intentionally does **not** implement remote server management itself.
+
+Implemented in this milestone:
+
+- **Durable local Node Identity** (`internal/nodeidentity`): a random `NodeID` generated once and persisted in local SQLite, independent of hostname/IP/database path; an optional operator-set display name; a small integer protocol version (currently `1`), independent of the product version string; and a fixed, reviewed list of typed capability identifiers describing what this build actually implements.
+- **Secure pairing/enrollment** (`internal/nodes`): an operator on the target node generates a single-use, 15-minute pairing token; an operator on the controller side supplies it and the node's endpoint to enroll. The node atomically consumes the token and issues a new machine credential; only salted hashes of tokens/credentials are ever stored, and plaintext values are returned exactly once, never logged or audited.
+- **Authenticated Controller → Node communication**: a machine-authenticated Node API (`GET /api/v1/node/info|health|capabilities`, `POST /api/v1/node/enroll`) structurally separate from the human browser-session/RBAC/CSRF trust domain, and a human-authenticated, RBAC- and CSRF-protected controller-facing registry API (`/api/v1/remote-nodes*`, `POST /api/v1/node/pairing-tokens`).
+- **A narrow typed remote client** (`internal/remote`): `Enroll`/`GetNodeInfo`/`GetHealth`/`GetCapabilities` only, bounded timeouts and response size, real TLS verification, endpoint normalization/validation, and no cross-host redirect following (SSRF/credential-leak mitigation).
+- **Health/connection state** that is presentation-only and never authoritative over a remote node's own server/runtime lifecycle, refreshed by a bounded, periodic, cleanly-cancellable background loop where one unreachable node never blocks another.
+- **RBAC** (`Node.View`/`Node.Manage`, global-only), **audit** for enrollment/registry mutations and pairing-token issuance (never for routine health polls or credentials), and a **read-only Nodes UI** (list, detail, pairing, enrollment).
+- A dedicated ADR (`docs/adr/0007-remote-node-foundation.md`) records the trust/protocol decisions.
+
+Deliberately out of scope for v0.5A: remote Server Create/Edit/Start/Stop/Restart/Kill, remote Console/Files/Ports mutation, remote provisioning/Egg installation, template/secret distribution, server migration, placement/scheduling, failover, and any shared/cluster database state. Every GameNode installation - enrolled or not - keeps its own local SQLite, API, UI, `servers.Service`, runtimes, ConsoleManager, Filesystem service, and lifecycle authority; a controller never gains direct access to a remote node's database or Docker/process runtime.
+
+## Future milestones
+
+- **v0.5B — Remote Server Management**: NOT STARTED. Remote server CRUD and lifecycle control through the Node API established in v0.5A.
+- **v0.5C — Remote Operational Hardening**: NOT STARTED. Remote console/files, richer health, and operational polish for multi-node management.
+- **v0.6 — Cluster / Scheduling**: NOT STARTED. Placement, scheduling, capacity, and failover, explicitly deferred until a real multi-node operational need exists.
+
+## Parallel development note
+
+v0.5A was implemented in a separate git worktree from a concurrently developed v0.4 (Container-backed Egg Runtime), then integrated onto v0.4 as a foundation-only merge (`feature/v0.5-remote-node-foundation`). v0.5A touches no Egg parser/importer/normalization/install-script/startup code, no container-backed execution, no provisioning-job internals, and no template/adapter internals; `internal/nodes`/`internal/remote` still do not import Egg internals after integration. `cmd/gamenode/main.go` preserves v0.4's full startup wiring (config/logging/DB, Native/Container/Egg runtime, provisioning, console, filesystem, monitoring, SteamCMD, restart scheduler, server updates) plus v0.5A's Remote Node registry/client/heartbeat wiring, including clean heartbeat shutdown. `internal/rbac/catalog.go`, `internal/audit/audit.go`, and `internal/api/api.go` gained additive entries from both branches (new permissions/actions/routes/struct fields) rather than either side overwriting the other. The only semantic (non-mechanical) integration step was adding the `egg_container_runtime` capability to `internal/nodeidentity.Capabilities()` now that v0.4 is genuinely present on this branch; the Remote Node protocol version was not bumped, since the wire contract itself did not change. The v0.5A migration `023_remote_nodes.sql` was renumbered to `026_remote_nodes.sql` to avoid colliding with v0.4's `023_container_runtime.sql`/`023_server_update_metadata.sql`, `024_egg_container_runtime.sql`, and `025_server_restart_schedules.sql`.

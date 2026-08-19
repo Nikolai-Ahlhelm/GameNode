@@ -33,6 +33,7 @@ const (
 	System   = "system"
 	Template = "template"
 	Tenant   = "tenant"
+	Node     = "node"
 )
 const (
 	Login                        = "auth.login"
@@ -104,6 +105,17 @@ const (
 	TenantDelete       = "tenant.delete"
 	TenantMemberAdd    = "tenant.member_add"
 	TenantMemberRemove = "tenant.member_remove"
+	// Node actions cover the Remote Node Foundation (v0.5A): enrolling a
+	// remote node into this controller, changing its registry entry, and
+	// generating a pairing token so ANOTHER controller can enroll THIS
+	// node. Heartbeats/health polls are deliberately not audited (see
+	// AGENTS.md item 26).
+	NodePairingTokenCreate = "node.pairing_token_create"
+	NodeEnroll             = "node.enroll"
+	NodeUpdate             = "node.update"
+	NodeEnable             = "node.enable"
+	NodeDisable            = "node.disable"
+	NodeRemove             = "node.remove"
 )
 
 type Event struct {

@@ -295,3 +295,29 @@ in-process occurrence guard prevents a repeated fall-back wall-clock time from
 executing twice. Scheduled restarts carry `origin=scheduled` in the existing
 `server.restart` audit event. This is not a generic cron or job scheduler and
 has no remote-node or cluster placement behavior.
+
+# Remote Node Foundation (v0.5A)
+
+v0.5A adds the secure, autonomous Remote Node foundation later remote server management (v0.5B+) depends on, without implementing that management itself. See `docs/adr/0007-remote-node-foundation.md` for the trust-model decision this section documents the "how" of.
+
+## New packages
+
+- `internal/nodeidentity`: this installation's own `NodeID` (random, persisted once in `node_identity`, independent of hostname/IP/database path), optional display name, `ProtocolVersion` constant, and the fixed `Capabilities()` list this build actually implements.
+- `internal/nodes`: two roles in one package, both transport-free. Pairing/trust for THIS node being enrolled (`node_pairing_tokens`, `node_trusted_callers`) and the registry of remote nodes THIS installation enrolled as a controller (`remote_nodes`). Only salted hashes of tokens/credentials are ever persisted.
+- `internal/remote`: the typed `Client` (`Enroll`, `GetNodeInfo`, `GetHealth`, `GetCapabilities`) plus `ValidateEndpoint`. Bounded timeout (8s default) and response size (1 MiB), real TLS verification, and `CheckRedirect` stops at the first response rather than following a cross-host redirect with the `Authorization` header attached.
+
+## API surface
+
+`internal/api/node.go` adds the machine-authenticated Node-facing routes (`GET /api/v1/node/info|health|capabilities`, `POST /api/v1/node/enroll`) behind `requireMachineAuth` (a bearer credential checked against `nodes.Service.AuthenticateCaller`, structurally separate from `requireAuth`'s cookie/CSRF path) and the human-authenticated `POST /api/v1/node/pairing-tokens` (`Node.Manage` + CSRF). `internal/api/remotenodes.go` adds the controller-facing registry routes (`GET/POST /api/v1/remote-nodes`, `GET/PATCH/DELETE /api/v1/remote-nodes/{id}`, `POST /api/v1/remote-nodes/{id}/refresh`), all ordinary `Node.View`/`Node.Manage` + CSRF like every other product mutation. `internal/api/node_refresh.go` classifies remote errors into `nodes.Health` and runs the bounded periodic refresh loop (`Server.StartHeartbeat`, started/stopped once in `cmd/gamenode/main.go`).
+
+## Database
+
+Migration `026_remote_nodes.sql` adds `node_identity` (single row), `node_pairing_tokens`, `node_trusted_callers`, and `remote_nodes`. None of these tables replicate or shadow a remote node's own schema; `remote_nodes` stores only configuration and last-known status the controller is allowed to cache for presentation. It was renumbered from its original `023_remote_nodes.sql` during v0.4/v0.5A integration because v0.4 already occupies `023_container_runtime.sql`, `023_server_update_metadata.sql`, `024_egg_container_runtime.sql`, and `025_server_restart_schedules.sql`.
+
+## Frontend surface
+
+`web/src/nodes.tsx`/`nodes-helpers.ts` add a read-only-management Nodes page using the same shared primitives as the Tenants page (`PageHeader`, `SectionHeader`, `EmptyState`, `LoadingState`, `.data-table`) plus a dedicated `nodes.css` for its six-column table and capability chips. It is gated by `Node.View`/`Node.Manage` (`nodeCapabilities` in `nodes-helpers.ts`, mirroring `tenantCapabilities`) and reachable from the sidebar only when `Node.View` is present. The pairing-token panel and enroll form are the only two mutating surfaces; neither ever displays a previously issued secret again.
+
+## What v0.5A deliberately does not add
+
+No remote server DTOs, no `servers.Service` changes, no container/Egg-runtime-specific code, and no scheduling/placement/cluster state. A remote node's health/capabilities are cached for presentation only and never feed any local authorization or lifecycle decision. Now that v0.4's Egg Container Runtime is integrated onto this branch, `internal/nodeidentity.Capabilities()` additionally advertises `egg_container_runtime` as a fixed, unconditional entry (the same convention as `container_runtime`) - `internal/nodes`/`internal/remote` still never import Egg internals to determine it.

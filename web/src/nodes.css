@@ -1,0 +1,4 @@
+.nodes-table .table-head,.nodes-table .table-row{grid-template-columns:minmax(160px,1.2fr) minmax(160px,1.2fr) minmax(110px,.7fr) minmax(90px,.7fr) minmax(140px,1fr) minmax(120px,.8fr)}
+@media(max-width:900px){.nodes-table .table-head,.nodes-table .table-row{min-width:760px}}
+.capability-list{display:flex;flex-wrap:wrap;gap:8px;margin:0;padding:0;list-style:none}
+.capability-list li{padding:4px 10px;border:1px solid var(--border-strong);border-radius:999px;background:var(--surface-raised);color:var(--text-secondary);font-size:12px}

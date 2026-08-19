@@ -21,6 +21,7 @@ The current implementation covers the foundation, Native and Linux-first Docker 
 - Provision supported templates asynchronously through a managed SteamCMD installation, then create an ordinary native GameNode server.
 - Manually update an eligible, already-provisioned SteamCMD-managed server's installed game files in place, without migrating its pinned template, ports, or configuration.
 - Adopt an existing Minecraft NeoForge installation through the Official read-only template and a conservative launcher resolver.
+- Enroll another GameNode installation as a read-only Remote Node: durable node identity, secure pairing-token enrollment, an authenticated machine-to-machine Node API, and health/capability status - without giving up local autonomy. Remote server management is not yet implemented; see [Remote Nodes](#remote-nodes-v05a) below.
 
 ## Security model
 
@@ -155,7 +156,16 @@ Release binaries expose the tag in Diagnostics and also include the build commit
 
 ## Operational limitations
 
-GameNode is intentionally a local, single-node product. It provides no distributed controller, remote-node protocol, automatic firewall/NAT management, or permanent port reservation. Port availability probes are best effort and retain the normal bind-time TOCTOU window. A process discovered after GameNode restarts can be identity-verified but remains console-detached. Review [docs/runtime.md](docs/runtime.md) and [docs/security.md](docs/security.md) when deploying under a service account.
+GameNode is intentionally a local-first, single-node-autonomous product. It now has a Remote Node foundation for read-only enrollment/status (see below), but no remote server create/edit/start/stop/console/files, no automatic firewall/NAT management, and no permanent port reservation. Port availability probes are best effort and retain the normal bind-time TOCTOU window. A process discovered after GameNode restarts can be identity-verified but remains console-detached. Review [docs/runtime.md](docs/runtime.md) and [docs/security.md](docs/security.md) when deploying under a service account.
+
+# Remote Nodes (v0.5A)
+
+Every GameNode installation remains fully autonomous - its own SQLite database, API, UI, and lifecycle authority - whether or not it is ever enrolled with a controller. A controller talks to a Remote Node only through an authenticated Node API; it never opens the remote node's database or controls its Docker/process runtime directly.
+
+Enrollment is deliberate and pairing-based: an operator generates a single-use, 15-minute pairing token on the node being enrolled (`Node.Manage`), and an operator on the controller side supplies that token plus the node's endpoint to enroll it. A successful enrollment issues a durable machine credential (never a browser session/CSRF token) that authenticates future `GET /api/v1/node/info|health|capabilities` calls. The controller's Nodes UI shows identity, protocol/version compatibility, capabilities, health, and last contact for each enrolled node, refreshed on a bounded periodic schedule.
+
+v0.5A is read-only foundation: node identity, pairing/enrollment, the Node API, the remote-node registry, health/capability status, and the Nodes UI. Remote server create/edit/start/stop/restart/kill, remote console/files, and remote provisioning are not implemented yet and remain a later milestone. See [`docs/adr/0007-remote-node-foundation.md`](docs/adr/0007-remote-node-foundation.md) for the full trust model.
+
 # Egg template import foundation (v0.2)
 
 GameNode can analyze and import Pelican/Pterodactyl v2 Egg JSON files into a normalized, persisted GameNode template. Native and Container compatibility are reported separately. Native provisioning never reads Egg scripts; an explicitly selected Container path may run a bounded, reviewed Egg installation/startup plan only inside the controlled unprivileged installer/server container boundary. The Templates UI provides upload, compatibility preview, variable/image inspection, import, detail, and delete workflows protected by independent global `Templates.View` and `Templates.Manage` permissions.
