@@ -60,6 +60,15 @@ type fakeRemoteClient struct {
 	fileMkdirErr      error
 	fileMoveErr       error
 	fileDeleteErr     error
+	startJob          provisioning.Job
+	startErr          error
+	getJob            provisioning.Job
+	cancelJob         provisioning.Job
+	provisioningErr   error
+	lastStart         remote.ProvisioningRequest
+	startCalls        int
+	getCalls          int
+	cancelCalls       int
 }
 
 func (f *fakeRemoteClient) Enroll(ctx context.Context, endpoint, pairingToken string) (remote.EnrollResult, error) {
@@ -79,6 +88,20 @@ func (f *fakeRemoteClient) GetNodeInfo(ctx context.Context, endpoint, credential
 }
 func (f *fakeRemoteClient) GetHealth(ctx context.Context, endpoint, credential string) (remote.HealthResult, error) {
 	return remote.HealthResult{Status: "healthy"}, f.infoErr
+}
+
+func (f *fakeRemoteClient) StartProvisioning(ctx context.Context, endpoint, credential string, req remote.ProvisioningRequest) (provisioning.Job, error) {
+	f.startCalls++
+	f.lastStart = req
+	return f.startJob, f.provisioningErr
+}
+func (f *fakeRemoteClient) GetProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error) {
+	f.getCalls++
+	return f.getJob, f.provisioningErr
+}
+func (f *fakeRemoteClient) CancelProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error) {
+	f.cancelCalls++
+	return f.cancelJob, f.provisioningErr
 }
 
 // byEndpoint returns this fake's per-node server map, keyed by endpoint, so

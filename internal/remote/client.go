@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"gamenode/internal/provisioning"
 )
 
 // DefaultTimeout bounds every single request this client makes. Callers may
@@ -196,6 +197,89 @@ func (c *Client) GetCapabilities(ctx context.Context, endpoint, credential strin
 	var result CapabilitiesResult
 	err := c.do(ctx, http.MethodGet, endpoint, "/api/v1/node/capabilities", credential, nil, &result)
 	return result, err
+}
+
+// ProvisioningRequest is the bounded transport contract for invoking the
+// target node's existing provisioning.Service. It deliberately contains no
+// Docker flags, mounts, devices, credentials, scripts, or arbitrary payload.
+type ProvisioningRequest struct {
+	TemplateID       string            `json:"template_id"`
+	ServerName       string            `json:"server_name"`
+	DirectoryName    string            `json:"directory_name"`
+	Variables        map[string]string `json:"variables"`
+	RecoverExisting  bool              `json:"recover_existing"`
+	TenantID         string            `json:"tenant_id"`
+	RuntimeType      string            `json:"runtime_type"`
+	Image            string            `json:"image"`
+	MemoryLimitBytes int64             `json:"memory_limit_bytes"`
+	CPULimitMillis   int               `json:"cpu_limit_millis"`
+	PIDsLimit        int64             `json:"pids_limit"`
+	TmpfsSizeBytes   int64             `json:"tmpfs_size_bytes"`
+}
+
+func (c *Client) StartProvisioning(ctx context.Context, endpoint, credential string, req ProvisioningRequest) (provisioning.Job, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return provisioning.Job{}, &Error{Kind: KindMalformedResponse, Detail: "encode provisioning request"}
+	}
+	var job provisioning.Job
+	err = c.doProvisioning(ctx, http.MethodPost, endpoint, "/api/v1/node/provisioning", credential, bytes.NewReader(body), &job)
+	return job, err
+}
+
+func (c *Client) GetProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error) {
+	var job provisioning.Job
+	err := c.doProvisioning(ctx, http.MethodGet, endpoint, "/api/v1/node/provisioning/"+url.PathEscape(jobID), credential, nil, &job)
+	return job, err
+}
+
+func (c *Client) CancelProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error) {
+	var job provisioning.Job
+	err := c.doProvisioning(ctx, http.MethodPost, endpoint, "/api/v1/node/provisioning/"+url.PathEscape(jobID)+"/cancel", credential, nil, &job)
+	return job, err
+}
+
+type ProvisioningError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (e *ProvisioningError) Error() string { return e.Code + ": " + e.Message }
+
+type provisioningErrorBody struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func (c *Client) doProvisioning(ctx context.Context, method, endpoint, requestPath, credential string, body io.Reader, out any) error {
+	status, data, err := c.roundTrip(ctx, method, endpoint, requestPath, credential, body)
+	if err != nil {
+		return err
+	}
+	switch {
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return &Error{Kind: KindAuthenticationFailed, Detail: fmt.Sprintf("status %d", status)}
+	case status == http.StatusUpgradeRequired || status == http.StatusPreconditionFailed:
+		return &Error{Kind: KindProtocolIncompatible, Detail: fmt.Sprintf("status %d", status)}
+	case status >= 300 && status < 400:
+		return &Error{Kind: KindMalformedResponse, Detail: fmt.Sprintf("unexpected redirect status %d", status)}
+	case status >= 400:
+		var response provisioningErrorBody
+		if json.Unmarshal(data, &response) == nil && response.Error.Code != "" {
+			return &ProvisioningError{StatusCode: status, Code: response.Error.Code, Message: response.Error.Message}
+		}
+		return &Error{Kind: KindMalformedResponse, Detail: fmt.Sprintf("status %d", status)}
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return &Error{Kind: KindMalformedResponse, Detail: "invalid response body"}
+	}
+	return nil
 }
 
 // --- Remote Server Management (v0.5B) / Operational Hardening (v0.5C) ---
@@ -639,6 +723,42 @@ func classifyHTTPStatus(status int) *Error {
 		return &Error{Kind: KindMalformedResponse, Detail: fmt.Sprintf("status %d", status)}
 	}
 	return nil
+}
+
+// roundTrip is used by the provisioning calls because those endpoints return
+// a typed application error body that must remain distinguishable from a
+// transport/status error. Ordinary remote-management calls continue to use
+// doRaw and its stricter status classification.
+func (c *Client) roundTrip(ctx context.Context, method, endpoint, requestPath, credential string, body io.Reader) (int, []byte, error) {
+	reqCtx := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(reqCtx, method, endpoint+requestPath, body)
+	if err != nil {
+		return 0, nil, &Error{Kind: KindUnreachable, Detail: "build request"}
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if credential != "" {
+		req.Header.Set("Authorization", "Bearer "+credential)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, &Error{Kind: KindUnreachable, Detail: classifyTransportError(err)}
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBytes+1))
+	if err != nil {
+		return 0, nil, &Error{Kind: KindUnreachable, Detail: "read response"}
+	}
+	if len(data) > MaxResponseBytes {
+		return 0, nil, &Error{Kind: KindOversizedResponse, Detail: "response exceeded size limit"}
+	}
+	return resp.StatusCode, data, nil
 }
 
 // classifyTransportError keeps the caller-visible detail free of local file

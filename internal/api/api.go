@@ -101,6 +101,12 @@ type remoteNodeClient interface {
 	CreateDirectory(ctx context.Context, endpoint, credential, serverID, path string) error
 	MoveFile(ctx context.Context, endpoint, credential, serverID, source, destination string) error
 	DeleteFile(ctx context.Context, endpoint, credential, serverID, path string, recursive bool) error
+
+	// Typed remote provisioning uses the target node's existing
+	// provisioning.Service; it is not a generic server-create payload.
+	StartProvisioning(ctx context.Context, endpoint, credential string, req remote.ProvisioningRequest) (provisioning.Job, error)
+	GetProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error)
+	CancelProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error)
 }
 
 type setupConfigStore interface {
@@ -378,6 +384,8 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/cluster/capacity", s.clusterCapacityHandler)
 	mux.HandleFunc("/api/v1/cluster/placement", s.clusterPlacementHandler)
 	mux.HandleFunc("/api/v1/cluster/placement/execute", s.clusterPlacementExecuteHandler)
+	mux.HandleFunc("/api/v1/node/provisioning", s.nodeProvisioningHandler)
+	mux.HandleFunc("/api/v1/node/provisioning/", s.nodeProvisioningJobHandler)
 	mux.Handle("/", static)
 	return s.logRequests(mux)
 }
