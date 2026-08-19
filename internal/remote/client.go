@@ -25,8 +25,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"gamenode/internal/provisioning"
+	"github.com/gorilla/websocket"
 )
 
 // DefaultTimeout bounds every single request this client makes. Callers may

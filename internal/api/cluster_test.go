@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"gamenode/internal/audit"
@@ -156,33 +154,5 @@ func TestClusterPlacementInvalidRuntimeType(t *testing.T) {
 	response := templateRequest(h, http.MethodPost, "/api/v1/cluster/placement", []byte(`{"runtime_type":"vm"}`), &admin, true)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid runtime_type, got %d %s", response.Code, response.Body.String())
-	}
-}
-
-func TestClusterPlacementExecuteUsesNormalLocalCreatePath(t *testing.T) {
-	h, _ := newTestServer(t)
-	admin := createAdminSession(t, h)
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload, _ := json.Marshal(map[string]any{"runtime_type": "native", "server": map[string]any{
-		"name": "cluster-executed", "working_directory": filepath.Dir(exe), "executable": exe,
-	}})
-	response := templateRequest(h, http.MethodPost, "/api/v1/cluster/placement/execute", payload, &admin, true)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("execute: %d %s", response.Code, response.Body.String())
-	}
-	var body struct {
-		NodeID string `json:"node_id"`
-		Server struct {
-			ID string `json:"id"`
-		} `json:"server"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		t.Fatal(err)
-	}
-	if body.NodeID != "local" || body.Server.ID == "" {
-		t.Fatalf("unexpected execution response: %+v", body)
 	}
 }

@@ -15,11 +15,11 @@ import (
 	"gamenode/internal/tenants"
 )
 
-// enrollFakeRemoteNode drives the real HTTP enrollment flow (as an admin)
+// enrollRemoteServerTestNode drives the real HTTP enrollment flow (as an admin)
 // against the given fake, returning the created registry row's id. This
 // keeps these tests exercising the same enroll path as production instead
 // of poking the nodes package directly.
-func enrollFakeRemoteNode(t *testing.T, h http.Handler, admin testSession, endpoint, displayName string) string {
+func enrollRemoteServerTestNode(t *testing.T, h http.Handler, admin testSession, endpoint, displayName string) string {
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{"endpoint": endpoint, "pairing_token": "whatever", "display_name": displayName})
 	response := templateRequest(h, http.MethodPost, "/api/v1/remote-nodes", body, &admin, true)
@@ -63,7 +63,7 @@ func TestRemoteServersRequiresAuthAndCapability(t *testing.T) {
 	fake := remoteServerCapableFake()
 	h, _ := newNodeTestServer(t, fake)
 	admin := createAdminSession(t, h)
-	nodeID := enrollFakeRemoteNode(t, h, admin, "https://remote-one.internal", "Remote One")
+	nodeID := enrollRemoteServerTestNode(t, h, admin, "https://remote-one.internal", "Remote One")
 
 	if response := templateRequest(h, http.MethodGet, "/api/v1/remote-nodes/"+nodeID+"/servers", nil, nil, false); response.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated list: %d", response.Code)
@@ -77,7 +77,7 @@ func TestRemoteServersRequiresAuthAndCapability(t *testing.T) {
 	}}
 	oldH, _ := newNodeTestServer(t, oldFake)
 	oldAdmin := createAdminSession(t, oldH)
-	oldNodeID := enrollFakeRemoteNode(t, oldH, oldAdmin, "https://old.internal", "Old Node")
+	oldNodeID := enrollRemoteServerTestNode(t, oldH, oldAdmin, "https://old.internal", "Old Node")
 	if response := templateRequest(oldH, http.MethodGet, "/api/v1/remote-nodes/"+oldNodeID+"/servers", nil, &oldAdmin, false); response.Code != http.StatusNotImplemented {
 		t.Fatalf("expected 501 for missing capability, got %d %s", response.Code, response.Body.String())
 	}
@@ -93,7 +93,7 @@ func TestRemoteServersRBACAndCSRF(t *testing.T) {
 	fake.lifecycleResult = sampleServerSummary("srv-1", "default", "Alpha")
 	h, db := newNodeTestServer(t, fake)
 	admin := createAdminSession(t, h)
-	nodeID := enrollFakeRemoteNode(t, h, admin, "https://remote-one.internal", "Remote One")
+	nodeID := enrollRemoteServerTestNode(t, h, admin, "https://remote-one.internal", "Remote One")
 
 	identities := identity.New(db)
 	viewer, err := identities.CreateUser(context.Background(), identity.CreateUserInput{Username: "rs-viewer", Email: "rs-viewer@example.test", Password: "a password long enough"})
@@ -155,7 +155,7 @@ func TestRemoteServersTenantIsolation(t *testing.T) {
 	fake := remoteServerCapableFake()
 	h, db := newNodeTestServer(t, fake)
 	admin := createAdminSession(t, h)
-	nodeID := enrollFakeRemoteNode(t, h, admin, "https://remote-one.internal", "Remote One")
+	nodeID := enrollRemoteServerTestNode(t, h, admin, "https://remote-one.internal", "Remote One")
 
 	tenantService := tenants.New(db)
 	ctx := context.Background()
@@ -233,8 +233,8 @@ func TestRemoteServerNodeIsolation(t *testing.T) {
 	}
 	h, _ := newNodeTestServer(t, fake)
 	admin := createAdminSession(t, h)
-	nodeAID := enrollFakeRemoteNode(t, h, admin, "https://node-a.internal", "Node A")
-	nodeBID := enrollFakeRemoteNode(t, h, admin, "https://node-b.internal", "Node B")
+	nodeAID := enrollRemoteServerTestNode(t, h, admin, "https://node-a.internal", "Node A")
+	nodeBID := enrollRemoteServerTestNode(t, h, admin, "https://node-b.internal", "Node B")
 
 	if response := templateRequest(h, http.MethodGet, "/api/v1/remote-nodes/"+nodeAID+"/servers/srv-on-a", nil, &admin, false); response.Code != http.StatusOK {
 		t.Fatalf("expected srv-on-a via node A to succeed, got %d %s", response.Code, response.Body.String())
@@ -257,7 +257,7 @@ func TestRemoteServerDisabledNodeIsRejectedWithoutContact(t *testing.T) {
 	fake.serversByID = map[string]remote.ServerSummary{"srv-1": sampleServerSummary("srv-1", "default", "Alpha")}
 	h, _ := newNodeTestServer(t, fake)
 	admin := createAdminSession(t, h)
-	nodeID := enrollFakeRemoteNode(t, h, admin, "https://remote-one.internal", "Remote One")
+	nodeID := enrollRemoteServerTestNode(t, h, admin, "https://remote-one.internal", "Remote One")
 
 	disable, _ := json.Marshal(map[string]bool{"enabled": false})
 	if response := templateRequest(h, http.MethodPatch, "/api/v1/remote-nodes/"+nodeID, disable, &admin, true); response.Code != http.StatusOK {
@@ -288,7 +288,7 @@ func TestRemoteServerUnreachableNodeReturnsControlledError(t *testing.T) {
 	fake.getErr = &remote.Error{Kind: remote.KindUnreachable, Detail: "connection failed"}
 	h, _ := newNodeTestServer(t, fake)
 	admin := createAdminSession(t, h)
-	nodeID := enrollFakeRemoteNode(t, h, admin, "https://remote-one.internal", "Remote One")
+	nodeID := enrollRemoteServerTestNode(t, h, admin, "https://remote-one.internal", "Remote One")
 
 	response := templateRequest(h, http.MethodGet, "/api/v1/remote-nodes/"+nodeID+"/servers/srv-1", nil, &admin, false)
 	if response.Code != http.StatusBadGateway {
@@ -316,7 +316,7 @@ func TestRemoteConsoleSendRequiresSeparatePermission(t *testing.T) {
 	fake.consoleSnapshot = remote.ConsoleSnapshot{State: "running", Events: []remote.ConsoleEvent{{Type: "output", Data: "hello\n"}}}
 	h, db := newNodeTestServer(t, fake)
 	admin := createAdminSession(t, h)
-	nodeID := enrollFakeRemoteNode(t, h, admin, "https://remote-one.internal", "Remote One")
+	nodeID := enrollRemoteServerTestNode(t, h, admin, "https://remote-one.internal", "Remote One")
 
 	identities := identity.New(db)
 	viewer, err := identities.CreateUser(context.Background(), identity.CreateUserInput{Username: "console-viewer", Email: "console-viewer@example.test", Password: "a password long enough"})
@@ -367,7 +367,7 @@ func TestRemoteFilesReadOnlyWithoutMutationPermission(t *testing.T) {
 	fake.fileEntries = []remote.FileEntry{{Name: "config.txt", RelativePath: "config.txt", Type: "file"}}
 	h, db := newNodeTestServer(t, fake)
 	admin := createAdminSession(t, h)
-	nodeID := enrollFakeRemoteNode(t, h, admin, "https://remote-one.internal", "Remote One")
+	nodeID := enrollRemoteServerTestNode(t, h, admin, "https://remote-one.internal", "Remote One")
 
 	identities := identity.New(db)
 	viewer, err := identities.CreateUser(context.Background(), identity.CreateUserInput{Username: "files-viewer", Email: "files-viewer@example.test", Password: "a password long enough"})

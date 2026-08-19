@@ -16,6 +16,7 @@ import (
 	"gamenode/internal/auth"
 	"gamenode/internal/database"
 	"gamenode/internal/identity"
+	"gamenode/internal/provisioning"
 	"gamenode/internal/rbac"
 	"gamenode/internal/remote"
 	"gamenode/internal/runtime"
@@ -64,7 +65,7 @@ type fakeRemoteClient struct {
 	startErr          error
 	getJob            provisioning.Job
 	cancelJob         provisioning.Job
-	provisioningErr   error
+	cancelErr         error
 	lastStart         remote.ProvisioningRequest
 	startCalls        int
 	getCalls          int
@@ -93,15 +94,15 @@ func (f *fakeRemoteClient) GetHealth(ctx context.Context, endpoint, credential s
 func (f *fakeRemoteClient) StartProvisioning(ctx context.Context, endpoint, credential string, req remote.ProvisioningRequest) (provisioning.Job, error) {
 	f.startCalls++
 	f.lastStart = req
-	return f.startJob, f.provisioningErr
+	return f.startJob, f.startErr
 }
 func (f *fakeRemoteClient) GetProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error) {
 	f.getCalls++
-	return f.getJob, f.provisioningErr
+	return f.getJob, f.getErr
 }
 func (f *fakeRemoteClient) CancelProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error) {
 	f.cancelCalls++
-	return f.cancelJob, f.provisioningErr
+	return f.cancelJob, f.cancelErr
 }
 
 // byEndpoint returns this fake's per-node server map, keyed by endpoint, so

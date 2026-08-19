@@ -221,6 +221,10 @@ func (s *Server) remoteNodeHandler(w http.ResponseWriter, r *http.Request) {
 		s.remoteServersRouter(w, r, id, parts[2:])
 		return
 	}
+	if len(parts) >= 2 && parts[1] == "provisioning" {
+		s.remoteNodeProvisioningHandler(w, r, id, parts[2:])
+		return
+	}
 	if len(parts) > 2 {
 		notFound(w)
 		return
