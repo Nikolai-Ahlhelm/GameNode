@@ -320,11 +320,11 @@ Migration `026_remote_nodes.sql` adds `node_identity` (single row), `node_pairin
 
 ## What v0.5A deliberately does not add
 
-No remote server DTOs, no `servers.Service` changes, no container/Egg-runtime-specific code, and no scheduling/placement/cluster state. A remote node's health/capabilities are cached for presentation only and never feed any local authorization or lifecycle decision. Now that v0.4's Egg Container Runtime is integrated onto this branch, `internal/nodeidentity.Capabilities()` additionally advertises `egg_container_runtime` as a fixed, unconditional entry (the same convention as `container_runtime`) - `internal/nodes`/`internal/remote` still never import Egg internals to determine it.
+The v0.5A foundation itself has no remote server DTOs or runtime control. v0.5B/v0.5C add typed remote server, console, file, and monitoring DTOs and APIs, but they still make no `servers.Service` or container-runtime authority change: every operation is forwarded to the target node's own services. Remote health/capabilities remain cached registry data. Now that v0.4's Egg Container Runtime is integrated onto this branch, `internal/nodeidentity.Capabilities()` additionally advertises `egg_container_runtime` as a fixed, unconditional entry; `internal/nodes`/`internal/remote` still never import Egg internals to determine it.
 
-# Cluster Scheduling foundation (v0.6)
+# Cluster Scheduling foundation and container placement execution (v0.6)
 
-v0.6 adds `internal/placement`, a deterministic placement DECISION engine over the node candidates v0.5A already exposes (this installation plus every enrolled Remote Node). See `docs/adr/0009-cluster-scheduling-decision-vs-execution.md` for the Decision vs. Execution boundary this section documents the "how" of, and `PROJECT_PLAN.md`'s "v0.6 — Cluster / Scheduling (Foundation) status" for the explicit v0.5B/v0.5C gap analysis behind that boundary.
+v0.6 adds `internal/placement`, a deterministic placement DECISION engine over the node candidates v0.5A already exposes (this installation plus every enrolled Remote Node), and, in a second phase, EXECUTION of that decision through the existing typed provisioning path. See `docs/adr/0009-cluster-scheduling-decision-vs-execution.md` for the original Decision vs. Execution boundary, `docs/adr/0010-container-placement-execution.md` for how execution was added without reopening it, and `PROJECT_PLAN.md`'s "v0.6 — Cluster / Scheduling (Foundation + Container Placement Execution) status" for the full v0.5B/v0.5C gap analysis.
 
 ## New package
 
@@ -336,18 +336,27 @@ v0.6 adds `internal/placement`, a deterministic placement DECISION engine over t
 
 ## Capacity model
 
-The local node and reachable Remote Nodes use live bounded server counts, compared against fixed `placement.DefaultMaxServersPerNode = 50`; remote capacity becomes unknown if its typed server listing fails. Unknown-capacity nodes remain eligible but rank behind verified spare capacity. Placement decisions are pure; explicit placement execution recomputes and delegates creation to the selected node's normal create authority.
+The local node and reachable Remote Nodes use live bounded server counts from the existing typed server-listing path, compared against a fixed `placement.DefaultMaxServersPerNode = 50` constant. If a remote listing fails, capacity is unknown; the node remains eligible but ranks behind verified spare capacity. No per-node resource configuration or cluster-wide reservation model is introduced.
 
-v0.5B (Remote Server Management) and v0.5C (Remote Operational Hardening) add a machine-authenticated Node API surface under `/api/v1/node/servers[...]` (`internal/api/node_servers.go`) that forwards every call to the SAME node's own `internal/servers.Service`/`internal/filesystem.Service`/console session, and a mirrored, browser-authenticated, RBAC/CSRF-protected controller surface under `/api/v1/remote-nodes/{id}/servers[...]` (`internal/api/remoteservers.go`) that never touches a remote database, process, or container runtime directly. Console relay is bounded with polling fallback and binary files use typed 64-MiB transfers; see ADRs 0010/0011.
+## API surface: decision
 
-## API surface
+`internal/api/cluster.go` adds `GET /api/v1/cluster/capacity?tenant_id=…` (`Cluster.View`, read-only candidate/capacity listing) and `POST /api/v1/cluster/placement` (`Cluster.Schedule` + CSRF, body `{"tenant_id":"...","runtime_type":"native"|"container"}` → a `Decision`). Both permissions are evaluated against the requested tenant's scope (`rbac.Scope{Type:"tenant", ID:&tenantID}`, or an effective global grant) before the tenant's existence is checked, matching the existing tenant-scoped route pattern in `internal/api/provisioning.go`. Neither route creates, starts, stops, or otherwise mutates a server - see ADR 0009 for why this holds even for a `local_only` decision.
 
-`internal/api/cluster.go` adds `GET /api/v1/cluster/capacity?tenant_id=…`, `POST /api/v1/cluster/placement`, and explicit `POST /api/v1/cluster/placement/execute` (`Cluster.View`/`Cluster.Schedule` + CSRF). Both permissions are evaluated against the requested tenant before tenant existence is checked. The pure decision route never mutates; execution delegates creation through the selected node.
+## API surface: execution
+
+`internal/api/cluster.go` also adds `POST /api/v1/cluster/placement/execute`: global `Templates.View` + tenant-scoped `Cluster.Schedule` + tenant-scoped `Server.Create` + CSRF. It recomputes the decision server-side (never trusts a caller-supplied decision), stops and audits without dispatching anything if the decision is rejected, and otherwise dispatches the caller's typed provisioning fields - the same fields the existing `POST /api/v1/templates/{id}/provision` route accepts - to whichever node `placement.Decide` selected:
+
+- **`local_only`**: calls `provisioning.Service.Start` directly, the exact same call the existing browser-facing provisioning route makes. This is true for both `runtime_type=native` and `runtime_type=container` - there is no separate native-vs-container branch beyond what `provisioning.Service.Start` already handles.
+- **`remote_provisioning`**: calls `dispatchRemoteProvisioning`, which looks up the selected Remote Node's stored endpoint/credential (`nodes.Service.Credential`) and calls `internal/remote.Client.StartProvisioning` - the machine-authenticated Node API described below. The controller-side handler never interprets container/Egg data, never talks to the target's database, and never calls Docker.
+
+`internal/api/node_provisioning.go` adds the target-node side of the remote path: `POST /api/v1/node/provisioning` (+ `GET`/`POST .../{jobID}[/cancel]`), machine-authenticated exactly like every other `/api/v1/node/*` route (see the "Remote Node Foundation" section above), forwarding straight into that node's own, unmodified `provisioning.Service.Start`/`Get`/`Cancel`. `internal/api/remote_provisioning.go` adds the controller-side proxy: `POST /api/v1/remote-nodes/{id}/provisioning` (+ `GET`/`POST .../{jobID}[/cancel]`), ordinary browser-authenticated/RBAC/CSRF API that authenticates, checks tenant scope, and forwards through the same `internal/remote.Client` methods `/execute` uses - reachable directly (not only through `/execute`) for an operator who wants a remote container placed without going through the scheduler. Neither new route accepts anything beyond `provisioning.Request`'s existing fields; there is no raw JSON payload, generic engine-flag map, or field for mounts/devices/capabilities/host networking/registry credentials/installer scripts anywhere on this path. `internal/remote.Client` gains a matching `*ProvisioningError` type so a target's typed provisioning rejection (invalid image, resource limits, non-provisionable template, …) surfaces to the controller's caller with the same code/message a local rejection already has, instead of collapsing into one generic transport error.
+
+The controller keeps no new persistent job/tenant mapping: a status/cancel read against the proxy route requires `tenant_id` and trusts only the *target's own* `tenant_id` field on the job it returns, refusing (`404`) a caller who names a tenant the job does not actually belong to.
 
 ## Database
 
-None. Capacity is computed live from data `servers.Service`/`internal/nodes` already persist; there is no new migration.
+None. Capacity is computed live from data `servers.Service`/`internal/nodes` already persist; provisioning jobs (local and remote-originated alike) reuse the existing `provisioning_jobs`/`provisioning_job_events` tables and target-directory conflict protection - there is no new migration and no new cluster-wide reservation table.
 
 ## What v0.6 deliberately does not add
 
-No server migration between nodes, failover, controller election, resource-based capacity, change to `internal/scheduler`'s local restart scheduling, or generic cron/job scheduler.
+No automatic re-placement of a `local_only` or `remote_provisioning` decision beyond the one explicit `/execute` call the caller makes. No server migration between nodes, no failover, no controller election, no cluster-wide capacity reservations, no maintenance drain, no change to `internal/scheduler`'s local restart scheduling, and no generic cron/job scheduler. No native fallback when container provisioning fails - a failed container placement stays failed. v0.5B/v0.5C remote lifecycle, console, files, and monitoring remain bounded forwarding to the target node and are not cluster orchestration.
