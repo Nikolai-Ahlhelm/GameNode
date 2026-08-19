@@ -1722,7 +1722,25 @@ Deliberately out of scope for v0.5A: remote Server Create/Edit/Start/Stop/Restar
 
 - **v0.5B — Remote Server Management**: NOT STARTED. Remote server CRUD and lifecycle control through the Node API established in v0.5A.
 - **v0.5C — Remote Operational Hardening**: NOT STARTED. Remote console/files, richer health, and operational polish for multi-node management.
-- **v0.6 — Cluster / Scheduling**: NOT STARTED. Placement, scheduling, capacity, and failover, explicitly deferred until a real multi-node operational need exists.
+- **v0.6 — Cluster / Scheduling (Foundation)**: IMPLEMENTATION_COMPLETE for the scope described below. Placement DECISION, capacity-awareness, and a deterministic scheduling algorithm are implemented; migration, failover, and controller election remain deferred.
+
+# v0.6 — Cluster / Scheduling (Foundation) status
+
+Status: IMPLEMENTATION_COMPLETE for the scope below.
+
+v0.6 adds a deterministic, tenant-isolated, RBAC- and audit-gated cluster placement DECISION engine (`internal/placement`) that evaluates every node this installation knows about - itself plus every node enrolled in the v0.5A Remote Node registry - for one new server of a given runtime type (`native`/`container`) and tenant. `Decide` is pure (no I/O, no clock, no map-order dependency) and is unit-tested with fixed candidate inputs and expected outputs (`internal/placement/placement_test.go`).
+
+**Explicit gap identified before implementation**: v0.5B (Remote Server Create/Edit/Start/Stop) and v0.5C (remote operational hardening) are both NOT STARTED. There is no way, anywhere in this codebase, to create or mutate a server on a Remote Node - only the v0.5A read-only Node API (`GetNodeInfo`/`GetHealth`/`GetCapabilities`) exists. A placement decision therefore cannot be executed for a Remote Node target; it can only be proposed. For the LOCAL node, execution is already possible through the existing, unmodified `servers.Service`/provisioning create path, so a `local_only` decision is actionable today.
+
+**Decision vs. Execution boundary** (see `docs/adr/0009-cluster-scheduling-decision-vs-execution.md`, the minimal necessary preparatory outcome of this milestone): the placement API computes and returns a decision only. It never itself creates, starts, or otherwise mutates a server - not even for a `local_only` result. Every decision carries an `execution` field: `local_only` (selected node is this installation; act on it through the ordinary server-create API, unchanged) or `requires_v0.5b` (selected node is a Remote Node; there is currently no way to act on it).
+
+**Capacity model**: the local node's usage is a live count of every server `servers.Service` already tracks, compared against a fixed, non-configurable `DefaultMaxServersPerNode = 50` constant (there is no existing per-node capacity configuration concept anywhere in the product to build on; making this operator-configurable is future work). A Remote Node's capacity is always reported unknown: v0.5A's Node API does not expose server counts or resource usage, and this milestone deliberately does not add a remote listing/capacity call - that would be new remote-facing surface belonging to v0.5B/v0.5C, not a scheduling decision engine. An unknown-capacity node is still eligible but always ranked behind every node with verified spare capacity.
+
+**API**: `GET /api/v1/cluster/capacity?tenant_id=…` (read-only candidate/capacity listing, `Cluster.View`) and `POST /api/v1/cluster/placement` (`{tenant_id, runtime_type}` → a `Decision`, `Cluster.Schedule`). Both permissions accept `global` and `tenant` scope only (no `server` scope - a server does not exist yet at decision time, the same rule `Server.Create` already uses) and are evaluated against the requested tenant before the tenant's existence is even confirmed, so a caller without the permission learns nothing about tenant existence. Capacity numbers are node-wide, not a per-tenant breakdown, so there is no cross-tenant leak in the response itself.
+
+**Audit**: one `cluster.placement_decide` event per placement request (`Success` when a node was selected, `Failure` with the rejection reason otherwise); the read-only capacity listing and the (nonexistent, by design) remote polling this milestone does not add are never audited, matching the existing "no audit for routine reads/health polls" convention.
+
+**Not implemented, on purpose**: any generic cron/job scheduler; any change to the unrelated v0.4 local restart scheduler (`internal/scheduler`, never touched by this milestone); any Remote Node lifecycle mutation beyond the already-existing v0.5A read-only calls; server migration between nodes; failover; controller election.
 
 ## Parallel development note
 

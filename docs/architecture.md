@@ -321,3 +321,31 @@ Migration `026_remote_nodes.sql` adds `node_identity` (single row), `node_pairin
 ## What v0.5A deliberately does not add
 
 No remote server DTOs, no `servers.Service` changes, no container/Egg-runtime-specific code, and no scheduling/placement/cluster state. A remote node's health/capabilities are cached for presentation only and never feed any local authorization or lifecycle decision. Now that v0.4's Egg Container Runtime is integrated onto this branch, `internal/nodeidentity.Capabilities()` additionally advertises `egg_container_runtime` as a fixed, unconditional entry (the same convention as `container_runtime`) - `internal/nodes`/`internal/remote` still never import Egg internals to determine it.
+
+# Cluster Scheduling foundation (v0.6)
+
+v0.6 adds `internal/placement`, a deterministic placement DECISION engine over the node candidates v0.5A already exposes (this installation plus every enrolled Remote Node). See `docs/adr/0009-cluster-scheduling-decision-vs-execution.md` for the Decision vs. Execution boundary this section documents the "how" of, and `PROJECT_PLAN.md`'s "v0.6 — Cluster / Scheduling (Foundation) status" for the explicit v0.5B/v0.5C gap analysis behind that boundary.
+
+## New package
+
+`internal/placement` is transport-free and has no database handle. `Decide(Request) Decision` is a pure function: no I/O, no clock, deterministic tie-breaking (`NodeID` ascending) so identical input always produces identical output - this is what makes `internal/placement/placement_test.go` an exact input/output unit-test suite rather than an integration test. `NodeCandidate` is the bounded, already-fetched-by-the-caller view of one node (kind, enabled, healthy, capabilities, capacity); building the real candidate list from live services (`LocalCandidate`, `RemoteCandidates`) is a separate, thin step the API layer performs before calling `Decide`.
+
+**Algorithm**: exclude disabled, unhealthy, or capability-mismatched candidates; exclude capacity-known candidates with zero spare capacity; among the remainder, prefer capacity-known candidates (most spare capacity first) over capacity-unknown ones; break every remaining tie by `NodeID` ascending.
+
+**`internal/placement` is not `internal/scheduler`.** `internal/scheduler` (v0.4) is the typed local daily/weekly restart scheduler; it only calls `servers.Service.Restart` on a timer and has no concept of nodes or placement. The two packages are unrelated, and this milestone does not touch `internal/scheduler`.
+
+## Capacity model
+
+The local node's usage is a live count from `servers.Service.List`, compared against a fixed `placement.DefaultMaxServersPerNode = 50` constant - there is no existing per-node capacity configuration concept in the product to build on, and inventing one is out of scope for this foundation milestone. A Remote Node's capacity is always `CapacityKnown = false`: v0.5A's Node API (`GetNodeInfo`/`GetHealth`/`GetCapabilities`) exposes no server count or resource usage, and this milestone deliberately does not add a remote listing/capacity call, which would be v0.5B/v0.5C-scope remote-facing surface. A capacity-unknown node is still eligible, but always ranked behind every capacity-known node with spare capacity, and any selection of it is always `execution: "requires_v0.5b"`.
+
+## API surface
+
+`internal/api/cluster.go` adds `GET /api/v1/cluster/capacity?tenant_id=…` (`Cluster.View`, read-only candidate/capacity listing) and `POST /api/v1/cluster/placement` (`Cluster.Schedule` + CSRF, body `{"tenant_id":"...","runtime_type":"native"|"container"}` → a `Decision`). Both permissions are evaluated against the requested tenant's scope (`rbac.Scope{Type:"tenant", ID:&tenantID}`, or an effective global grant) before the tenant's existence is checked, matching the existing tenant-scoped route pattern in `internal/api/provisioning.go`. Neither route creates, starts, stops, or otherwise mutates a server - see the ADR for why this holds even for a `local_only` decision.
+
+## Database
+
+None. Capacity is computed live from data `servers.Service`/`internal/nodes` already persist; there is no new migration.
+
+## What v0.6 deliberately does not add
+
+No remote server creation/mutation of any kind (that is v0.5B). No automatic execution of a `local_only` decision - the caller still uses the ordinary server-create API. No server migration between nodes, no failover, no controller election, no change to `internal/scheduler`'s local restart scheduling, and no generic cron/job scheduler.

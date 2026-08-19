@@ -13,6 +13,7 @@ var Catalog = []Permission{
 	{"Monitoring.View", "Monitoring", "View monitoring"}, {"Audit.View", "Audit", "View audit"},
 	{"Tenants.View", "Tenants", "View tenant entities"}, {"Tenants.Manage", "Tenants", "Create, update, and delete tenant entities"},
 	{"Node.View", "Node", "View this node's remote node registry and pairing status"}, {"Node.Manage", "Node", "Enroll, rename, enable/disable, and remove remote nodes; generate pairing tokens for this node"},
+	{"Cluster.View", "Cluster", "View cluster placement candidates and capacity for a tenant"}, {"Cluster.Schedule", "Cluster", "Compute a cluster placement decision for a tenant"},
 }
 
 func Known(key string) bool {
@@ -40,6 +41,10 @@ func GlobalOnly(key string) bool {
 	switch key {
 	case "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Audit.View", "Tenants.View", "Tenants.Manage", "Node.View", "Node.Manage":
 		return true
+	// Cluster.View/Cluster.Schedule are deliberately NOT global-only: a
+	// tenant-scoped operator must be able to request/inspect placement for
+	// their own tenant without a global grant, matching Server.Create's
+	// tenant-assignable convention. See AllowedScopes below.
 	default:
 		return false
 	}
@@ -64,7 +69,10 @@ func AllowedScopes(key string) []string {
 	if GlobalOnly(key) {
 		return []string{"global"}
 	}
-	if key == "Server.Create" {
+	if key == "Server.Create" || key == "Cluster.View" || key == "Cluster.Schedule" {
+		// A server does not exist yet when a placement decision is
+		// requested (or when Server.Create is evaluated), so a per-server
+		// scope is meaningless for either permission.
 		return []string{"global", "tenant"}
 	}
 	return []string{"global", "tenant", "server"}

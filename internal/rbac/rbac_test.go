@@ -103,8 +103,11 @@ func TestPermissionScopeMatrix(t *testing.T) {
 	// Server.Create is the one deliberate exception: it supports "global"
 	// and "tenant" but never "server" (a server does not exist yet at the
 	// moment it is evaluated).
-	globalAndTenantOnly := map[string]bool{"Server.Create": true}
-	if len(Catalog) != 37 {
+	// Cluster.View/Cluster.Schedule (v0.6) share the same "global and tenant
+	// only" rule as Server.Create: a placement decision is evaluated before
+	// any server exists, so a per-server scope is meaningless.
+	globalAndTenantOnly := map[string]bool{"Server.Create": true, "Cluster.View": true, "Cluster.Schedule": true}
+	if len(Catalog) != 39 {
 		t.Fatalf("catalog contains %d permissions; update the explicit scope matrix test", len(Catalog))
 	}
 	for _, permission := range Catalog {

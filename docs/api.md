@@ -296,6 +296,29 @@ Every route below requires `Authorization: Bearer <machine credential>` validate
 | `DELETE` | `/api/v1/remote-nodes/{id}` | `Node.Manage` + CSRF; removes the registry entry only - never affects the remote node itself |
 | `POST` | `/api/v1/remote-nodes/{id}/refresh` | `Node.View` + CSRF; triggers one bounded, immediate status refresh |
 
+# Cluster Scheduling API (v0.6)
+
+Both routes are ordinary human-authenticated, tenant-scoped API - `Cluster.View`/`Cluster.Schedule` accept a `global` or `tenant` assignment (never `server`; a server does not exist yet at decision time). Neither route creates, starts, stops, or otherwise mutates a server. See `docs/architecture.md`'s "Cluster Scheduling foundation (v0.6)" section and `docs/adr/0009-cluster-scheduling-decision-vs-execution.md`.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/v1/cluster/capacity?tenant_id=…` | `Cluster.View`; returns `{"tenant_id":"...","candidates":[...]}` - every known node (this installation plus every enrolled Remote Node) with its capability list, health, and capacity (`capacity_known`, `used_servers`, `max_servers`, `available` when known) |
+| `POST` | `/api/v1/cluster/placement` | `Cluster.Schedule` + CSRF; body `{"tenant_id":"...","runtime_type":"native"|"container"}` (`tenant_id` defaults to the default tenant, `runtime_type` defaults to `native`); returns `{"decision": {...}}` |
+
+A `Decision` is:
+
+```json
+{
+  "tenant_id": "…",
+  "rejected": false,
+  "execution": "local_only",
+  "selected": {"node_id": "local", "display_name": "…", "kind": "local", "enabled": true, "healthy": true, "capabilities": ["native_runtime", "..."], "capacity_known": true, "used_servers": 3, "max_servers": 50, "available": 47},
+  "candidates": [{"node_id": "local", "display_name": "…", "kind": "local", "selected": true, "reason": ""}]
+}
+```
+
+`execution` is `"local_only"` (act on the decision through the ordinary `POST /api/v1/servers`/provisioning API - this route never does it for you) or `"requires_v0.5b"` (the selected node is a Remote Node; there is currently no way to act on it). When `rejected` is `true`, `selected`/`execution` are omitted and `reason` is one of `no_eligible_node`; each candidate's own `reason` (`disabled`, `unhealthy`, `missing_capability`, `capacity_exhausted`) explains why it was skipped. One `cluster.placement_decide` audit event is recorded per `POST` (`Success` or `Failure`); the `GET` capacity read is never audited.
+
 Every registry response includes a derived (never stored) `compatibility` field - `compatible`, `limited_capabilities`, `incompatible`, or `unknown` - computed from the remote node's `protocol_version` against this controller's own `nodeidentity.ProtocolVersion`.
 
 Remote-node errors are translated to stable codes, never raw transport/TLS errors: `node_unreachable`, `node_authentication_failed`, `node_protocol_incompatible`, `node_response_too_large`, `node_malformed_response` (HTTP `502`), plus the ordinary `not_found`/`conflict` for registry-level problems (duplicate node ID/endpoint).

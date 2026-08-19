@@ -34,6 +34,7 @@ const (
 	Template = "template"
 	Tenant   = "tenant"
 	Node     = "node"
+	Cluster  = "cluster"
 )
 const (
 	Login                        = "auth.login"
@@ -116,6 +117,14 @@ const (
 	NodeEnable             = "node.enable"
 	NodeDisable            = "node.disable"
 	NodeRemove             = "node.remove"
+	// ClusterPlacementDecision covers the v0.6 Cluster Scheduling placement
+	// DECISION only (which node, if any, is suitable for a tenant's next
+	// server) - never a routine capacity read (see AGENTS.md item 26: no
+	// audit entries for routine polling), and never a Remote Node mutation,
+	// since this milestone never executes anything on a remote node (see
+	// docs/adr/0009-cluster-scheduling-decision-vs-execution.md). Result
+	// (Success/Failure) distinguishes an accepted vs. a rejected decision.
+	ClusterPlacementDecision = "cluster.placement_decide"
 )
 
 type Event struct {
