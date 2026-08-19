@@ -4,16 +4,16 @@ This file is the implementation guide for coding agents working in this reposito
 
 ## 1. Product Summary
 
-GameNode is a self-contained, single-node game-server manager for Windows and Linux. One Go process serves the API and the embedded React/TypeScript/Vite UI, persists to SQLite, and manages native applications without requiring a container runtime or controller. Users can still register existing native applications without using templates.
+GameNode is a self-contained, single-node game-server manager for Windows and Linux. One Go process serves the API and the embedded React/TypeScript/Vite UI, persists to SQLite, and manages Native plus Linux-first Docker Container applications without requiring a controller. Users can still register existing native applications without using templates.
 
-The current v0.2 direction adds a normalized template model, the Official Game Library, conservative Pelican/Pterodactyl Egg import, and managed SteamCMD provisioning. These features feed the existing native server model; they are not a new runtime.
+The current v0.4 direction adds separate Native/Container compatibility for conservative Pelican/Pterodactyl Egg import and controlled Container provisioning. Templates still feed ordinary `servers.Server` records; Container is a runtime selection, not an Egg-specific lifecycle.
 
 ## 2. Non-Goals and Hard Boundaries
 
 - Keep the deployable architecture a single Go process with SQLite. Do not introduce microservices, Redis, RabbitMQ, Kafka, Kubernetes, or a cluster/controller protocol.
-- v0.3 permits the Linux-first Docker Container Runtime beside Native. `servers.Service` remains lifecycle authority; Docker Engine API is the only control boundary (never Docker CLI/shell). Container identity is managed/server-ID/generation/durable-token labels persisted in StartKey and must be verified before lifecycle, metrics, rediscovery, or ConsoleManager attach. Host and container ports are distinct; image Pull is explicit and Start never pulls/updates. No raw HostConfig, privileged mode, socket mounts, arbitrary mounts, devices, capabilities, host namespaces, Egg execution, Remote Nodes, or cluster scheduling.
+- v0.3 permits the Linux-first Docker Container Runtime beside Native. v0.4 permits controlled Egg installation only inside a short-lived unprivileged Container. `servers.Service` remains lifecycle authority; Docker Engine API is the only control boundary (never Docker CLI/shell). Container identity is managed/server-ID/generation/durable-token labels persisted in StartKey and must be verified before lifecycle, metrics, rediscovery, or ConsoleManager attach. Host and container ports are distinct; image Pull is explicit and Start never pulls/updates. No user-controlled raw engine flags, privileged mode, socket mounts, arbitrary mounts, devices, capabilities, host namespaces, registry credentials, Remote Nodes, or cluster scheduling.
 - Do not introduce implicit shell execution, generic script hooks, arbitrary download URLs, arbitrary remote-code-execution endpoints, or user-controlled command strings. GameNode intentionally runs configured native executables, but launch remains structured and permission-gated.
-- Do not build speculative provider layers, plugin systems, repositories, schedulers, update engines, or other future abstractions without a current requirement.
+- Do not build speculative provider layers, plugin systems, repositories, generic schedulers, update engines, or other future abstractions without a current requirement. The typed local restart scheduler is the deliberately narrow exception implemented for the current milestone.
 - Do not silently implement the next milestone. Automatic game updates, backups, scheduling, firewall/NAT automation, marketplace/community catalogs, credentialed Steam login, and multi-node management remain out of scope.
 
 ## 3. Repository Map
@@ -35,9 +35,11 @@ The current v0.2 direction adds a normalized template model, the Official Game L
 - `internal/templates`: normalized template domain, Egg analyzer/import, SQLite store, built-ins, official catalog/cache, and NeoForge resolver.
 - `internal/steamcmd`: fixed-source managed SteamCMD bootstrap, safe extraction, and structured invocation.
 - `internal/provisioning`: persisted asynchronous provisioning jobs and normal-server creation.
+- `internal/serverupdates`: manual SteamCMD update jobs for already-provisioned, eligible servers (v0.2.1). Deliberately smaller than `internal/provisioning`: no template resolution, ports, or server creation.
+- `internal/scheduler`: typed local daily/weekly restart schedules; it only decides when to call `servers.Service.Restart` and has no runtime or command execution authority.
 - `internal/gameconfig`: persisted, versioned declarative per-game configuration adapters and safe format-specific edits.
 - `internal/database`: SQLite open/migration runner.
-- `migrations`: ordered embedded SQL migrations. The current highest file is `022_rbac_tenant_scope.sql`.
+- `migrations`: ordered embedded SQL migrations. The v0.4 migration is `024_egg_container_runtime.sql`; `025_server_restart_schedules.sql` stores the typed local restart schedules.
 - `web`: React/TypeScript/Vite source and Node helper tests. `cmd/gamenode/webassets` is generated production output embedded by Go. `web/src/tenants.tsx`/`tenants-helpers.ts` hold the Tenant admin UI (list/create/detail with Overview/Servers/Members/Access tabs) and the shared `useCreatableTenants()`/`resolveTenantSelection()` helpers reused by the Custom/Adopt server form and the Game Library provisioning wizard; there is still no router, only existing component-state navigation.
 - `templates`: repository-owned Official Game Library manifest, templates, adapters, fixtures, and contribution rules.
 - `docs`: architecture, security, runtime, API, development, CI, and ADR details.
@@ -48,9 +50,9 @@ The current v0.2 direction adds a normalized template model, the Official Game L
 - `internal/api` owns transport concerns, not domain policy. Put validation and orchestration in transport-independent services where practical.
 - Services must not depend on HTTP or WebSocket types merely for convenience. Runtime, console, filesystem, templates, SteamCMD, provisioning, and audit have deliberate transport boundaries.
 - Keep OS-specific process, metrics, atomic-replace, upload-commit, symlink/reparse behavior behind interfaces or `_windows.go`/`_linux.go`/`_nonwindows.go` files.
-- `internal/runtime` knows nothing about HTTP, WebSockets, RBAC, audit actors, or template/Egg formats.
+- `internal/runtime` knows nothing about HTTP, WebSockets, RBAC, audit actors, or template/Egg formats. The controlled installer interface receives only an already-normalized bounded plan from provisioning.
 - `servers.Service` is the authority for ordinary server lifecycle. Do not launch managed game processes directly from an API or provisioning handler.
-- Templates and provisioning must end by creating an ordinary `servers.Server` with runtime type `native`. Do not create a second "Egg runtime" or template-specific lifecycle.
+- Templates and provisioning must end by creating an ordinary `servers.Server` with runtime type `native` or `container`. Do not create a second "Egg runtime" or template-specific lifecycle. Container Egg install jobs may use a short-lived installer container, but the registered server remains an ordinary `servers.Server` owned by `servers.Service`.
 - Preserve direct `Executable` plus `Arguments[]` launching. A compatibility request is not permission to regress to shell-by-default.
 - Managed game configuration may extend the launch only through `servers.Service`'s optional `LaunchResolver`, called immediately before `Runtime.Start`. Bindings are a closed compiled whitelist; never add an expression language, an index-based argument edit, or a user-supplied argument name, and never persist a resolved launch.
 
@@ -68,6 +70,15 @@ The current v0.2 direction adds a normalized template model, the Official Game L
 - A failed port preflight or process start is not a process crash and must not recursively schedule auto-restart.
 
 See `docs/runtime.md` and ADR `docs/adr/0003-native-runtime-process-identity.md`.
+
+### Egg Container Runtime invariants (v0.4)
+
+- Native and Container compatibility are separate. Container provisioning requires an explicit `runtime_type: container`, a declared image, the administrator registry allowlist, an available Engine, and an explicit Pull; it never falls back to host execution.
+- Egg installation scripts run only in a short-lived unprivileged installer container created through the Docker Engine API. The only persistent mount is the validated server root at `/home/container`; no daemon socket, host network/PID/IPC, devices, capabilities, arbitrary mounts, or registry credentials are allowed.
+- Installer resources, timeout, cancellation, output, and cleanup are bounded. A failed install may leave owned files, but never creates a normal server row before validation and transactional registration. Unsafe recursive cleanup is not automatic.
+- Startup expansion uses only declared normalized variables and `SERVER_ROOT`; host environment expansion, arbitrary engine flags, generic regex/eval/script configuration, and raw Egg JSON are forbidden. Existing servers persist the normalized provenance/image/digest/startup/sensitivity/ports/resources/config snapshot and are not silently migrated by catalog changes.
+
+See `docs/architecture.md`, `docs/security.md`, and ADR `docs/adr/0008-egg-container-execution.md`.
 
 ## 6. Console Invariants
 
@@ -97,9 +108,10 @@ See `docs/security.md`, `docs/api.md`, ADR `docs/adr/0005-filesystem-sandbox.md`
 - RBAC is allow-only. There are no deny rules or implicit permission hierarchies. A `*.Manage` permission does **not** imply `*.View`; `Files.Edit` does not imply any other Files permission.
 - RBAC scopes are `global`, `tenant`, and `server`. For a permission evaluated against a specific server, it is effective via an enabled admin bypass, a direct/group global assignment, a direct/group tenant assignment for that server's own tenant, or a direct/group server assignment for that exact server - never a tenant assignment for a different tenant. Roles stay scope-neutral; only an assignment carries a scope. Tenant membership (`internal/tenants`) alone never grants a permission. Permissions classified by `rbac.GlobalOnly` never become effective from a tenant or server assignment; `rbac.AllowedScopes` is the single source of truth for which scopes a given permission accepts, consumed by both the evaluator and `ServerAssignable`/`TenantAssignable`'s shared whole-role-suitability check.
 - A disabled user is denied before the enabled-admin bypass. An active administrator bypasses the normal evaluator.
-- Current groups are Server (`View/Create/Edit/Delete/Start/Stop/Restart/Kill`), Console (`View/Send`), Files (`View/Edit/Upload/Download/Delete/Rename`), Ports (`View/Manage`), identity (`Users`, `Groups`, `Roles`: `View/Manage`), platform (`Settings.View/Manage`), Templates (`View/Manage`), `Monitoring.View`, `Audit.View`, and Tenants (`View/Manage`, administering tenant entities themselves - never resources inside one). The code catalog is definitive.
+- Current groups are Server (`View/Create/Edit/Delete/Start/Stop/Restart/Kill/Update`), Console (`View/Send`), Files (`View/Edit/Upload/Download/Delete/Rename`), Ports (`View/Manage`), identity (`Users`, `Groups`, `Roles`: `View/Manage`), platform (`Settings.View/Manage`), Templates (`View/Manage`), `Monitoring.View`, `Audit.View`, and Tenants (`View/Manage`, administering tenant entities themselves - never resources inside one). The code catalog is definitive.
 - Global-only currently includes all Users/Groups/Roles permissions, Settings, Templates, `Audit.View`, and `Tenants.View`/`Tenants.Manage`. `Server.Create` is the one deliberate exception among server-family permissions: it allows `global` and `tenant` but never `server` scope, since a server does not exist yet when `Server.Create` is evaluated.
 - Template browsing/provisionability and provisioning currently require global `Templates.View`; import/delete/refresh requires `Templates.Manage`. Starting or inspecting a provisioning job additionally requires global `Server.Create`. Jobs are owner-visible/cancellable, with active admins allowed to act for the owner.
+- `Server.Update` (v0.2.1, manual SteamCMD server update) is a normal server-family permission with no implicit inheritance from `Server.Edit`, `Server.Start`, or `Templates.Manage` - updating an already-provisioned server is a server operation, not catalog administration. Server-update job read/cancel follow the same owner-or-admin rule as provisioning jobs.
 - Update the API product capability list and coverage tests whenever the permission catalog changes.
 
 ## 9. Audit Rules
@@ -125,8 +137,8 @@ See `docs/security.md`, `docs/api.md`, ADR `docs/adr/0005-filesystem-sandbox.md`
 
 - Normalized `templates.Template` is the runtime-independent source of truth. Eggs are an untrusted import format, never a runtime format.
 - Current source values are `official`, `builtin`, and `pelican-pterodactyl` (shown as imported in the UI). Official and built-in entries are read-only; imported rows live in SQLite.
-- Egg ingestion is bounded, strict, and conservative. It stores normalized fields and a provenance hash, not raw Egg JSON or install scripts. Container paths collapse only to semantic `server_root`; Docker image/environment semantics do not reach runtime.
-- A safe direct-process prefix may be analyzed; shell tails/operators are discarded and reported as compatibility findings. Never execute an Egg install/start script blindly.
+- Egg ingestion is bounded, strict, and conservative. It stores normalized fields and a provenance hash, not raw Egg JSON. Native and Container compatibility are separate. Container plans retain only strict image refs, bounded scripts/startup, declared variables, compiled config operations, and resource defaults; Container paths collapse only to semantic `server_root`.
+- A safe direct-process prefix may be analyzed; shell tails/operators are discarded and reported as compatibility findings. Container Egg scripts are never executed on the host: an explicit Container provisioning request may run the normalized plan only in the controlled unprivileged installer boundary.
 - Official repository data is still untrusted network input and passes strict schema and safety validation. It has no validation bypass because it is "official."
 - Template compatibility (`compatible`, `partially_compatible`, `unsupported`) is distinct from host-specific provisionability. Partial compatibility is not permission to ignore a missing safe installer or launch.
 - Existing servers persist their resolved launch, variable provenance/sensitivity, ports, and adapter snapshots. A catalog version update affects future creates only; never silently mutate existing servers.
@@ -138,7 +150,8 @@ See `docs/security.md`, `docs/api.md`, ADR `docs/adr/0005-filesystem-sandbox.md`
 - Downloads and ZIP/TAR extraction are bounded and path-safe. Reject absolute paths, traversal, links/special entries, excessive entry counts, and excessive extracted size. Keep serialized/atomic bootstrap behavior.
 - Invoke with `exec.CommandContext(executable, arguments...)`; never a shell. Arguments are constructed from reviewed fields: fixed install directory, catalog-owned positive App ID, anonymous login, optional constrained beta branch, validation boolean, and `+quit`. Do not add arbitrary flags.
 - Normal users never submit a free-form App ID. Current login support is anonymous only; credentials, Steam Guard, auth variables, and beta passwords are rejected.
-- SteamCMD's own normal client self-update may occur during invocation, but GameNode has no server auto-update or update-on-start engine. Do not represent initial provisioning as ongoing update management.
+- SteamCMD's own normal client self-update may occur during invocation, but GameNode has no automatic server-update, update-on-start, or scheduling engine. Do not represent initial provisioning as ongoing update management.
+- SteamCMD supports initial provisioning and explicit manual updates of eligible existing SteamCMD-managed servers (`internal/serverupdates`, v0.2.1). Automatic, scheduled, and update-on-start SteamCMD server updates remain unsupported. A manual update reuses `steamcmd.Manager.Install` unchanged against the server's existing root, using only App ID/validate/login-mode/template provenance persisted once at provisioning time in `server_steamcmd_provisioning` (never the live catalog); it never migrates the server's pinned template version, executable, arguments, ports, stop behavior, or configuration adapter snapshots. See §12 and §15 below and `docs/architecture.md`'s "Manual SteamCMD server updates architecture" section.
 
 ## 12. Provisioning Semantics
 
@@ -148,6 +161,7 @@ See `docs/security.md`, `docs/api.md`, ADR `docs/adr/0005-filesystem-sandbox.md`
 - Jobs persist safe status/phase, actor/template identity, relative directory name, outcome, and optional server ID—not raw output, variable values, credentials, or absolute host paths.
 - Terminal state is exactly once. Cancellation stops the process and gates final server creation; cancellation is rejected once transactional finalization begins. Active jobs interrupted by GameNode restart become failed/interrupted and are not resumed.
 - Target reservations prevent concurrent work on the same directory. The SteamCMD manager serializes bootstrap/update-sensitive access while different target jobs may otherwise proceed independently.
+- Manual SteamCMD updates (v0.2.1, `internal/serverupdates`) are a separate, much smaller domain: they never resolve a template, never touch ports/config adapters, and never create a server row. They reuse `servers.Service.BeginUpdate`'s reservation (checked by Start/Restart/Delete) instead of a second target-reservation map, and reuse `steamcmd.Manager.Install` unchanged against the server's already-persisted root.
 
 ## 13. Official Game Library
 
@@ -172,7 +186,7 @@ See `docs/security.md`, `docs/api.md`, ADR `docs/adr/0005-filesystem-sandbox.md`
 ## 15. Database and Migration Rules
 
 - SQLite via `modernc.org/sqlite` is the only database. Foreign keys and a busy timeout are enabled at open.
-- Migrations are committed SQL, embedded by `migrations_embed.go`, sorted lexically, and applied once inside individual transactions. Inspect `migrations/` before choosing a number; current highest is `022_rbac_tenant_scope.sql`.
+- Migrations are committed SQL, embedded by `migrations_embed.go`, sorted lexically, and applied once inside individual transactions. Inspect `migrations/` before choosing a number; current highest is `023_server_update_metadata.sql`.
 - `internal/database.Migrate` applies every pending migration with foreign key enforcement disabled on one dedicated connection, then verifies `PRAGMA foreign_key_check` before re-enabling it. This exists so a table rebuild (see 020, which gives `servers` a mandatory `tenant_id`) can `DROP`/rebuild a table that other live tables still reference by foreign key without SQLite's implicit cascading `DELETE` on `DROP TABLE` destroying that unrelated data. A migration that rebuilds a referenced table should rely on this rather than reintroducing its own pragma toggling.
 - Never edit an already applied migration. Add the next zero-padded migration and update tests/queries/models together.
 - Verify both a fresh database and upgrade from the previous schema. Migration SQL must be deterministic and must not depend on local paths, network, clock-based data decisions, or unordered input.
@@ -262,13 +276,13 @@ Code and tests are the final implementation truth. Keep docs synchronized when b
 
 ## 22. Current Project Status
 
-- Repository history contains tags `v0.1.0` and `v0.2.0`; the current checked-out commit is tagged `v0.2.0`. v0.1 delivered the single-node native-management foundation.
+- Repository history contains tags `v0.1.0` and `v0.2.0`; the current checked-out commit is tagged `v0.2.0`. v0.1 delivered the single-node native-management foundation. v0.2.1 is a small intermediate release, not a new numbered milestone: manual, operator-triggered SteamCMD server updates for eligible already-provisioned servers (see `PROJECT_PLAN.md`'s "v0.2.1 — SteamCMD Server Updates status" section).
 - Managed launch/environment configuration bindings (adapter schema v2) are implemented with Valheim as the reference game. A `launch-secret` value is inserted into the child argv only at start; it is excluded from APIs, audit, logs, diagnostics, support bundles, job state, and the persisted registration snapshot. Local OS process inspection of arguments remains an unavoidable game-imposed limitation.
 - A provisioning job carrying managed secret values persists no registration snapshot and is not registration-recoverable. Do not "fix" this by storing secrets in job state or by retrying from a redacted snapshot; that would create a server with silently missing configuration.
 - The launch resolver reads only the per-server `server_config_adapters` snapshot and `server_config_values`. `internal/gameconfig` has no catalog dependency; never let runtime resolution consult the live Official catalog.
-- The current repository/worktree implements the v0.2 Egg import foundation, normalized template persistence, global template RBAC/audit/UI, managed fixed-source anonymous SteamCMD provisioning, persisted cancellable jobs, the remote/cache-backed Official Game Library, NeoForge adoption, official 7 Days to Die and Project Zomboid templates, template provenance, and versioned declarative game-configuration adapters.
+- The current repository/worktree implements the v0.4 Container-backed Egg runtime alongside the v0.3 Container runtime, plus the v0.2 Egg import foundation, normalized template persistence, global template RBAC/audit/UI, managed fixed-source anonymous SteamCMD provisioning, persisted cancellable jobs, the remote/cache-backed Official Game Library, NeoForge adoption, official 7 Days to Die and Project Zomboid templates, template provenance, and versioned declarative game-configuration adapters.
 - Some of the latest catalog/adapter/provisioning work is present as uncommitted working-tree changes. Treat it as active current code for edits and reviews, but do not call it part of a published tag without checking the committed/tagged tree.
-- Known boundaries: no generic Egg scripts or containers; no credentialed Steam login/Steam Guard; no automatic server updates; no resume after interrupted provisioning; no encrypted-at-rest environment secrets; no community/configurable catalog or catalog signatures; no automatic NeoForge/Minecraft install or EULA mutation; Project Zomboid official provisioning is Windows-only; rediscovered consoles stay detached; port probes are best effort with a bind-time race.
+- Known boundaries: no host-side generic Egg scripts, no registry credentials, no credentialed Steam login/Steam Guard; no automatic, scheduled, or update-on-start server updates (manual updates only, v0.2.1); no template migration when updating a server; no automatic resumption after interrupted provisioning (owner-initiated installed-target registration recovery is bounded); no encrypted-at-rest environment secrets; no community/configurable catalog or catalog signatures; no automatic NeoForge/Minecraft install or EULA mutation; Project Zomboid official provisioning is Windows-only; rediscovered consoles stay detached; port probes are best effort with a bind-time race.
 - Historical Windows acceptance statements in README/docs are dated records. Linux native smoke and any new real game provision/start/stop acceptance must be rerun before being claimed for a new change.
 
 ## 23. Agent Completion Format

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { clampBlur, clampDim, defaultPreferences, isValidWallpaperImage, MAX_WALLPAPER_DATA_URL_LENGTH, resolveTheme, sanitizePreferences, sanitizeWallpaper } from '../src/theme.ts';
+import { clampBlur, clampDim, defaultBaseColorDark, defaultBaseColorLight, defaultPreferences, isValidHexColor, isValidWallpaperImage, MAX_WALLPAPER_DATA_URL_LENGTH, resolveTheme, sanitizeBaseColor, sanitizePreferences, sanitizeWallpaper } from '../src/theme.ts';
 
 test('resolveTheme follows explicit mode and falls back to system preference', () => {
   assert.equal(resolveTheme('dark', false), 'dark');
@@ -32,6 +32,25 @@ test('sanitizeWallpaper clamps ranges and forces enabled=false without a valid i
 
 test('sanitizePreferences rejects unknown theme values and coerces booleans', () => {
   assert.deepEqual(sanitizePreferences(undefined), defaultPreferences);
-  assert.deepEqual(sanitizePreferences({ theme: 'neon', sidebarCollapsed: 'yes' }), { theme: 'system', sidebarCollapsed: false, wallpaper: defaultPreferences.wallpaper });
-  assert.deepEqual(sanitizePreferences({ theme: 'light', sidebarCollapsed: true, wallpaper: { enabled: true, image: 'data:image/webp;base64,AAAA', blur: 3, dim: 40 } }), { theme: 'light', sidebarCollapsed: true, wallpaper: { enabled: true, image: 'data:image/webp;base64,AAAA', blur: 3, dim: 40 } });
+  assert.deepEqual(sanitizePreferences({ theme: 'neon', sidebarCollapsed: 'yes' }), { theme: 'system', sidebarCollapsed: false, wallpaper: defaultPreferences.wallpaper, baseColorDark: defaultBaseColorDark, baseColorLight: defaultBaseColorLight });
+  assert.deepEqual(
+    sanitizePreferences({ theme: 'light', sidebarCollapsed: true, wallpaper: { enabled: true, image: 'data:image/webp;base64,AAAA', blur: 3, dim: 40 }, baseColorDark: '#112233', baseColorLight: '#ffeedd' }),
+    { theme: 'light', sidebarCollapsed: true, wallpaper: { enabled: true, image: 'data:image/webp;base64,AAAA', blur: 3, dim: 40 }, baseColorDark: '#112233', baseColorLight: '#ffeedd' },
+  );
+});
+
+test('isValidHexColor only accepts 6-digit #rrggbb hex', () => {
+  assert.equal(isValidHexColor('#08111f'), true);
+  assert.equal(isValidHexColor('#ABCDEF'), true);
+  assert.equal(isValidHexColor('#fff'), false);
+  assert.equal(isValidHexColor('08111f'), false);
+  assert.equal(isValidHexColor('red'), false);
+  assert.equal(isValidHexColor('#08111f; background:url(x)'), false);
+  assert.equal(isValidHexColor(undefined), false);
+});
+
+test('sanitizeBaseColor falls back for invalid input', () => {
+  assert.equal(sanitizeBaseColor('#123456', defaultBaseColorDark), '#123456');
+  assert.equal(sanitizeBaseColor('not-a-color', defaultBaseColorDark), defaultBaseColorDark);
+  assert.equal(sanitizeBaseColor(undefined, defaultBaseColorLight), defaultBaseColorLight);
 });

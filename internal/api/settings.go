@@ -35,9 +35,16 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		values, changed, err := s.settings.Update(r.Context(), patch)
 		if err != nil {
-			s.log.Error("settings update failed", "module", "Settings.Update", "actor_user_id", actor.ID, "error", err)
 			code, summary := auditFailure(err)
-			s.recordAudit(r, auditInput{action: audit.SettingsUpdate, resourceType: audit.Settings, result: audit.Failure, actor: &actor, errorCode: code, errorSummary: summary})
+			if errors.Is(err, settings.ErrPersistence) {
+				code, summary = "operation_failed", "settings could not be persisted"
+			}
+			s.log.With("module", "Settings.Update", "category", logging.CategoryGeneral).Error("settings update failed", "actor_user_id", actor.ID, "error_summary", summary, logging.ErrorDetail(err))
+			s.recordAudit(r, auditInput{action: audit.SettingsUpdate, resourceType: audit.Settings, result: audit.Failure, actor: &actor, errorCode: code, errorSummary: summary, err: err})
+			if errors.Is(err, settings.ErrPersistence) {
+				internal(w)
+				return
+			}
 			bad(w, err.Error())
 			return
 		}
@@ -92,7 +99,13 @@ func (s *Server) settingsFaviconHandler(w http.ResponseWriter, r *http.Request) 
 		err = s.settings.DeleteFavicon(r.Context())
 	}
 	if err != nil {
-		s.recordAudit(r, auditInput{action: audit.SettingsUpdate, resourceType: audit.Settings, result: audit.Failure, actor: &actor, errorCode: "invalid_favicon", errorSummary: "favicon could not be updated"})
+		summary := "favicon could not be updated"
+		s.recordAudit(r, auditInput{action: audit.SettingsUpdate, resourceType: audit.Settings, result: audit.Failure, actor: &actor, errorCode: "invalid_favicon", errorSummary: summary, err: err})
+		if errors.Is(err, settings.ErrPersistence) {
+			s.log.With("module", "Settings.Update", "category", logging.CategoryGeneral).Error("favicon update failed", "actor_user_id", actor.ID, "error_summary", summary, logging.ErrorDetail(err))
+			internal(w)
+			return
+		}
 		bad(w, err.Error())
 		return
 	}
@@ -120,8 +133,8 @@ func (s *Server) clearLogsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.logs.Clear(r.Context()); err != nil {
-		s.log.With("module", "Settings.Logs").Error("log files could not be cleared", "error", err.Error())
-		s.recordAudit(r, auditInput{action: audit.SettingsLogsClear, resourceType: audit.Settings, result: audit.Failure, actor: &actor, errorCode: "operation_failed", errorSummary: "log files could not be cleared"})
+		s.log.With("module", "Settings.Logs", "category", logging.CategoryFilesystem).Error("log files could not be cleared", logging.ErrorDetail(err))
+		s.recordAudit(r, auditInput{action: audit.SettingsLogsClear, resourceType: audit.Settings, result: audit.Failure, actor: &actor, errorCode: "operation_failed", errorSummary: "log files could not be cleared", err: err})
 		internal(w)
 		return
 	}

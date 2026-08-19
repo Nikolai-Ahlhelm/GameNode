@@ -55,6 +55,21 @@ var (
 	// does not exist. Server.TenantID is otherwise immutable once created;
 	// moving a server between tenants is out of scope for this milestone.
 	ErrInvalidTenant = errors.New("invalid tenant")
+	// ErrUpdateInProgress is returned by BeginUpdate when a manual SteamCMD
+	// update (see internal/serverupdates) already reserved this server, and
+	// by Start/Delete when they observe that reservation.
+	ErrUpdateInProgress = errors.New("server update is in progress")
+	// ErrLaunchExecutableMissing is returned by VerifyLaunchExecutablePresent
+	// when the persisted launch executable no longer safely exists inside the
+	// server's working directory after a SteamCMD update.
+	ErrLaunchExecutableMissing = errors.New("launch executable is missing or unsafe after update")
+	// ErrDuplicateName is returned by Create/CreateProvisioned, and by
+	// NameAvailable, when another server already has this name. `servers.name`
+	// is COLLATE NOCASE UNIQUE (migrations/002_servers.sql,
+	// migrations/020_tenants.sql), so the comparison is case-insensitive and
+	// global across tenants, matching the DB constraint that ultimately backs
+	// it.
+	ErrDuplicateName = errors.New("a server with this name already exists")
 )
 
 type Server struct {
@@ -266,11 +281,31 @@ func inside(root, target string) bool {
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
 }
 
+// NameAvailable reports ErrDuplicateName when another server already has
+// this name (comparison is case-insensitive, matching the `servers.name`
+// COLLATE NOCASE UNIQUE column - see ErrDuplicateName). It is a best-effort,
+// point-in-time check with no reservation: Create and CreateProvisioned
+// remain the authoritative gate, since a concurrent insert can still win the
+// race between this check and their own insert.
+func (store *Store) NameAvailable(ctx context.Context, name string) error {
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM servers WHERE name=?`, strings.TrimSpace(name)).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return ErrDuplicateName
+	}
+	return nil
+}
+
 func (store *Store) Create(ctx context.Context, server Server) (Record, error) {
 	if err := server.Validate(); err != nil {
 		return Record{}, err
 	}
 	if err := store.requireTenant(ctx, server.TenantID); err != nil {
+		return Record{}, err
+	}
+	if err := store.NameAvailable(ctx, server.Name); err != nil {
 		return Record{}, err
 	}
 	id, err := newID()
@@ -285,6 +320,13 @@ func (store *Store) Create(ctx context.Context, server Server) (Record, error) {
 	env, _ := json.Marshal(server.EnvironmentVariables)
 	_, err = store.db.ExecContext(ctx, `INSERT INTO servers(id,tenant_id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.TenantID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
 	if err != nil {
+		// classifyNameConstraint is a sanitized safety net for the race
+		// window NameAvailable cannot close (two concurrent creates can both
+		// pass the check before either inserts): it never lets the raw
+		// driver/SQL error reach a caller.
+		if classified := classifyNameConstraint(err); classified != nil {
+			return Record{}, classified
+		}
 		return Record{}, fmt.Errorf("create server: %w", err)
 	}
 	if server.RuntimeType == RuntimeContainer {
@@ -325,10 +367,29 @@ type ProvisionedConfigValue struct {
 	Sensitive bool
 }
 
+// ProvisionedSteamCMD is the minimum trusted, immutable SteamCMD provenance
+// GameNode needs to safely re-run SteamCMD against an already-provisioned
+// server's existing root later (see internal/serverupdates). It is written
+// exactly once, in the same transaction as the server row, only for servers
+// provisioned through the Official SteamCMD installer path; a nil value
+// (custom/adopted servers, or any other installer type) leaves the server
+// permanently ineligible for a manual update rather than guessed later from
+// directory contents or a freshly re-resolved template.
+type ProvisionedSteamCMD struct {
+	InstallerType   string
+	AppID           int
+	LoginMode       string
+	Validate        bool
+	BetaBranch      string
+	TemplateID      string
+	TemplateVersion string
+	TemplateSource  string
+}
+
 // CreateProvisioned atomically publishes a fully installed native server and
 // its template-variable sensitivity metadata. Filesystem installation has
 // already completed and is deliberately outside this database transaction.
-func (store *Store) CreateProvisioned(ctx context.Context, server Server, templateID string, variables []ProvisionedVariable, provisionedPorts []ports.Port, configAdapters []ProvisionedConfigAdapter) (Record, error) {
+func (store *Store) CreateProvisioned(ctx context.Context, server Server, templateID string, variables []ProvisionedVariable, provisionedPorts []ports.Port, configAdapters []ProvisionedConfigAdapter, steamCMD *ProvisionedSteamCMD) (Record, error) {
 	if err := server.Validate(); err != nil {
 		return Record{}, err
 	}
@@ -358,9 +419,24 @@ func (store *Store) CreateProvisioned(ctx context.Context, server Server, templa
 	if tenantExists == 0 {
 		return Record{}, ErrInvalidTenant
 	}
+	var nameCount int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM servers WHERE name=?`, server.Name).Scan(&nameCount); err != nil {
+		return Record{}, err
+	}
+	if nameCount > 0 {
+		return Record{}, ErrDuplicateName
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO servers(id,tenant_id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.TenantID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
 	if err != nil {
+		if classified := classifyNameConstraint(err); classified != nil {
+			return Record{}, classified
+		}
 		return Record{}, fmt.Errorf("create provisioned server: %w", err)
+	}
+	if server.RuntimeType == RuntimeContainer {
+		if err = store.saveContainerConfigTx(ctx, tx, server.ID, server.Container); err != nil {
+			return Record{}, err
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO server_runtime_state(server_id,current_state,updated_at) VALUES(?,?,?)`, server.ID, StateStopped, stamp(now)); err != nil {
 		return Record{}, err
@@ -373,16 +449,20 @@ func (store *Store) CreateProvisioned(ctx context.Context, server Server, templa
 			return Record{}, err
 		}
 	}
-	existingRows, err := tx.QueryContext(ctx, `SELECT name,protocol,bind_address,port FROM server_ports`)
+	existingRows, err := tx.QueryContext(ctx, `SELECT name,protocol,bind_address,port,container_port FROM server_ports`)
 	if err != nil {
 		return Record{}, err
 	}
 	var existingPorts []ports.Port
 	for existingRows.Next() {
 		var existing ports.Port
-		if err = existingRows.Scan(&existing.Name, &existing.Protocol, &existing.BindAddress, &existing.Port); err != nil {
+		var containerPort sql.NullInt64
+		if err = existingRows.Scan(&existing.Name, &existing.Protocol, &existing.BindAddress, &existing.Port, &containerPort); err != nil {
 			existingRows.Close()
 			return Record{}, err
+		}
+		if containerPort.Valid {
+			existing.ContainerPort = int(containerPort.Int64)
 		}
 		existingPorts = append(existingPorts, existing)
 	}
@@ -411,7 +491,7 @@ func (store *Store) CreateProvisioned(ctx context.Context, server Server, templa
 		if idErr != nil {
 			return Record{}, idErr
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO server_ports(id,server_id,name,protocol,bind_address,port,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, portID, server.ID, provisionedPort.Name, provisionedPort.Protocol, provisionedPort.BindAddress, provisionedPort.Port, stamp(now), stamp(now)); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO server_ports(id,server_id,name,protocol,bind_address,port,container_port,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, portID, server.ID, provisionedPort.Name, provisionedPort.Protocol, provisionedPort.BindAddress, provisionedPort.Port, nullableContainerPort(provisionedPort.ContainerPort), stamp(now), stamp(now)); err != nil {
 			return Record{}, err
 		}
 	}
@@ -433,10 +513,38 @@ func (store *Store) CreateProvisioned(ctx context.Context, server Server, templa
 			}
 		}
 	}
+	if steamCMD != nil {
+		if steamCMD.AppID <= 0 || steamCMD.LoginMode != "anonymous" || steamCMD.TemplateID != templateID {
+			return Record{}, errors.New("invalid provisioned steamcmd metadata")
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO server_steamcmd_provisioning(server_id,installer_type,app_id,login_mode,validate_default,beta_branch,template_id,template_version,template_source,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, server.ID, steamCMD.InstallerType, steamCMD.AppID, steamCMD.LoginMode, steamCMD.Validate, steamCMD.BetaBranch, steamCMD.TemplateID, steamCMD.TemplateVersion, steamCMD.TemplateSource, stamp(now)); err != nil {
+			return Record{}, err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return Record{}, err
 	}
 	return Record{Server: server, Runtime: RuntimeState{CurrentState: StateStopped}}, nil
+}
+
+// SteamCMDProvisioning returns the trusted SteamCMD provenance persisted for
+// a server at provisioning time, if any. The bool result is false when no
+// row exists (custom/adopted servers, non-SteamCMD templates, or servers
+// provisioned before this metadata existed) — callers must treat that as
+// "not eligible for a manual update", never fall back to guessing from the
+// template catalog or directory contents.
+func (store *Store) SteamCMDProvisioning(ctx context.Context, serverID string) (ProvisionedSteamCMD, bool, error) {
+	var info ProvisionedSteamCMD
+	var validate int
+	err := store.db.QueryRowContext(ctx, `SELECT installer_type,app_id,login_mode,validate_default,beta_branch,template_id,template_version,template_source FROM server_steamcmd_provisioning WHERE server_id=?`, serverID).Scan(&info.InstallerType, &info.AppID, &info.LoginMode, &validate, &info.BetaBranch, &info.TemplateID, &info.TemplateVersion, &info.TemplateSource)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProvisionedSteamCMD{}, false, nil
+	}
+	if err != nil {
+		return ProvisionedSteamCMD{}, false, err
+	}
+	info.Validate = validate != 0
+	return info, true, nil
 }
 
 func (store *Store) SensitiveEnvironmentKeys(ctx context.Context, id string) ([]string, error) {
@@ -618,6 +726,25 @@ func parseTime(value sql.NullString) *time.Time {
 	}
 	return &v
 }
+
+// classifyNameConstraint recognizes the `servers.name` UNIQUE constraint in a
+// raw insert error and maps it to the sanitized ErrDuplicateName, returning
+// nil for any other error so the caller falls back to its normal wrapping.
+// This mirrors internal/tenants' identical classifyConstraint idiom; it
+// exists only as a defense-in-depth safety net for the race NameAvailable's
+// separate SELECT cannot close, so a raw driver/SQL error can never reach an
+// API caller (see docs/security.md).
+func classifyNameConstraint(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "constraint") && strings.Contains(message, "servers.name") {
+		return ErrDuplicateName
+	}
+	return nil
+}
+
 func stamp(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
 func nullableTime(value *time.Time) any {
 	if value == nil {
@@ -643,6 +770,13 @@ func nullableIntPtr(value *int) any {
 	}
 	return *value
 }
+
+func nullableContainerPort(value int) any {
+	if value == 0 {
+		return nil
+	}
+	return value
+}
 func newID() (string, error) {
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
@@ -661,6 +795,7 @@ type Service struct {
 	instances    sync.Map
 	restarts     sync.Map
 	deletions    sync.Map
+	updates      sync.Map
 	autoRestarts sync.Map
 	autoAttempts sync.Map
 	autoMu       sync.Mutex
@@ -744,6 +879,14 @@ func (s *Service) MonitoringHistory(ctx context.Context, id string) ([]monitorin
 	}
 	return s.monitoring.History(id), nil
 }
+
+// NameAvailable exposes Store.NameAvailable through the service so callers
+// outside this package (see internal/provisioning's early port-and-name
+// preflight) can reuse the same authoritative name-collision check without
+// duplicating it.
+func (s *Service) NameAvailable(ctx context.Context, name string) error {
+	return s.store.NameAvailable(ctx, name)
+}
 func (s *Service) Create(ctx context.Context, server Server) (Record, error) {
 	record, err := s.store.Create(ctx, server)
 	if err != nil {
@@ -753,14 +896,47 @@ func (s *Service) Create(ctx context.Context, server Server) (Record, error) {
 	s.log.Info("server registered", "module", "Server.Create", "server_id", record.Server.ID, "creation_mode", record.Server.CreationMode)
 	return record, nil
 }
-func (s *Service) CreateProvisioned(ctx context.Context, server Server, templateID string, variables []ProvisionedVariable, provisionedPorts []ports.Port, configAdapters []ProvisionedConfigAdapter) (Record, error) {
-	record, err := s.store.CreateProvisioned(ctx, server, templateID, variables, provisionedPorts, configAdapters)
+func (s *Service) CreateProvisioned(ctx context.Context, server Server, templateID string, variables []ProvisionedVariable, provisionedPorts []ports.Port, configAdapters []ProvisionedConfigAdapter, steamCMD *ProvisionedSteamCMD) (Record, error) {
+	record, err := s.store.CreateProvisioned(ctx, server, templateID, variables, provisionedPorts, configAdapters, steamCMD)
 	if err != nil {
 		s.log.Error("provisioned server registration failed", "module", "Server.Create", "template_id", templateID, "error", err)
 		return Record{}, err
 	}
 	s.log.Info("provisioned server registered", "module", "Server.Create", "server_id", record.Server.ID, "template_id", templateID, "ports", len(provisionedPorts), "config_adapters", len(configAdapters))
 	return record, nil
+}
+
+// BeginUpdate reserves a server for a manual SteamCMD update (see
+// internal/serverupdates), mirroring the deletions/restarts reservation
+// idiom used elsewhere in this service. It fails if a reservation already
+// exists; the returned release function must always be called exactly once,
+// typically deferred by the caller. Start, start, and Delete all check this
+// reservation so a manual update can never race a lifecycle action against
+// the same server's files.
+func (s *Service) BeginUpdate(id string) (func(), error) {
+	if _, loaded := s.updates.LoadOrStore(id, struct{}{}); loaded {
+		return nil, ErrUpdateInProgress
+	}
+	return func() { s.updates.Delete(id) }, nil
+}
+
+// VerifyLaunchExecutablePresent re-checks that a server's persisted launch
+// executable still safely exists inside its working directory. It reuses
+// Server.Validate's exact executable/sandbox rules (resolved path, symlink
+// escape rejection via inside, regular-file check) rather than duplicating
+// them, so a manual SteamCMD update (internal/serverupdates) can validate
+// post-update artifacts without a second sandbox implementation.
+func (s *Service) VerifyLaunchExecutablePresent(record Record) error {
+	server := record.Server
+	resolved := server.ResolvedExecutable()
+	if !filepath.IsAbs(server.Executable) && !inside(server.WorkingDirectory, resolved) {
+		return ErrLaunchExecutableMissing
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || info.IsDir() || !info.Mode().IsRegular() {
+		return ErrLaunchExecutableMissing
+	}
+	return nil
 }
 func (s *Service) SensitiveEnvironmentKeys(ctx context.Context, id string) ([]string, error) {
 	return s.store.SensitiveEnvironmentKeys(ctx, id)
@@ -842,6 +1018,13 @@ func (s *Service) decorateContainerImage(ctx context.Context, record *Record) {
 	}
 }
 
+// SteamCMDProvisioning exposes the trusted persisted SteamCMD provenance for
+// a server (see Store.SteamCMDProvisioning) to other domains, notably
+// internal/serverupdates, without giving them direct database access.
+func (s *Service) SteamCMDProvisioning(ctx context.Context, id string) (ProvisionedSteamCMD, bool, error) {
+	return s.store.SteamCMDProvisioning(ctx, id)
+}
+
 // Rediscover refreshes persisted processes after GameNode starts. A verified
 // surviving process is running but deliberately detached from console I/O.
 func (s *Service) Rediscover(ctx context.Context) error {
@@ -885,6 +1068,9 @@ func (s *Service) Update(ctx context.Context, id string, server Server) (Record,
 }
 func (s *Service) Delete(ctx context.Context, id string) error {
 	s.log.Info("server deletion started", "module", "Server.Delete", "server_id", id)
+	if _, updating := s.updates.Load(id); updating {
+		return ErrUpdateInProgress
+	}
 	if _, loaded := s.deletions.LoadOrStore(id, struct{}{}); loaded {
 		return errors.New("server deletion is already in progress")
 	}
@@ -970,6 +1156,9 @@ func (s *Service) Start(ctx context.Context, id string) (Record, error) {
 	if _, deleting := s.deletions.Load(id); deleting {
 		return Record{}, errors.New("server deletion is in progress")
 	}
+	if _, updating := s.updates.Load(id); updating {
+		return Record{}, ErrUpdateInProgress
+	}
 	s.cancelAutoRestart(id)
 	// A Windows child can terminate while Cmd.Wait is still waiting for a
 	// descendant that inherited its console pipes. Do not let that delayed
@@ -1006,6 +1195,9 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 	s.log.Info("server process start preparing", "module", "Server.Start", "server_id", id, "operation", operation)
 	if _, deleting := s.deletions.Load(id); deleting {
 		return Record{}, errors.New("server deletion is in progress")
+	}
+	if _, updating := s.updates.Load(id); updating {
+		return Record{}, ErrUpdateInProgress
 	}
 	if !restart {
 		if _, active := s.restarts.Load(id); active {
@@ -1081,6 +1273,14 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 			s.console.RemoveSession(id, session.ID)
 		})
 	}
+	containerOptions, containerOptionsErr := s.runtimeContainerOptions(ctx, record.Server, id, instanceID)
+	if containerOptionsErr != nil {
+		cleanup()
+		record.Runtime.CurrentState = StateStopped
+		record.Runtime.LastError = "container startup could not be resolved"
+		_ = s.store.SaveRuntime(context.Background(), id, record.Runtime)
+		return Record{}, containerOptionsErr
+	}
 	identity, exits, err := s.runtime.Start(ctx, runtime.StartOptions{
 		RuntimeType:      record.Server.RuntimeType,
 		Executable:       record.Server.ResolvedExecutable(),
@@ -1096,7 +1296,7 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 		// request data directly, so only a console_interrupt server changes
 		// how its process group is created.
 		ConsoleInterruptCapable: record.Server.StopMethod == StopMethodConsoleInterrupt,
-		Container:               s.runtimeContainerOptions(ctx, record.Server, id, instanceID),
+		Container:               containerOptions,
 	})
 	if err != nil {
 		cleanup()
@@ -1132,14 +1332,25 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 	return result, nil
 }
 
-func (s *Service) runtimeContainerOptions(ctx context.Context, server Server, serverID, generation string) *runtime.ContainerOptions {
+func (s *Service) runtimeContainerOptions(ctx context.Context, server Server, serverID, generation string) (*runtime.ContainerOptions, error) {
 	if server.RuntimeType != RuntimeContainer || server.Container == nil {
-		return nil
+		return nil, nil
 	}
-	result := &runtime.ContainerOptions{Image: server.Container.Image, Command: append([]string(nil), server.Container.Command...), MemoryLimitBytes: server.Container.MemoryLimitBytes, CPULimitMillis: server.Container.CPULimitMillis, ServerID: serverID, Generation: generation, OwnershipToken: server.Container.OwnershipToken}
+	command := append([]string(nil), server.Container.Command...)
+	if server.Container.StartupTemplate != "" {
+		command = []string{server.Container.StartupShell, "-lc", server.Container.StartupTemplate}
+	}
+	if len(command) > 0 {
+		var err error
+		command, err = expandContainerCommand(command, server.EnvironmentVariables)
+		if err != nil {
+			return nil, err
+		}
+	}
+	result := &runtime.ContainerOptions{Image: server.Container.Image, Command: command, MemoryLimitBytes: server.Container.MemoryLimitBytes, CPULimitMillis: server.Container.CPULimitMillis, ServerID: serverID, Generation: generation, OwnershipToken: server.Container.OwnershipToken, PIDsLimit: server.Container.PIDsLimit, TmpfsSizeBytes: server.Container.TmpfsSizeBytes}
 	registered, err := s.ports.List(ctx, serverID)
 	if err != nil {
-		return result
+		return result, err
 	}
 	for _, port := range registered {
 		target := port.ContainerPort
@@ -1148,7 +1359,7 @@ func (s *Service) runtimeContainerOptions(ctx context.Context, server Server, se
 		}
 		result.Ports = append(result.Ports, runtime.ContainerPort{Protocol: port.Protocol, BindAddress: port.BindAddress, HostPort: port.Port, ContainerPort: target})
 	}
-	return result
+	return result, nil
 }
 func (s *Service) Stop(ctx context.Context, id string) (Record, error) {
 	s.log.Info("server stop requested", "module", "Server.Stop", "server_id", id)

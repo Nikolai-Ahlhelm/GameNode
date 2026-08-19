@@ -52,7 +52,7 @@ func TestSupportBundleAndDiagnosticsExcludeManagedLaunchSecrets(t *testing.T) {
 	}
 	raw, _ := json.Marshal(definition)
 	serverService := servers.NewService(servers.NewStore(db), runtime.NewNative())
-	if _, err = serverService.CreateProvisioned(context.Background(), servers.Server{Name: "Managed Secret Server", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "valheim", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: definition.SchemaVersion, Version: definition.Version, TemplateID: "valheim", TemplateVersion: "1.1.0", DefinitionJSON: raw, Values: []servers.ProvisionedConfigValue{{Key: "SERVER_PASSWORD", Value: secret, Sensitive: true}, {Key: "API_TOKEN", Value: secret, Sensitive: true}}}}); err != nil {
+	if _, err = serverService.CreateProvisioned(context.Background(), servers.Server{Name: "Managed Secret Server", WorkingDirectory: root, Executable: "game.exe", RuntimeType: "native", CreationMode: servers.CreationTemplate}, "valheim", nil, nil, []servers.ProvisionedConfigAdapter{{ID: definition.ID, SchemaVersion: definition.SchemaVersion, Version: definition.Version, TemplateID: "valheim", TemplateVersion: "1.1.0", DefinitionJSON: raw, Values: []servers.ProvisionedConfigValue{{Key: "SERVER_PASSWORD", Value: secret, Sensitive: true}, {Key: "API_TOKEN", Value: secret, Sensitive: true}}}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// The value really is stored, so the assertions below are meaningful.

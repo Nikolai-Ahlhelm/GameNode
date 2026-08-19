@@ -31,6 +31,7 @@ func (s *Server) recordPortAudit(r *http.Request, actor auth.User, action, resul
 	}
 	if err != nil {
 		in.errorCode, in.errorSummary = auditFailure(err)
+		in.err = err
 	}
 	s.recordAudit(r, in)
 }

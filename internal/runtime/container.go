@@ -34,6 +34,12 @@ type ContainerEngine interface {
 	ImageAvailable(context.Context, string) (bool, error)
 	PullImage(context.Context, string) error
 }
+type containerRemoval interface {
+	Remove(context.Context, string) error
+}
+type containerImageDigest interface {
+	ImageDigest(context.Context, string) (string, error)
+}
 type containerInspection struct {
 	Running  bool
 	Known    bool
@@ -45,11 +51,83 @@ type containerRuntime struct{ engine ContainerEngine }
 
 func NewContainer(engine ContainerEngine) Runtime { return &containerRuntime{engine: engine} }
 
+type containerInstaller struct{ engine ContainerEngine }
+
+// NewContainerInstaller exposes only the controlled one-shot installer
+// operation to provisioning. The underlying Engine API remains private to
+// runtime and is never passed through HTTP or user input.
+func NewContainerInstaller(engine ContainerEngine) ContainerInstaller {
+	return &containerInstaller{engine: engine}
+}
+
+func (i *containerInstaller) Available(ctx context.Context) error { return i.engine.Available(ctx) }
+func (i *containerInstaller) PullImage(ctx context.Context, image string) error {
+	return i.engine.PullImage(ctx, image)
+}
+func (i *containerInstaller) ImageDigest(ctx context.Context, image string) (string, error) {
+	resolver, ok := i.engine.(containerImageDigest)
+	if !ok {
+		return "", errors.New("container image digest is unavailable")
+	}
+	return resolver.ImageDigest(ctx, image)
+}
+func (i *containerInstaller) RunInstaller(ctx context.Context, spec ContainerInstallSpec, output io.Writer) (err error) {
+	removable, ok := i.engine.(containerRemoval)
+	if !ok {
+		return errors.New("container installer cleanup is unavailable")
+	}
+	entrypoint := spec.Entrypoint
+	if entrypoint == "" {
+		entrypoint = "/bin/sh"
+	}
+	if entrypoint != "sh" && entrypoint != "bash" && entrypoint != "/bin/sh" && entrypoint != "/bin/bash" {
+		return errors.New("container installer entrypoint is not allowed")
+	}
+	if len(spec.Script) > 64<<10 || strings.ContainsRune(spec.Script, 0) {
+		return errors.New("container installer script is too large")
+	}
+	if spec.MemoryLimitBytes < 16<<20 || spec.CPULimitMillis < 10 || spec.PIDsLimit < 1 || spec.TmpfsSizeBytes < 1 {
+		return errors.New("container installer resource limits are invalid")
+	}
+	command := []string{entrypoint, "-lc", spec.Script}
+	options := ContainerOptions{Image: spec.Image, Command: command, MemoryLimitBytes: spec.MemoryLimitBytes, CPULimitMillis: spec.CPULimitMillis, ServerID: spec.ServerID, Generation: spec.Generation, OwnershipToken: spec.OwnershipToken, PIDsLimit: spec.PIDsLimit, TmpfsSizeBytes: spec.TmpfsSizeBytes}
+	identity, exits, startErr := (&containerRuntime{engine: i.engine}).Start(ctx, StartOptions{RuntimeType: "container", WorkingDirectory: spec.WorkingDirectory, Environment: spec.Environment, Container: &options, IO: StartIO{Stdout: output, Stderr: output}})
+	if startErr != nil {
+		return startErr
+	}
+	id := containerID(identity)
+	defer func() {
+		if cleanupErr := removable.Remove(context.Background(), id); err == nil && cleanupErr != nil {
+			err = errors.New("installer container cleanup failed")
+		}
+	}()
+	select {
+	case result, ok := <-exits:
+		if !ok {
+			return errors.New("installer container exit status unavailable")
+		}
+		if result.Err != nil {
+			return errors.New("installer container failed")
+		}
+		if result.ExitCode != 0 {
+			return errors.New("installer script exited with a non-zero status")
+		}
+		return nil
+	case <-ctx.Done():
+		_ = i.engine.Kill(context.Background(), id)
+		return ctx.Err()
+	}
+}
+
 // NewHybrid dispatches by explicit runtime_type. It keeps the native runtime
 // intact and makes unsupported Docker installations an honest availability
 // failure rather than a shell fallback.
 func NewHybrid() Runtime {
-	return hybridRuntime{native: NewNative(), container: NewContainer(NewDockerEngine())}
+	return NewHybridWithEngine(NewDockerEngine())
+}
+
+func NewHybridWithEngine(engine ContainerEngine) Runtime {
+	return hybridRuntime{native: NewNative(), container: NewContainer(engine)}
 }
 
 type hybridRuntime struct{ native, container Runtime }
@@ -102,17 +180,26 @@ func (r *containerRuntime) Start(ctx context.Context, options StartOptions) (Ide
 		return Identity{}, nil, err
 	}
 	if err = r.engine.Start(ctx, id); err != nil {
+		if removable, ok := r.engine.(containerRemoval); ok {
+			_ = removable.Remove(context.Background(), id)
+		}
 		return Identity{}, nil, err
 	}
 	identity := Identity{PID: 1, StartKey: "container:" + id + ":" + options.Container.ServerID + ":" + options.Container.Generation + ":" + options.Container.OwnershipToken, ContainerID: id}
 	inspect, err := r.engine.Inspect(ctx, id)
 	if err != nil || !owned(identity, inspect.Labels) {
 		_ = r.engine.Kill(context.Background(), id)
+		if removable, ok := r.engine.(containerRemoval); ok {
+			_ = removable.Remove(context.Background(), id)
+		}
 		return Identity{}, nil, errors.New("container ownership is invalid")
 	}
 	attachment, err := r.engine.Attach(ctx, id)
 	if err != nil {
 		_ = r.engine.Kill(context.Background(), id)
+		if removable, ok := r.engine.(containerRemoval); ok {
+			_ = removable.Remove(context.Background(), id)
+		}
 		return Identity{}, nil, errors.New("container console is unavailable")
 	}
 	if options.IO.Stdin != nil {
@@ -263,7 +350,14 @@ func (e *dockerEngine) Create(ctx context.Context, c ContainerOptions, start Sta
 		}
 		ports[key] = []map[string]string{{"HostIP": host, "HostPort": strconv.Itoa(p.HostPort)}}
 	}
-	body := map[string]any{"Image": c.Image, "Cmd": c.Command, "Env": containerEnvironment(start.Environment), "OpenStdin": true, "StdinOnce": false, "AttachStdout": true, "AttachStderr": true, "Labels": map[string]string{"io.gamenode.managed": "true", "io.gamenode.server_id": c.ServerID, "io.gamenode.instance_generation": c.Generation, "io.gamenode.ownership_token": c.OwnershipToken}, "ExposedPorts": exposed, "HostConfig": map[string]any{"Binds": []string{start.WorkingDirectory + ":/home/container:rw"}, "Memory": c.MemoryLimitBytes, "NanoCpus": int64(c.CPULimitMillis) * 1_000_000, "NetworkMode": "bridge", "PortBindings": ports, "Privileged": false, "ReadonlyRootfs": false}}
+	hostConfig := map[string]any{"Binds": []string{start.WorkingDirectory + ":/home/container:rw"}, "Memory": c.MemoryLimitBytes, "NanoCpus": int64(c.CPULimitMillis) * 1_000_000, "NetworkMode": "bridge", "PortBindings": ports, "Privileged": false, "ReadonlyRootfs": false}
+	if c.PIDsLimit > 0 {
+		hostConfig["PidsLimit"] = c.PIDsLimit
+	}
+	if c.TmpfsSizeBytes > 0 {
+		hostConfig["Tmpfs"] = map[string]string{"/tmp": "rw,nosuid,nodev,noexec,size=" + strconv.FormatInt(c.TmpfsSizeBytes, 10)}
+	}
+	body := map[string]any{"Image": c.Image, "Cmd": c.Command, "Env": containerEnvironment(start.Environment), "OpenStdin": true, "StdinOnce": false, "AttachStdout": true, "AttachStderr": true, "Labels": map[string]string{"io.gamenode.managed": "true", "io.gamenode.server_id": c.ServerID, "io.gamenode.instance_generation": c.Generation, "io.gamenode.ownership_token": c.OwnershipToken}, "ExposedPorts": exposed, "HostConfig": hostConfig}
 	var out struct {
 		ID string `json:"Id"`
 	}
@@ -360,10 +454,27 @@ func (e *dockerEngine) ImageAvailable(ctx context.Context, image string) (bool, 
 	}
 	return false, nil
 }
+func (e *dockerEngine) ImageDigest(ctx context.Context, image string) (string, error) {
+	var data struct {
+		RepoDigests []string `json:"RepoDigests"`
+	}
+	if err := e.call(ctx, http.MethodGet, "/images/"+url.PathEscape(image)+"/json", nil, &data); err != nil {
+		return "", err
+	}
+	for _, value := range data.RepoDigests {
+		if index := strings.LastIndex(value, "@"); index >= 0 && strings.HasPrefix(value[index+1:], "sha256:") {
+			return value[index+1:], nil
+		}
+	}
+	return "", errors.New("container image digest is unavailable")
+}
 func (e *dockerEngine) PullImage(ctx context.Context, image string) error {
 	// Docker's pull response is an unbounded JSON event stream. It is consumed
 	// and discarded here; GameNode exposes only a controlled terminal result.
 	return e.call(ctx, http.MethodPost, "/images/create?fromImage="+url.QueryEscape(image), nil, nil)
+}
+func (e *dockerEngine) Remove(ctx context.Context, id string) error {
+	return e.call(ctx, http.MethodDelete, "/containers/"+url.PathEscape(id)+"?force=1", nil, nil)
 }
 func (e *dockerEngine) call(ctx context.Context, method, path string, body any, target any) error {
 	var input io.Reader
@@ -395,7 +506,9 @@ func (e *dockerEngine) call(ctx context.Context, method, path string, body any, 
 			return err
 		}
 	} else {
-		_, _ = io.Copy(io.Discard, res.Body)
+		// Pull and engine responses are untrusted streams. Consume only a
+		// bounded amount; the terminal result is all provisioning needs.
+		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 256<<10))
 	}
 	return nil
 }

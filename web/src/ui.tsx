@@ -21,6 +21,29 @@ export function LoadingState({ label = 'Loading' }: { label?: string }) {
   return <div className="loading-state" role="status"><span className="loading-spinner" aria-hidden="true" /><span>{label}</span></div>;
 }
 
+/** Shimmering placeholder block. The building block behind every
+ * Skeleton* layout below - sized by the className/style callers pass in. */
+export function Skeleton({ className = '', style }: { className?: string; style?: React.CSSProperties }) {
+  return <span className={`skeleton ${className}`} style={style} aria-hidden="true" />;
+}
+
+/** Row-shaped placeholders standing in for list/table content (servers,
+ * users, tenants, ports, audit rows, ...) while it loads. */
+export function SkeletonRows({ count = 5, label = 'Loading' }: { count?: number; label?: string }) {
+  return <div className="skeleton-rows" role="status" aria-label={label}>{Array.from({ length: count }).map((_, index) => <Skeleton key={index} className="skeleton-row" />)}</div>;
+}
+
+/** Card-shaped placeholders standing in for grid content (metric cards,
+ * game library cards, ...) while it loads. */
+export function SkeletonCards({ count = 4, label = 'Loading' }: { count?: number; label?: string }) {
+  return <div className="skeleton-cards" role="status" aria-label={label}>{Array.from({ length: count }).map((_, index) => <Skeleton key={index} className="skeleton-card" />)}</div>;
+}
+
+/** Text-line placeholders standing in for short prose/form content while it loads. */
+export function SkeletonLines({ count = 3, label = 'Loading' }: { count?: number; label?: string }) {
+  return <div className="skeleton-lines" role="status" aria-label={label}>{Array.from({ length: count }).map((_, index) => <Skeleton key={index} className="skeleton-line" />)}</div>;
+}
+
 const themeCycle: Record<ThemeMode, ThemeMode> = { system: 'dark', dark: 'light', light: 'system' };
 const themeIcon: Record<ThemeMode, LucideIcon> = { system: Monitor, dark: Moon, light: Sun };
 const themeLabel: Record<ThemeMode, string> = { system: 'System theme', dark: 'Dark theme', light: 'Light theme' };

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -49,6 +50,27 @@ type fakeInstaller struct {
 	configXML        string
 	files            map[string][]byte
 	output           string
+}
+
+type fakeContainerInstaller struct {
+	pulls []string
+	spec  gameRuntime.ContainerInstallSpec
+}
+
+func (i *fakeContainerInstaller) Available(context.Context) error { return nil }
+func (i *fakeContainerInstaller) PullImage(_ context.Context, image string) error {
+	i.pulls = append(i.pulls, image)
+	return nil
+}
+func (i *fakeContainerInstaller) RunInstaller(_ context.Context, spec gameRuntime.ContainerInstallSpec, output io.Writer) error {
+	i.spec = spec
+	if output != nil {
+		_, _ = io.WriteString(output, "installer: completed\n")
+	}
+	if err := os.WriteFile(filepath.Join(spec.WorkingDirectory, "installed.marker"), []byte("ok"), 0600); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(spec.WorkingDirectory, "server.properties"), []byte("server-port=0\n"), 0600)
 }
 
 func (i *fakeInstaller) Install(ctx context.Context, root string, plan steamcmd.InstallPlan, output io.Writer, sink steamcmd.EventSink) error {
@@ -113,16 +135,18 @@ func (i *fakeInstaller) Install(ctx context.Context, root string, plan steamcmd.
 
 type failingCreator struct{ calls atomic.Int32 }
 
-func (c *failingCreator) CreateProvisioned(context.Context, servers.Server, string, []servers.ProvisionedVariable, []ports.Port, []servers.ProvisionedConfigAdapter) (servers.Record, error) {
+func (c *failingCreator) CreateProvisioned(context.Context, servers.Server, string, []servers.ProvisionedVariable, []ports.Port, []servers.ProvisionedConfigAdapter, *servers.ProvisionedSteamCMD) (servers.Record, error) {
 	c.calls.Add(1)
 	return servers.Record{}, errors.New("database unavailable SECRET")
 }
+func (c *failingCreator) NameAvailable(context.Context, string) error { return nil }
 
 type portConflictCreator struct{}
 
-func (portConflictCreator) CreateProvisioned(context.Context, servers.Server, string, []servers.ProvisionedVariable, []ports.Port, []servers.ProvisionedConfigAdapter) (servers.Record, error) {
+func (portConflictCreator) CreateProvisioned(context.Context, servers.Server, string, []servers.ProvisionedVariable, []ports.Port, []servers.ProvisionedConfigAdapter, *servers.ProvisionedSteamCMD) (servers.Record, error) {
 	return servers.Record{}, servers.ErrProvisionedPortConflict
 }
+func (portConflictCreator) NameAvailable(context.Context, string) error { return nil }
 
 type blockingCreator struct {
 	calls   atomic.Int32
@@ -131,7 +155,7 @@ type blockingCreator struct {
 	next    ServerCreator
 }
 
-func (c *blockingCreator) CreateProvisioned(ctx context.Context, server servers.Server, templateID string, variables []servers.ProvisionedVariable, serverPorts []ports.Port, adapters []servers.ProvisionedConfigAdapter) (servers.Record, error) {
+func (c *blockingCreator) CreateProvisioned(ctx context.Context, server servers.Server, templateID string, variables []servers.ProvisionedVariable, serverPorts []ports.Port, adapters []servers.ProvisionedConfigAdapter, steamCMD *servers.ProvisionedSteamCMD) (servers.Record, error) {
 	c.calls.Add(1)
 	select {
 	case c.started <- struct{}{}:
@@ -142,7 +166,10 @@ func (c *blockingCreator) CreateProvisioned(ctx context.Context, server servers.
 	case <-ctx.Done():
 		return servers.Record{}, ctx.Err()
 	}
-	return c.next.CreateProvisioned(ctx, server, templateID, variables, serverPorts, adapters)
+	return c.next.CreateProvisioned(ctx, server, templateID, variables, serverPorts, adapters, steamCMD)
+}
+func (c *blockingCreator) NameAvailable(ctx context.Context, name string) error {
+	return c.next.NameAvailable(ctx, name)
 }
 
 func provisionFixture(t *testing.T) (*sql.DB, string, templates.Template) {
@@ -225,6 +252,55 @@ func TestProvisioningSuccessCreatesNormalServerAfterInstall(t *testing.T) {
 	defer eventsMu.Unlock()
 	if len(events) != 1 || events[0] != "server.provision_complete" {
 		t.Fatalf("events=%#v", events)
+	}
+}
+
+func TestContainerEggProvisioningUsesSandboxInstallerAndPersistsSnapshot(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	template.Installer = templates.InstallerDefinition{Type: templates.InstallerUnsupported}
+	template.Compatibility = templates.Compatibility{Status: templates.Unsupported}
+	template.NativeCompatibility = template.Compatibility
+	template.ContainerCompatibility = templates.Compatibility{Status: templates.Compatible}
+	template.ContainerRuntime = &templates.ContainerEggRuntimePlan{Images: []string{"ghcr.io/example/game:1"}, InstallerImage: "ghcr.io/example/installer:1", InstallerEntrypoint: "/bin/sh", InstallationScript: "echo installing", StartupTemplate: "./server --port {{SERVER_PORT}}", StartupShell: "/bin/sh", ResourceDefaults: templates.ContainerResourceDefaults{MemoryLimitBytes: 64 << 20, CPULimitMillis: 100, PIDsLimit: 32, TempSizeBytes: 1 << 20}}
+	container := &fakeContainerInstaller{}
+	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	service := NewWithOptions(db, &templateSource{template: template}, &fakeInstaller{}, serverService, data, Options{HostOS: "linux", ContainerInstaller: container, ImagePolicy: ImagePolicy{AllowedRegistries: []string{"ghcr.io"}}})
+	defer service.Close()
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Container Game", DirectoryName: "container-game", RuntimeType: RuntimeContainer, Image: "ghcr.io/example/game:1", Values: map[string]string{"SERVER_PORT": "25565"}, ActorUserID: "actor", TenantID: tenants.DefaultTenantID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitTerminal(t, service, job.ID)
+	if job.Status != Completed || job.ServerID == "" || job.RuntimeType != RuntimeContainer || job.SelectedImage != "ghcr.io/example/game:1" {
+		t.Fatalf("job=%#v", job)
+	}
+	if len(container.pulls) != 2 || container.pulls[0] != "ghcr.io/example/game:1" || container.pulls[1] != "ghcr.io/example/installer:1" {
+		t.Fatalf("pulls=%#v", container.pulls)
+	}
+	if container.spec.Script != "echo installing" || container.spec.WorkingDirectory == "" || container.spec.PIDsLimit != 32 {
+		t.Fatalf("installer spec=%#v", container.spec)
+	}
+	record, err := serverService.Get(context.Background(), job.ServerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Server.RuntimeType != servers.RuntimeContainer || record.Server.Container == nil || record.Server.Container.EggSnapshot == nil || record.Server.Container.EggSnapshot.SelectedImage != "ghcr.io/example/game:1" {
+		t.Fatalf("server=%#v", record.Server)
+	}
+	if record.Server.Container.StartupTemplate != "./server --port {{SERVER_PORT}}" {
+		t.Fatalf("container startup=%#v", record.Server.Container)
+	}
+}
+
+func TestContainerConfigReplacementIsFormatSpecific(t *testing.T) {
+	updated, changed, err := replaceContainerKeyValue("# comment\nserver-port=0\n", "server-port", "25565")
+	if err != nil || !changed || updated != "# comment\nserver-port=25565\n" {
+		t.Fatalf("properties result=%q changed=%v err=%v", updated, changed, err)
+	}
+	updated, changed, err = replaceContainerJSON(`{"server":{"port":0}}`, "server.port", "25565")
+	if err != nil || !changed || !strings.Contains(updated, `"port": "25565"`) {
+		t.Fatalf("json result=%q changed=%v err=%v", updated, changed, err)
 	}
 }
 
@@ -468,7 +544,7 @@ func TestRetryRegistrationAcceptsAlreadyCommittedServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	creator := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
-	if _, err = creator.CreateProvisioned(context.Background(), snapshot.Server, snapshot.TemplateID, snapshot.Variables, snapshot.Ports, snapshot.ConfigAdapters); err != nil {
+	if _, err = creator.CreateProvisioned(context.Background(), snapshot.Server, snapshot.TemplateID, snapshot.Variables, snapshot.Ports, snapshot.ConfigAdapters, &snapshot.SteamCMD); err != nil {
 		t.Fatal(err)
 	}
 	service.servers = creator
@@ -1132,6 +1208,274 @@ func TestOfficialSteamProvisioningRejectsUnavailableRequiredAdapter(t *testing.T
 	}
 	if _, err = CheckProvisionable(template, values, "linux"); !errors.Is(err, ErrNotProvisionable) {
 		t.Fatalf("missing adapter accepted: %v", err)
+	}
+}
+
+// TestPortPreflightRejectsConflictWithAnotherGameNodeServerBeforeInstall
+// covers requirement 1: a template port that duplicates a port already
+// owned by another GameNode server must be rejected before SteamCMD runs,
+// without persisting a job or a server row.
+func TestPortPreflightRejectsConflictWithAnotherGameNodeServerBeforeInstall(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	template.Ports = []templates.TemplatePort{{Name: "Game", Protocol: "udp", Variable: "SERVER_PORT"}}
+	installer := &fakeInstaller{createExecutable: true}
+	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	service := NewWithOptions(db, &templateSource{template: template}, installer, serverService, data, Options{HostOS: "linux"})
+	defer service.Close()
+
+	first, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "First", DirectoryName: "first", Values: map[string]string{"SERVER_PORT": "27100", "SERVER_NAME": "One"}, ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first = waitTerminal(t, service, first.ID)
+	if first.Status != Completed {
+		t.Fatalf("first job=%#v", first)
+	}
+	var serverCountBefore, jobCountBefore int
+	db.QueryRow(`SELECT COUNT(*) FROM servers`).Scan(&serverCountBefore)
+	db.QueryRow(`SELECT COUNT(*) FROM provisioning_jobs`).Scan(&jobCountBefore)
+
+	_, err = service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Second", DirectoryName: "second", Values: map[string]string{"SERVER_PORT": "27100", "SERVER_NAME": "Two"}, ActorUserID: "actor"})
+	if !errors.Is(err, ErrPortPreflightFailed) {
+		t.Fatalf("err=%v", err)
+	}
+	if !strings.Contains(err.Error(), "27100/UDP") {
+		t.Fatalf("error does not identify the conflicting port: %v", err)
+	}
+	if installer.calls.Load() != 1 {
+		t.Fatalf("SteamCMD runner invoked %d times; want exactly 1 (only for the first server)", installer.calls.Load())
+	}
+	var serverCountAfter, jobCountAfter int
+	db.QueryRow(`SELECT COUNT(*) FROM servers`).Scan(&serverCountAfter)
+	db.QueryRow(`SELECT COUNT(*) FROM provisioning_jobs`).Scan(&jobCountAfter)
+	if serverCountAfter != serverCountBefore {
+		t.Fatalf("server rows changed: before=%d after=%d", serverCountBefore, serverCountAfter)
+	}
+	if jobCountAfter != jobCountBefore {
+		t.Fatalf("a provisioning job was persisted despite the preflight rejection: before=%d after=%d", jobCountBefore, jobCountAfter)
+	}
+}
+
+// TestPortPreflightRejectsResolvedOffsetPortConflict covers requirement 2,
+// modeled on Project Zomboid's SERVER_PORT + 1 direct-connection port: the
+// primary port can be free while the offset port still collides.
+func TestPortPreflightRejectsResolvedOffsetPortConflict(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	template.Ports = []templates.TemplatePort{
+		{Name: "Game", Protocol: "udp", Variable: "SERVER_PORT"},
+		{Name: "Direct connection", Protocol: "udp", Variable: "SERVER_PORT", Offset: 1},
+	}
+	installer := &fakeInstaller{createExecutable: true}
+	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	service := NewWithOptions(db, &templateSource{template: template}, installer, serverService, data, Options{HostOS: "linux"})
+	defer service.Close()
+
+	// The first server occupies 16261 (primary) and 16262 (offset).
+	first, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "First", DirectoryName: "first", Values: map[string]string{"SERVER_PORT": "16261", "SERVER_NAME": "One"}, ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first = waitTerminal(t, service, first.ID)
+	if first.Status != Completed {
+		t.Fatalf("first job=%#v", first)
+	}
+
+	// The second server's own primary port (16260) is free, but its offset
+	// port (16261) collides with the first server's primary port.
+	_, err = service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Second", DirectoryName: "second", Values: map[string]string{"SERVER_PORT": "16260", "SERVER_NAME": "Two"}, ActorUserID: "actor"})
+	if !errors.Is(err, ErrPortPreflightFailed) {
+		t.Fatalf("err=%v", err)
+	}
+	if !strings.Contains(err.Error(), "16261/UDP") {
+		t.Fatalf("error does not identify the conflicting offset port: %v", err)
+	}
+	if installer.calls.Load() != 1 {
+		t.Fatalf("SteamCMD runner invoked %d times; want exactly 1", installer.calls.Load())
+	}
+}
+
+// TestPortPreflightRejectsExternallyOccupiedOSPortBeforeInstall covers
+// requirement 3: the normal best-effort OS availability probe must prevent
+// provisioning before the installer runs, deterministically, by holding a
+// real listener on the requested port.
+func TestPortPreflightRejectsExternallyOccupiedOSPortBeforeInstall(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	template.Ports = []templates.TemplatePort{{Name: "Game", Protocol: "tcp", Variable: "SERVER_PORT"}}
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	installer := &fakeInstaller{createExecutable: true}
+	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	service := NewWithOptions(db, &templateSource{template: template}, installer, serverService, data, Options{HostOS: "linux"})
+	defer service.Close()
+
+	_, err = service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Blocked", DirectoryName: "blocked", Values: map[string]string{"SERVER_PORT": strconv.Itoa(port), "SERVER_NAME": "Blocked"}, ActorUserID: "actor"})
+	if !errors.Is(err, ErrPortPreflightFailed) {
+		t.Fatalf("err=%v", err)
+	}
+	if installer.calls.Load() != 0 {
+		t.Fatalf("SteamCMD runner invoked %d times; want 0", installer.calls.Load())
+	}
+}
+
+// TestPortPreflightRegistrationRecheckStillRejectsLateConflict covers
+// requirement 5: the preflight is a fail-fast usability check only, never a
+// reservation. A port that becomes occupied by another GameNode server
+// after the initial preflight passed must still be caught by the existing
+// authoritative check inside the final, transactional server registration.
+func TestPortPreflightRegistrationRecheckStillRejectsLateConflict(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	template.Ports = []templates.TemplatePort{{Name: "Game", Protocol: "udp", Variable: "SERVER_PORT"}}
+	wait := make(chan struct{})
+	started := make(chan struct{}, 1)
+	installer := &fakeInstaller{createExecutable: true, wait: wait, started: started}
+	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	service := NewWithOptions(db, &templateSource{template: template}, installer, serverService, data, Options{HostOS: "linux"})
+	defer service.Close()
+
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Racer", DirectoryName: "racer", Values: map[string]string{"SERVER_PORT": "27200", "SERVER_NAME": "Racer"}, ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Preflight already passed (Start returned without error) and
+	// installation is now under way. While it is blocked mid-install,
+	// another GameNode server claims the same port through the ordinary
+	// port registration path - independent of provisioning - simulating the
+	// unavoidable TOCTOU window between preflight and final registration.
+	<-started
+	otherRecord, err := serverService.Create(context.Background(), servers.Server{TenantID: tenants.DefaultTenantID, Name: "Other", CreationMode: servers.CreationCustom, WorkingDirectory: data, Executable: os.Args[0], Arguments: []string{}, EnvironmentVariables: map[string]string{}, StopTimeoutSeconds: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ports.New(db).Add(context.Background(), otherRecord.Server.ID, ports.Port{Protocol: "udp", Port: 27200}); err != nil {
+		t.Fatal(err)
+	}
+	close(installer.wait)
+	job = waitTerminal(t, service, job.ID)
+	if job.Status != Failed || job.FailureCode != "SERVER_RELATED_DATA_FAILED" {
+		t.Fatalf("job=%#v", job)
+	}
+	var serverCount int
+	db.QueryRow(`SELECT COUNT(*) FROM servers WHERE name='Racer'`).Scan(&serverCount)
+	if serverCount != 0 {
+		t.Fatalf("registration recheck did not block the late conflict: server rows=%d", serverCount)
+	}
+}
+
+// TestNamePreflightRejectsDuplicateServerNameBeforeInstall mirrors the port
+// preflight tests above for server names: servers.name is COLLATE NOCASE
+// UNIQUE, so a name already owned by another GameNode server is knowable
+// before SteamCMD runs, and provisioning must fail fast instead of after a
+// completed game install.
+func TestNamePreflightRejectsDuplicateServerNameBeforeInstall(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	installer := &fakeInstaller{createExecutable: true}
+	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	service := NewWithOptions(db, &templateSource{template: template}, installer, serverService, data, Options{HostOS: "linux"})
+	defer service.Close()
+
+	first, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Shared Name", DirectoryName: "first", Values: map[string]string{"SERVER_PORT": "26901", "SERVER_NAME": "One"}, ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first = waitTerminal(t, service, first.ID)
+	if first.Status != Completed {
+		t.Fatalf("first job=%#v", first)
+	}
+	var serverCountBefore, jobCountBefore int
+	db.QueryRow(`SELECT COUNT(*) FROM servers`).Scan(&serverCountBefore)
+	db.QueryRow(`SELECT COUNT(*) FROM provisioning_jobs`).Scan(&jobCountBefore)
+
+	// Same name, different case and different directory/port: only the name
+	// collides.
+	_, err = service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "shared name", DirectoryName: "second", Values: map[string]string{"SERVER_PORT": "26902", "SERVER_NAME": "Two"}, ActorUserID: "actor"})
+	if !errors.Is(err, ErrNamePreflightFailed) {
+		t.Fatalf("err=%v", err)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "constraint") {
+		t.Fatalf("preflight error leaked raw SQL text: %v", err)
+	}
+	if installer.calls.Load() != 1 {
+		t.Fatalf("SteamCMD runner invoked %d times; want exactly 1 (only for the first server)", installer.calls.Load())
+	}
+	var serverCountAfter, jobCountAfter int
+	db.QueryRow(`SELECT COUNT(*) FROM servers`).Scan(&serverCountAfter)
+	db.QueryRow(`SELECT COUNT(*) FROM provisioning_jobs`).Scan(&jobCountAfter)
+	if serverCountAfter != serverCountBefore {
+		t.Fatalf("server rows changed: before=%d after=%d", serverCountBefore, serverCountAfter)
+	}
+	if jobCountAfter != jobCountBefore {
+		t.Fatalf("a provisioning job was persisted despite the preflight rejection: before=%d after=%d", jobCountBefore, jobCountAfter)
+	}
+}
+
+// TestNamePreflightAllowsFreeName covers the regular case: a name that is
+// not taken continues to provision successfully, unaffected by the new
+// preflight.
+func TestNamePreflightAllowsFreeName(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	installer := &fakeInstaller{createExecutable: true}
+	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	service := NewWithOptions(db, &templateSource{template: template}, installer, serverService, data, Options{HostOS: "linux"})
+	defer service.Close()
+
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Free Name", DirectoryName: "free-name", Values: map[string]string{"SERVER_PORT": "26903", "SERVER_NAME": "Free"}, ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitTerminal(t, service, job.ID)
+	if job.Status != Completed || job.ServerID == "" {
+		t.Fatalf("job=%#v", job)
+	}
+}
+
+// TestNamePreflightRegistrationRecheckStillRejectsLateConflict covers the
+// name equivalent of the port TOCTOU requirement: the preflight is a
+// fail-fast usability check only, never a reservation. A name claimed by
+// another GameNode server after the initial preflight passed must still be
+// caught by the existing authoritative check inside the final, transactional
+// server registration.
+func TestNamePreflightRegistrationRecheckStillRejectsLateConflict(t *testing.T) {
+	db, data, template := provisionFixture(t)
+	defer db.Close()
+	wait := make(chan struct{})
+	started := make(chan struct{}, 1)
+	installer := &fakeInstaller{createExecutable: true, wait: wait, started: started}
+	serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+	service := NewWithOptions(db, &templateSource{template: template}, installer, serverService, data, Options{HostOS: "linux"})
+	defer service.Close()
+
+	job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Racer Name", DirectoryName: "racer-name", Values: map[string]string{"SERVER_PORT": "26904", "SERVER_NAME": "Racer"}, ActorUserID: "actor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Preflight already passed (Start returned without error) and
+	// installation is now under way. While it is blocked mid-install,
+	// another GameNode server claims the same name through the ordinary
+	// server creation path - independent of provisioning - simulating the
+	// unavoidable TOCTOU window between preflight and final registration.
+	<-started
+	if _, err = serverService.Create(context.Background(), servers.Server{TenantID: tenants.DefaultTenantID, Name: "racer name", CreationMode: servers.CreationCustom, WorkingDirectory: data, Executable: os.Args[0], Arguments: []string{}, EnvironmentVariables: map[string]string{}, StopTimeoutSeconds: 1}); err != nil {
+		t.Fatal(err)
+	}
+	close(installer.wait)
+	job = waitTerminal(t, service, job.ID)
+	if job.Status != Failed || job.FailureCode != "SERVER_RELATED_DATA_FAILED" {
+		t.Fatalf("job=%#v", job)
+	}
+	var serverCount int
+	db.QueryRow(`SELECT COUNT(*) FROM servers WHERE tenant_id=? AND creation_mode=?`, tenants.DefaultTenantID, servers.CreationTemplate).Scan(&serverCount)
+	if serverCount != 0 {
+		t.Fatalf("registration recheck did not block the late conflict: template-created server rows=%d", serverCount)
 	}
 }
 

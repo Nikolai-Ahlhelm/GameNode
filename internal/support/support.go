@@ -63,6 +63,29 @@ type serverSummary struct {
 	RestartCount       int    `json:"restart_count"`
 }
 
+// supportSettings is deliberately narrower than settings.Values. Support
+// bundles have an explicit data whitelist; adding a new persisted setting
+// must not silently expand the bundle before it is reviewed.
+type supportSettings struct {
+	Monitoring            settings.Monitoring `json:"monitoring"`
+	Logging               settings.Logging    `json:"logging"`
+	Security              settings.Security   `json:"security"`
+	Branding              settings.Branding   `json:"branding"`
+	RestartRequired       bool                `json:"restart_required"`
+	RestartRequiredFields []string            `json:"restart_required_fields"`
+}
+
+func sanitizeSettings(values settings.Values) supportSettings {
+	return supportSettings{
+		Monitoring:            values.Monitoring,
+		Logging:               values.Logging,
+		Security:              values.Security,
+		Branding:              values.Branding,
+		RestartRequired:       values.RestartRequired,
+		RestartRequiredFields: append([]string(nil), values.RestartRequiredFields...),
+	}
+}
+
 func (s *Service) Generate(ctx context.Context, w io.Writer, _ Scope) error {
 	w = &limitWriter{w: w, remaining: MaxBundleBytes}
 	diagnostic := s.diagnostics.Get(ctx)
@@ -93,7 +116,7 @@ func (s *Service) Generate(ctx context.Context, w io.Writer, _ Scope) error {
 	entries := []struct {
 		name  string
 		value any
-	}{{"manifest.json", manifest{1, time.Now().UTC(), "zip", warnings}}, {"diagnostics.json", diagnostic}, {"settings.json", values}, {"audit-recent.json", events}, {"servers.json", summaries}}
+	}{{"manifest.json", manifest{1, time.Now().UTC(), "zip", warnings}}, {"diagnostics.json", diagnostic}, {"settings.json", sanitizeSettings(values)}, {"audit-recent.json", events}, {"servers.json", summaries}}
 	for _, e := range entries {
 		f, err := z.Create(e.name)
 		if err != nil {

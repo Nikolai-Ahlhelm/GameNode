@@ -32,7 +32,9 @@ The consolidated 6D.2 audit surface is Auth, server and port mutations, file mut
 
 Dashboard aggregation is read-only: the API filters visible servers by RBAC before passing existing monitoring snapshots and registered ports to `internal/dashboard`; audit recents are included only with global `Audit.View`.
 
-`internal/settings` is a transport-independent typed settings service backed by SQLite. Its whitelist covers instance name/subtitle/favicon, monitoring interval/history, logging level, and bounded password minimum/maximum lengths. Favicon bytes are stored separately from the settings response and support bundle; only a boolean presence flag is exposed there. Compiled defaults are overlaid by YAML startup configuration where applicable, then by valid persisted SQLite overrides; unknown database keys are ignored while invalid known persisted values fail the settings load rather than being silently accepted. The API supplies global-only Settings.View/Settings.Manage authorization and records one best-effort `settings.update` event after each mutation. Monitoring construction still consumes its options at process startup and is marked restart-required; branding, logging, and password-policy changes are read live and apply immediately.
+`internal/settings` is a transport-independent typed settings service backed by SQLite. Its whitelist covers instance name/subtitle/favicon, monitoring interval/history, logging level, a fixed set of named logging-category enable/disable switches (`logging.categories.{http,database,runtime,auth,filesystem,provisioning,steamcmd,templates,general}`, each a plain `bool` field - not an arbitrary map), a `logging.detailed_errors` flag, and bounded password minimum/maximum lengths. Favicon bytes are stored separately from the settings response and support bundle; only a boolean presence flag is exposed there. Compiled defaults are overlaid by YAML startup configuration where applicable, then by valid persisted SQLite overrides; unknown database keys are ignored while invalid known persisted values fail the settings load rather than being silently accepted, and a request body naming an unrecognized field (including inside the nested `logging.categories` object) is rejected outright by the existing `DisallowUnknownFields` decoder - the whitelist is never widened by what a client sends. The API supplies global-only Settings.View/Settings.Manage authorization and records one best-effort `settings.update` event after each mutation. Monitoring construction still consumes its options at process startup and is marked restart-required; branding, logging (level, categories, detailed-error logging), and password-policy changes are read live and apply immediately via `settings.Service.SetOnUpdate`, which `cmd/gamenode/main.go` uses to re-sync `internal/logging.Manager`'s level, category set, and detailed-errors flag on every settings change.
+
+`internal/logging` is the single structured logger composition: a `debug`/`info`/`warn`/`error` level (existing), plus a lightweight, fixed set of log categories layered on top via a `category` attribute (`logging.WithCategory` for a whole subsystem's logger, or an inline attribute per call site) and a live enable/disable map on `logging.Manager`. Category filtering only ever mutes `info`-and-below entries - `warn`/`error` records are always recorded regardless of category state, so muting `http` (for example) can quiet routine access logging but can never hide a genuine 5xx. A parallel, independent `underlying_error` structured field (`logging.ErrorDetail`) lets a call site attach a trusted internal error (for example a raw SQLite error) unconditionally; the log handler strips that specific field before it reaches the log file, in-memory buffer, or console unless `Manager.DetailedErrors()` is enabled, so no caller can bypass the setting. This composition intentionally stays inside `internal/logging`/`internal/settings`; it is not a new logging framework, and business/domain packages depend only on the standard `log/slog` interface they already used, never on the HTTP layer, to log.
 
 `internal/diagnostics` is a transport-independent read-only summary service. It reads safe Go runtime/build information, process uptime, OS/architecture, SQLite migration state, and existing monitoring/settings values. Release builds inject the version tag, commit SHA, and build time through linker flags; these safe values are exposed in the application summary. The API enforces global-only `Settings.View`; Diagnostics uses no HTTP dependency, shell commands, environment dump, path disclosure, or network enumeration.
 
@@ -40,7 +42,7 @@ Dashboard aggregation is read-only: the API filters visible servers by RBAC befo
 
 The port transport routes call `ports.Service`, which validates assignments, checks registry collisions, and performs best-effort temporary OS availability probes. `servers.Service.start` performs port preflight after lifecycle validation but before state mutation, process-instance/console creation, and `Runtime.Start`. Manual restart finalizes the old process before normal start/preflight; auto-restart follows finalizer, delay, and that same start path. Runtime, ConsoleManager, and HTTP transport do not implement collision logic themselves.
 
-v0.1 provides server-root-scoped directory listing, bounded text reads, safe create/edit/move/delete operations, streaming upload/download transport through `internal/filesystem`, and a Files tab with a bounded Monaco text editor. Filesystem sandboxing stays independent from RBAC: RBAC authorizes an action while `internal/filesystem` validates every path. Archive browsing, cluster operation, and Docker remain out of scope.
+v0.1 provides server-root-scoped directory listing, bounded text reads, safe create/edit/move/delete operations, streaming upload/download transport through `internal/filesystem`, and a Files tab with a bounded Monaco text editor. Filesystem sandboxing stays independent from RBAC: RBAC authorizes an action while `internal/filesystem` validates every path. Archive browsing, cluster operation, and Remote Nodes remain out of scope; the v0.3/v0.4 Docker Engine boundary is documented below.
 # Template import architecture
 
 The normalized Template contract is declarative data, never executable code.
@@ -59,11 +61,11 @@ Egg JSON -> structural validation -> compatibility analysis
          -> GameNode Template -> native installer/launch plans
 ```
 
-`internal/templates` is transport-independent. Its `Template` owns provenance metadata, an installer definition, an optional structured launch definition, typed variables, and deterministic compatibility findings. The SQLite store persists the normalized root plus ordered variable and finding rows. Only a SHA-256 provenance hash is retained from the original input; raw Egg JSON and install scripts are not the runtime source of truth and are not persisted.
+`internal/templates` is transport-independent. Its `Template` owns provenance metadata, an installer definition, an optional structured launch definition, typed variables, separate Native/Container compatibility findings, and a normalized Container Egg plan when available. The SQLite store persists the normalized root plus ordered variable and finding rows. Only a SHA-256 provenance hash is retained from the original input; raw Egg JSON is not the runtime source of truth and is not persisted.
 
 The installer definition supports a detected SteamCMD plan (`app_id`, `validate`, `login_mode`, `platform`, beta branch/password variable references, and semantic `server_root`). Container paths such as `/mnt/server` and `/home/container` collapse to `server_root` semantics and never become host paths.
 
-The launch analyzer tokenizes only a single direct process into `Executable` plus `Arguments[]`. A safe prefix before a shell operator may be retained with a partial-compatibility finding; the remaining shell tail is discarded. Runtime code remains independent of Eggs and continues to use the existing native server model.
+The launch analyzer tokenizes only a single direct Native process into `Executable` plus `Arguments[]`. A safe prefix before a shell operator may be retained with a partial-compatibility finding; the remaining shell tail is discarded and reported. Container analysis separately accepts only a bounded declared startup template, shell allowlist, image refs, and compiled config operations. Runtime code remains independent of Egg formats and uses the ordinary server model for both runtime types.
 
 # Native SteamCMD provisioning architecture
 
@@ -72,17 +74,23 @@ The launch analyzer tokenizes only a single direct process into `Executable` plu
 `internal/provisioning` coordinates a short persisted job record and in-memory execution state:
 
 ```
-validate template/request -> reserve <data>/servers/<directory>
+validate template/request -> validate variables -> resolve ports
+  -> port preflight -> reserve <data>/servers/<directory>
   -> ensure managed SteamCMD -> install with structured arguments
-  -> expand direct launch fields -> transactionally create server + variable metadata
+  -> expand direct launch fields -> final port recheck + transactionally
+     create server + variable metadata
   -> release reservation and finalize exactly once
 ```
+
+Requested ports are resolved from validated template variables before anything is reserved or downloaded, and immediately checked with `internal/ports`' authoritative collision/availability logic (the same logic `Ports.Add`/`Update`/`Check` use). A known conflict - another GameNode server already owning the protocol/port, or the OS best-effort probe reporting it in use - fails the provisioning request synchronously: no job row, no reserved target directory, and no SteamCMD invocation. This is a fail-fast usability check only, not a reservation, since GameNode never holds the OS sockets open between checks; the final server registration inside `CreateProvisioned`'s transaction re-runs the same collision check and remains the authoritative gate against the unavoidable TOCTOU window between preflight and registration.
+
+The requested server name gets the identical treatment: `servers.name` is `COLLATE NOCASE UNIQUE`, so a name already owned by another GameNode server is just as knowable up front. `internal/servers.Service.NameAvailable` (backed by `Store.NameAvailable`, the same case-insensitive check `Store.Create` and `Store.CreateProvisioned` use) runs right alongside the port preflight, before any target reservation or SteamCMD download. It is likewise a usability check only; `CreateProvisioned`'s transaction re-checks the name immediately before its insert and remains authoritative for the same TOCTOU window.
 
 Actual variable values live only in the existing server environment record; `server_template_variables` retains template ID, source, version, key, and sensitivity metadata. A normal server row is inserted only after installation and final launch validation. Filesystem writes cannot participate in the SQLite transaction, so a failed final database insert can leave installed files; the job reports this explicitly and GameNode never performs unowned recursive cleanup.
 
 Jobs persist safe phase, actor/template identity, directory name, result, and server ID, but not raw output, values, credentials, or an absolute host path. Active jobs are marked failed/interrupted during startup; v0.2 intentionally has no resume engine. In-memory cancellation terminates the SteamCMD process and gates final server creation. A per-target reservation allows different roots in parallel, while the SteamCMD manager serializes first bootstrap/update access.
 
-Provisionability is narrower than general template compatibility: a partially compatible Egg may proceed only when its native SteamCMD plan, anonymous authentication, current-host launch, variables, and direct launch definition are sufficient. Unsupported templates, beta passwords, credentialed login, absent host launch definitions, and arbitrary flags are rejected before execution.
+Provisionability is narrower than general template compatibility: Native may proceed only when its SteamCMD plan, anonymous authentication, current-host launch, variables, and direct launch definition are sufficient. Container may proceed only after explicit runtime selection, image policy/Engine checks, a normalized installer/startup plan, and bounded resources are valid. Unsupported templates, beta passwords, credentialed login, absent host launch definitions, arbitrary flags, untrusted image refs, and unsupported required config semantics are rejected before execution.
 
 Compatibility is `compatible`, `partially_compatible`, or `unsupported`. Findings contain stable severity, component, code, and summary fields. Warnings yield partial compatibility and errors yield unsupported status, making the result deterministic and suitable for API/UI rendering and tests.
 
@@ -95,6 +103,24 @@ The NeoForge Official template uses a named resolver rather than a version-speci
 Official SteamCMD templates use the same template and provisioning services. `platform_launches.windows` and `.linux` are explicit; no executable is inferred from an Egg or another platform. The selected executable and optional working directory are resolved beneath the managed server root, symlinks are evaluated, and the expected executable must be a regular file after installation. Declared ports are resolved from validated integer variables and inserted with the server and template provenance in one database transaction. Existing provisioned servers retain their concrete executable, arguments, ports, stop settings, and source/version snapshot when a catalog template changes.
 
 Project Zomboid demonstrates a script-backed upstream distribution without script execution. The Windows Steam depot exposes `StartServer64.bat` plus `ProjectZomboid64.json`; the Official template translates the reviewed launcher data into the bundled `jre64/bin/java.exe` and a fixed argument slice. Its Windows Java classpath is one argv value containing relative entries separated by `;`. Validation permits that separator only immediately after `-cp`/`-classpath`, rejects absolute/traversal entries, and never parses it as command syntax. `-cachedir=.` keeps generated configuration, saves, logs, and first-boot state in the managed server root.
+
+# Manual SteamCMD server updates architecture (v0.2.1)
+
+`internal/serverupdates` is a small, transport-independent domain package modeled on `internal/provisioning`'s job/store/service shape, but deliberately scoped down: it never resolves a template, never touches ports or configuration adapters, and never creates a server row. It reuses `internal/steamcmd.Manager.Install` unchanged - re-running the same structured `+force_install_dir <root> +login anonymous +app_update <app_id> [validate] +quit` invocation against an existing server's root is exactly SteamCMD's native update behavior, so no second SteamCMD implementation or argv builder exists.
+
+The trusted inputs an update needs - Steam App ID, login mode, default validate behavior, beta branch, and template provenance - are captured exactly once, in the same transaction as the server row, in `server_steamcmd_provisioning` (`migrations/023_server_update_metadata.sql`, `servers.ProvisionedSteamCMD`). This is the sole source of truth at update time: the live Official catalog is never consulted to recover or reconstruct this information, so an update remains possible when the catalog is offline, and a server whose template has since published a newer version is never silently migrated. A server with no such row - custom/adopted servers, non-SteamCMD templates, or a server provisioned before this metadata existed - is reported ineligible rather than guessed from directory contents.
+
+```
+check eligibility (persisted metadata + server state)
+  -> reserve the server (servers.Service.BeginUpdate)
+  -> re-verify stopped -> run SteamCMD with the trusted plan
+  -> validate the persisted launch executable still exists safely
+  -> release the reservation and finalize exactly once
+```
+
+`servers.Service` gained a `BeginUpdate`/release reservation (mirroring its existing deletions/restarts `sync.Map` idioms) that `Start`, `start` (also used by `Restart`), and `Delete` all check, so a manual update can never race a lifecycle action against the same server's files - without a broad global lock; independent servers/roots remain independently updateable. Post-update validation reuses `Server.ResolvedExecutable`/`inside`'s existing sandbox rules through `servers.Service.VerifyLaunchExecutablePresent` rather than a second symlink/traversal implementation.
+
+Jobs persist safe status/phase, actor identity, and the trusted App ID/template provenance in `server_update_jobs`/`server_update_job_events` - never raw SteamCMD output, command lines, secrets, or an absolute host path. Live SteamCMD stdout/stderr is exposed through `Service.Get`'s `InstallerOutput` field for operator visibility (approximate progress, not a percentage), but it lives only in an in-memory, per-job bounded buffer (same caps as provisioning's) that is never written to the database and is empty again after a GameNode restart. Cancellation stops the in-flight SteamCMD process through the existing context-cancellation path and finalizes exactly once; it cannot roll back files SteamCMD already changed. Active jobs are marked failed/interrupted during startup, matching provisioning's conservative restart philosophy - GameNode never resumes SteamCMD or auto-starts the server after an interruption. Updating the Steam depot never touches `servers`, `server_config_adapters`, `server_config_values`, or `server_ports`: the server's pinned template version, executable, arguments, environment, ports, stop behavior, and configuration adapter snapshots are unaffected. Template migration - re-resolving launch/ports/adapters from a newer catalog template - is an explicitly separate, unimplemented workflow.
 
 # Versioned game configuration adapters
 
@@ -220,3 +246,52 @@ runtime or the Container runtime. The latter speaks only to Docker's Engine
 API and retains the host-side server root for the Files API. It uses verified
 ownership labels/token/generation, ConsoleManager attach, typed limits, and
 registered host-to-container port mappings; it is not a separate manager.
+
+# Container-backed Egg runtime (v0.4)
+
+The v0.4 path extends the existing provisioning job and server model rather than
+adding an Egg runtime. The flow is:
+
+```text
+analyze Egg -> separate Native/Container compatibility
+  -> explicit Container selection + image policy
+  -> Pull selected game/installer images
+  -> bounded one-shot installer container
+  -> validate persistent root -> create ordinary container server
+```
+
+The installer container receives only the validated tenant server root at the fixed
+`/home/container` mount and a normalized environment containing declared variables.
+Its shell entrypoint, script, memory/CPU/PIDs/tmpfs, timeout, output and ownership
+labels are constructed by compiled GameNode code. Docker Engine API is the only
+control boundary; the host process never invokes Docker CLI or a host shell. The
+installer is removed exactly once after completion or cancellation, while the
+persistent root is never recursively removed as automatic recovery.
+
+The registered `servers.Server` has `runtime_type: container` and retains a closed
+`ContainerConfig` plus an immutable `EggRuntimeSnapshot`: provenance/hash/version,
+selected image/digest, startup template/shell, variable sensitivity, host/container
+ports, resource limits, and compiled config operations. Startup expansion is done
+immediately before `Runtime.Start` from declared values and fixed `SERVER_ROOT`; no
+host environment or live catalog is consulted. Existing rows remain pinned when a
+template/catalog version changes. `files_may_remain` and the existing owner/admin
+registration-recovery flow cover installation failures without widening cleanup or
+creating a second job system.
+# Local scheduled restart architecture
+
+`internal/scheduler` is a deliberately narrow local time-based component. A
+`server_restart_schedules` row stores one daily or weekly recurrence, a
+controlled `HH:MM` wall-clock time, an IANA timezone, and enabled state;
+multiple rows may belong to one server. On startup the scheduler loads enabled
+rows, calculates the next strictly-future occurrence, and skips missed times.
+When a timer fires it re-reads the row and then calls only
+`servers.Service.Restart`; it never calls Native, Container, Docker, Egg, or
+OS process APIs. The existing per-server lifecycle lock and state rules decide
+whether the server is eligible. Schedule updates replace timers, disabling and
+deleting cancel them, and deletion of a server cascades the rows.
+
+DST behavior is deterministic: nonexistent local times are skipped and the
+in-process occurrence guard prevents a repeated fall-back wall-clock time from
+executing twice. Scheduled restarts carry `origin=scheduled` in the existing
+`server.restart` audit event. This is not a generic cron or job scheduler and
+has no remote-node or cluster placement behavior.

@@ -1624,7 +1624,7 @@ The initial v0.2 template-import foundation is implemented. Pelican/Pterodactyl 
 
 The follow-up native provisioning milestone is also implemented: a fixed-source managed SteamCMD installation, safe archive extraction, structured anonymous app installation, persisted asynchronous jobs with cancellation/restart interruption handling, per-server template values and sensitivity metadata, provisionability/platform checks, transactional normal-server creation, API/RBAC/audit coverage, and a Create Server wizard with progress/failure states.
 
-Still deferred are automatic/update-on-start lifecycle integration, credentialed Steam login and Steam Guard, dependable port suggestions where Eggs do not provide a normalized source, and encrypted-at-rest environment secrets. Docker/Podman runtimes, generic Egg shell installers, URL/repository synchronization, marketplace functionality, and generic shell startup remain out of scope.
+Still deferred are automatic/update-on-start lifecycle integration, credentialed Steam login and Steam Guard, dependable port suggestions where Eggs do not provide a normalized source, and encrypted-at-rest environment secrets. The v0.3 Docker Container runtime and v0.4 controlled Egg container execution are implemented; Remote Nodes, generic scheduling, URL/repository synchronization, marketplace functionality, and generic host shell startup remain out of scope. Typed local daily/weekly server restart schedules are implemented separately and never schedule remote or cluster work.
 
 # v0.2 — Official Remote Game Library status
 
@@ -1641,10 +1641,55 @@ The Official schema now supports exact platform launch maps, optional safe relat
 Official product data is grouped per game. Templates reference same-directory adapter definitions fetched and cached through the fixed catalog source. Compiled formats now include bounded `xml-properties` and strict, sectionless `ini-key-values`. Project Zomboid template `1.1.0` persists its adapter at provisioning but waits for the first game start to generate `Server/gamenode.ini`; the UI reports this pending state and never invents a partial upstream file. Updates preserve unknown keys, comments, ordering, BOM, and line endings. The Configuration tab validates typed edits, masks secrets, keeps a last-file backup, writes atomically, requires `Server.Edit` plus CSRF, records redacted audit metadata, and never restarts a server automatically. Lua configuration remains outside this milestone.
 
 Automatic NeoForge/Minecraft download, version catalogs, EULA mutation, mod/plugin management, generic script execution, and child-process handoff remain deferred. Real start/help/stop acceptance requires a compatible Java installation on the test host.
+# v0.2.1 — SteamCMD Server Updates status
+
+This is a small, intermediate release, not a new numbered milestone. Manual, operator-triggered SteamCMD updates are now implemented for already-provisioned SteamCMD-managed servers: `internal/serverupdates` reuses `internal/steamcmd.Manager.Install` (the same structured, argv-based `+force_install_dir`/`+login anonymous`/`+app_update`/`+quit` invocation used by initial provisioning) against an existing server's persisted managed root, gated by a new minimal trusted metadata snapshot (`server_steamcmd_provisioning`, migration `023_server_update_metadata.sql`) captured once at provisioning time. The update requires the server to already be stopped, runs as a persisted, cancellable, bounded job (`server_update_jobs`/`server_update_job_events`), and validates the persisted launch executable afterward through `servers.Service.VerifyLaunchExecutablePresent`. It never re-resolves the template, never touches ports/configuration adapters/server identity, and never migrates a server to a newer catalog template version. A new independent `Server.Update` permission (not inherited from `Server.Edit`, `Server.Start`, or `Templates.Manage`) gates `GET/POST /api/v1/servers/{id}/update` and `GET/POST /api/v1/server-update-jobs/{id}[/cancel]`. Servers provisioned before this metadata existed, or provisioned outside the SteamCMD path, are reported ineligible rather than guessed.
+
+Automatic updates, update-on-start, scheduled/periodic updates, and template migration remain explicitly out of scope and are not implemented by this release.
+
+# Local Scheduled Server Restarts
+
+GameNode supports a deliberately narrow local scheduling feature for recurring
+server restarts. Each persisted schedule is daily or weekly, stores an IANA
+timezone and a controlled `HH:MM` wall-clock time, and may be enabled or
+disabled independently. Multiple schedules may be attached to one server.
+The scheduler loads enabled rows at startup, skips missed occurrences, and
+re-reads the row before triggering. Execution always delegates to the normal
+`servers.Service.Restart` lifecycle, so Native, Container, and Egg-backed
+Container servers share the same behavior. There is no generic cron payload,
+scheduled command, update, image pull, provisioning job, Remote Node schedule,
+or cluster placement.
+
 # v0.3 — Container Runtime
 
 v0.3 adds a Linux-first Docker Engine API runtime alongside Native servers.
 It uses typed images, explicit Pull, typed CPU/RAM limits, host-to-container
 ports, ConsoleManager attach, and verified server/generation/token ownership.
-Native remains first-class. v0.4 is container-backed Egg execution, v0.5 Remote
-Nodes, and v0.6 scheduling; none are implemented by this milestone.
+Native remains first-class. The v0.4 container-backed Egg execution milestone below
+extends this runtime without creating a second lifecycle authority.
+
+# v0.4 — Container-backed Egg Runtime
+
+v0.4 is implemented. Conservative Pelican/Pterodactyl imports now retain separate
+Native and Container compatibility paths. A user must explicitly select Container
+provisioning; the node validates declared image references against the administrator
+registry allowlist, explicitly pulls the selected game and installer images, and
+persists the selected image/digest when the Engine exposes one. Egg installation runs
+only in a short-lived unprivileged container with the fixed `/home/container` server
+root mount, bounded CPU/memory/PIDs/tmpfs, timeout/cancellation, output redaction,
+and guaranteed cleanup. No Docker CLI, host shell, daemon socket mount, host network,
+host PID/IPC, devices, capabilities, arbitrary mounts, registry credentials, or raw
+Egg JSON is accepted.
+
+Startup expansion is limited to declared template variables and `SERVER_ROOT`; the
+normalized snapshot pins provenance, image/digest, startup, sensitivity, ports,
+resources, and safe configuration operations. Properties/key-value/JSON configuration
+semantics use compiled bounded operations only; unsupported required semantics are
+reported as findings. The existing persisted provisioning jobs, RBAC/CSRF/audit
+boundaries, `files_may_remain`, and owner/admin registration recovery flow are reused.
+The frontend exposes separate compatibility findings, runtime/image/resource
+selection, bounded installer progress, and container port mappings.
+
+Remote Nodes, generic scheduling, automatic updates, and template migration remain v0.5+
+scope and were not implemented here; the narrow local restart schedule is
+documented above and does not change the Remote Node boundary.

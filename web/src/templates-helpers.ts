@@ -1,7 +1,7 @@
-export type CompatibilityStatus = 'compatible' | 'partially_compatible' | 'unsupported';
+export type CompatibilityStatus = 'compatible' | 'partially_compatible' | 'unsupported' | 'blocked_by_image_policy';
 
 export function compatibilityLabel(status: CompatibilityStatus): string {
-  return status === 'compatible' ? 'Compatible' : status === 'partially_compatible' ? 'Partially compatible' : 'Unsupported';
+  return status === 'compatible' ? 'Compatible' : status === 'partially_compatible' ? 'Partially compatible' : status === 'blocked_by_image_policy' ? 'Blocked by image policy' : 'Unsupported';
 }
 
 export function compatibilityTone(status: CompatibilityStatus): 'success' | 'warning' | 'danger' {

@@ -110,8 +110,14 @@ SteamCMD unit tests use mocked downloaders/runners and in-memory archives. Provi
 Run race-sensitive packages explicitly:
 
 ```sh
-go test -race ./internal/steamcmd ./internal/provisioning
+go test -race ./internal/steamcmd ./internal/provisioning ./internal/servers ./internal/serverupdates
 ```
+
+## Manual SteamCMD server update development (v0.2.1)
+
+`internal/serverupdates` tests reuse the `internal/provisioning` conventions (real SQLite via `internal/database`, hand-written fake `Installer` with cancellation channels) but need no `TemplateSource`/ports/config-adapter fixtures. Cover at minimum: successful update, validate on/off, the trusted App ID/plan reaching the installer unchanged, cancellation mid-run, SteamCMD failure, post-update missing-executable failure, running/starting/stopping-server rejection, concurrent same-server rejection, independent-server concurrency, interrupted-job recovery, and an ineligible (no persisted metadata) server. `internal/servers` additionally covers the `BeginUpdate`/release reservation and its Start/Restart/Delete guards, plus `VerifyLaunchExecutablePresent`'s sandbox checks. `internal/api` tests mirror `provisioning_test.go`'s auth/RBAC/CSRF/ownership/audit shape for `/servers/{id}/update` and `/server-update-jobs/{id}`.
+
+When adding or reviewing this feature, verify a template version bump on the Official catalog never changes an existing server's update behavior: a server's `server_steamcmd_provisioning` snapshot is immutable once written, so an update always re-installs the App ID pinned at provisioning time regardless of the current catalog.
 
 An opt-in official bootstrap smoke test is available and is skipped by default:
 
@@ -152,7 +158,10 @@ go test ./internal/provisioning -run '^TestSatisfactoryFullDeploymentIntegration
 The acceptance provisions App ID `1690800`, verifies `FactoryServer.exe`, structured port/player arguments, three registered port rows, start stability, terminate behavior, and restart. It does not claim or configure the server through the game API and does not characterize Windows terminate as graceful.
 # Container development
 
-Normal unit tests use a fake Engine and do not require Docker. Real acceptance
-is opt-in and requires a Linux-accessible Docker Engine socket; it should use a
-small public image and explicitly Pull before Start. Docker CLI is not part of
-the product test path.
+Normal unit tests use a fake Engine and fake Container installer and do not require
+Docker. Container Egg tests cover image/startup/config analysis, bounded installer
+specification, fake-engine provisioning, snapshot persistence, cancellation and
+cleanup. Real acceptance is opt-in and requires a Linux-accessible Docker Engine
+socket; it should use a small public image and explicitly Pull before Start. Docker
+CLI is not part of the product test path. Real Egg acceptance must use a disposable
+target and must verify that the host process never receives the Egg shell command.

@@ -27,6 +27,7 @@ func (s *Server) recordIdentityAudit(r *http.Request, actor auth.User, action, r
 		if errors.Is(err, identity.ErrLastActiveAdmin) {
 			in.errorCode, in.errorSummary = "last_active_admin", "last active administrator protection"
 		}
+		in.err = err
 	}
 	s.recordAudit(r, in)
 }

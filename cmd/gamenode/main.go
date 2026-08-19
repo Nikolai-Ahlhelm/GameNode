@@ -15,6 +15,7 @@ import (
 
 	"gamenode"
 	"gamenode/internal/api"
+	"gamenode/internal/audit"
 	"gamenode/internal/auth"
 	"gamenode/internal/config"
 	"gamenode/internal/console"
@@ -26,7 +27,9 @@ import (
 	"gamenode/internal/monitoring"
 	"gamenode/internal/provisioning"
 	"gamenode/internal/runtime"
+	"gamenode/internal/scheduler"
 	"gamenode/internal/servers"
+	"gamenode/internal/serverupdates"
 	"gamenode/internal/settings"
 	"gamenode/internal/steamcmd"
 	"gamenode/internal/templates"
@@ -70,46 +73,61 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("application initialization started", "module", "Application", "version", diagnostics.Version, "platform", goRuntime.GOOS)
-	log.Info("opening database", "module", "Database")
+	log.Info("opening database", "module", "Database", "category", logging.CategoryDatabase)
 	db, err := database.Open(cfg.Database.Path)
 	if err != nil {
-		log.Error("open database failed", "error", err.Error())
+		log.Error("open database failed", "category", logging.CategoryDatabase, "error", err.Error())
 		os.Exit(1)
 	}
 	defer db.Close()
-	log.Info("database opened", "module", "Database")
-	log.Info("checking database migrations", "module", "Database.Migration")
+	log.Info("database opened", "module", "Database", "category", logging.CategoryDatabase)
+	log.Info("checking database migrations", "module", "Database.Migration", "category", logging.CategoryDatabase)
 	backupPath, pendingMigrations, err := database.BackupIfMigrationPending(db, cfg.Database.Path, gamenode.MigrationFiles)
 	if err != nil {
-		log.Error("migration backup failed", "error", err.Error())
+		log.Error("migration backup failed", "category", logging.CategoryDatabase, "error", err.Error())
 		os.Exit(1)
 	}
 	if pendingMigrations && backupPath != "" {
-		log.Info("created database backup before migration", "path", backupPath)
+		log.Info("created database backup before migration", "category", logging.CategoryDatabase, "path", backupPath)
 	}
 	if err = database.Migrate(db, gamenode.MigrationFiles); err != nil {
-		log.Error("migration failed", "error", err.Error())
+		log.Error("migration failed", "category", logging.CategoryDatabase, "error", err.Error())
 		os.Exit(1)
 	}
-	log.Info("database migrations completed", "module", "Database.Migration")
+	log.Info("database migrations completed", "module", "Database.Migration", "category", logging.CategoryDatabase)
 	settingService := settings.New(db, settings.Defaults{MonitoringSampleIntervalSeconds: cfg.Monitoring.SampleIntervalSeconds, MonitoringHistoryLimit: cfg.Monitoring.HistoryLimit, LoggingLevel: cfg.Logging.Level})
 	currentSettings, err := settingService.Get(context.Background())
 	if err != nil {
 		log.Error("load persisted settings failed", "error", err.Error())
 		os.Exit(1)
 	}
-	log.Info("persisted settings loaded", "module", "Settings", "monitoring_interval_seconds", currentSettings.Monitoring.SampleIntervalSeconds, "monitoring_history_limit", currentSettings.Monitoring.HistoryLimit, "logging_level", currentSettings.Logging.Level)
+	log.Info("persisted settings loaded", "module", "Settings", "monitoring_interval_seconds", currentSettings.Monitoring.SampleIntervalSeconds, "monitoring_history_limit", currentSettings.Monitoring.HistoryLimit, "logging_level", currentSettings.Logging.Level, "logging_detailed_errors", currentSettings.Logging.DetailedErrors)
 	if err = logManager.SetLevel(currentSettings.Logging.Level); err != nil {
 		log.Error("invalid persisted logging level", "module", "Settings.Logging", "error", err.Error())
 		os.Exit(1)
 	}
+	if err = logManager.SetCategories(currentSettings.Logging.Categories.AsMap()); err != nil {
+		log.Error("invalid persisted logging categories", "module", "Settings.Logging", "error", err.Error())
+		os.Exit(1)
+	}
+	logManager.SetDetailedErrors(currentSettings.Logging.DetailedErrors)
+	// applyLoggingSettings re-syncs the live logger from the full settings
+	// snapshot on every update, not just when a logging field is reported as
+	// changed - simpler than tracking each field name and just as cheap.
+	applyLoggingSettings := func(values settings.Values) {
+		if setErr := logManager.SetLevel(values.Logging.Level); setErr != nil {
+			log.Error("logging level could not be applied", "module", "Settings.Logging", "error", setErr.Error())
+		}
+		if setErr := logManager.SetCategories(values.Logging.Categories.AsMap()); setErr != nil {
+			log.Error("logging categories could not be applied", "module", "Settings.Logging", "error", setErr.Error())
+		}
+		logManager.SetDetailedErrors(values.Logging.DetailedErrors)
+	}
+	var provisioner *provisioning.Service
 	settingService.SetOnUpdate(func(values settings.Values, changed []string) {
-		for _, field := range changed {
-			if field == "logging.level" {
-				if setErr := logManager.SetLevel(values.Logging.Level); setErr != nil {
-					log.Error("logging level could not be applied", "module", "Settings.Logging", "error", setErr.Error())
-				}
-			}
+		applyLoggingSettings(values)
+		if provisioner != nil {
+			provisioner.SetImagePolicy(provisioning.ImagePolicy{AllowedRegistries: values.Runtime.ContainerImageAllowlist})
 		}
 	})
 	assets, err := fs.Sub(webAssets, "webassets")
@@ -120,15 +138,16 @@ func main() {
 	static := spaHandler(assets)
 	transportTLS := cfg.Server.TLSCert != ""
 	secureCookie := transportTLS || cfg.Server.TrustLocalProxy
-	serverService := servers.NewServiceWithMonitoring(servers.NewStore(db), runtime.NewHybrid(), console.NewManager(), monitoring.Options{Interval: time.Duration(currentSettings.Monitoring.SampleIntervalSeconds) * time.Second, HistoryLimit: currentSettings.Monitoring.HistoryLimit})
-	serverService.SetLogger(log)
+	dockerEngine := runtime.NewDockerEngine()
+	serverService := servers.NewServiceWithMonitoring(servers.NewStore(db), runtime.NewHybridWithEngine(dockerEngine), console.NewManager(), monitoring.Options{Interval: time.Duration(currentSettings.Monitoring.SampleIntervalSeconds) * time.Second, HistoryLimit: currentSettings.Monitoring.HistoryLimit})
+	serverService.SetLogger(logging.WithCategory(log, logging.CategoryRuntime))
 	if err = serverService.Rediscover(context.Background()); err != nil {
 		log.Error("server rediscovery failed", "error", err.Error())
 	}
 	files := filesystem.New(filesystem.Options{MaxUploadBytes: cfg.Filesystem.MaxUploadBytes})
 	diagnosticService := diagnostics.New(db, settingService, diagnostics.MonitoringEffective{SampleIntervalSeconds: currentSettings.Monitoring.SampleIntervalSeconds, HistoryLimit: currentSettings.Monitoring.HistoryLimit}, time.Now().UTC())
 	catalog := templates.NewCatalogManager(templates.NewOfficialHTTPSource(), cfg.Data.Directory, diagnostics.Version)
-	catalog.SetLogger(log)
+	catalog.SetLogger(logging.WithCategory(log, logging.CategoryTemplates))
 	templateService := templates.NewServiceWithCatalog(templates.NewStore(db), catalog)
 	steamPlatform, err := steamcmd.CurrentPlatform(goRuntime.GOOS)
 	if err != nil {
@@ -136,19 +155,36 @@ func main() {
 		os.Exit(1)
 	}
 	steamManager := steamcmd.New(filepath.Join(cfg.Data.Directory, "tools", "steamcmd"), steamPlatform, nil, nil)
-	steamManager.SetLogger(log)
-	provisioner := provisioning.NewWithOptions(db, templateService, steamManager, serverService, cfg.Data.Directory, provisioning.Options{Log: log})
+	steamManager.SetLogger(logging.WithCategory(log, logging.CategorySteamCMD))
+	provisioner = provisioning.NewWithOptions(db, templateService, steamManager, serverService, cfg.Data.Directory, provisioning.Options{Log: logging.WithCategory(log, logging.CategoryProvisioning), ContainerInstaller: runtime.NewContainerInstaller(dockerEngine), ImagePolicy: provisioning.ImagePolicy{AllowedRegistries: currentSettings.Runtime.ContainerImageAllowlist}})
+	// serverupdates reuses the same managed steamManager instance as
+	// provisioning: one bootstrap/download implementation, one SteamCMD
+	// invocation path, for both initial installation and manual updates.
+	serverUpdater := serverupdates.NewWithOptions(db, serverService, steamManager, serverupdates.Options{Log: logging.WithCategory(log, logging.CategoryProvisioning)})
 	gameConfigService := gameconfig.New(db, serverService)
 	// The server service stays the lifecycle authority; it only asks the
 	// configuration service to expand the persisted base launch before start.
 	serverService.SetLaunchResolver(gameConfigService)
 	defer provisioner.Close()
+	defer serverUpdater.Close()
 	if err = provisioner.Initialize(context.Background()); err != nil {
 		log.Error("provisioning recovery failed", "error", err.Error())
 		os.Exit(1)
 	}
-	log.Info("provisioning recovery completed", "module", "Provisioning.Recovery")
-	handler := api.New(auth.New(db), serverService, log, secureCookie, api.Options{TrustLocalProxy: cfg.Server.TrustLocalProxy, Filesystem: files, Settings: settingService, Diagnostics: diagnosticService, Templates: templateService, Provisioning: provisioner, GameConfig: gameConfigService, Logs: logManager, SetupConfig: configFile, SteamCMD: steamManager}).Handler(static)
+	log.Info("provisioning recovery completed", "module", "Provisioning.Recovery", "category", logging.CategoryProvisioning)
+	if err = serverUpdater.Initialize(context.Background()); err != nil {
+		log.Error("server update recovery failed", "error", err.Error())
+		os.Exit(1)
+	}
+	log.Info("server update recovery completed", "module", "ServerUpdates.Recovery", "category", logging.CategoryProvisioning)
+	restartScheduleStore := scheduler.NewStore(db)
+	restartScheduler := scheduler.New(restartScheduleStore, serverService, scheduler.Options{Audit: audit.New(db), Log: logging.WithCategory(log, logging.CategoryGeneral)})
+	if err = restartScheduler.Start(context.Background()); err != nil {
+		log.Error("restart scheduler initialization failed", "module", "RestartScheduler", "error", err.Error())
+		os.Exit(1)
+	}
+	defer restartScheduler.Stop()
+	handler := api.New(auth.New(db), serverService, log, secureCookie, api.Options{TrustLocalProxy: cfg.Server.TrustLocalProxy, Filesystem: files, Settings: settingService, Diagnostics: diagnosticService, Templates: templateService, Provisioning: provisioner, ServerUpdates: serverUpdater, GameConfig: gameConfigService, Logs: logManager, SetupConfig: configFile, SteamCMD: steamManager, RestartSchedules: restartScheduleStore, RestartScheduler: restartScheduler}).Handler(static)
 	server := &http.Server{Addr: cfg.Server.Listen, Handler: handler, ReadHeaderTimeout: 0, ReadTimeout: 15e9, WriteTimeout: 15e9, IdleTimeout: 60e9}
 	log.Info("GameNode starting", "listen", cfg.Server.Listen, "tls", transportTLS, "trust_local_proxy", cfg.Server.TrustLocalProxy)
 	if transportTLS {

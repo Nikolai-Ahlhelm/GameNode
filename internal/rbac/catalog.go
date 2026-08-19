@@ -3,7 +3,7 @@ package rbac
 type Permission struct{ Key, Category, Description string }
 
 var Catalog = []Permission{
-	{"Server.View", "Server", "View servers"}, {"Server.Create", "Server", "Create servers"}, {"Server.Edit", "Server", "Edit servers"}, {"Server.Delete", "Server", "Delete servers"}, {"Server.Start", "Server", "Start servers"}, {"Server.Stop", "Server", "Stop servers"}, {"Server.Restart", "Server", "Restart servers"}, {"Server.Kill", "Server", "Kill servers"},
+	{"Server.View", "Server", "View servers"}, {"Server.Create", "Server", "Create servers"}, {"Server.Edit", "Server", "Edit servers"}, {"Server.Delete", "Server", "Delete servers"}, {"Server.Start", "Server", "Start servers"}, {"Server.Stop", "Server", "Stop servers"}, {"Server.Restart", "Server", "Restart servers"}, {"Server.Kill", "Server", "Kill servers"}, {"Server.Update", "Server", "Manually update installed SteamCMD server files"},
 	{"Console.View", "Console", "View console"}, {"Console.Send", "Console", "Send console input"},
 	{"Files.View", "Files", "View files"}, {"Files.Edit", "Files", "Edit files"}, {"Files.Upload", "Files", "Upload files"}, {"Files.Download", "Files", "Download files"}, {"Files.Delete", "Files", "Delete files"}, {"Files.Rename", "Files", "Rename files"},
 	{"Ports.View", "Ports", "View server ports"}, {"Ports.Manage", "Ports", "Manage server ports"},

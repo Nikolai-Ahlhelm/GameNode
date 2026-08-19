@@ -12,6 +12,7 @@ import (
 
 	"gamenode/internal/audit"
 	"gamenode/internal/auth"
+	"gamenode/internal/logging"
 	"gamenode/internal/provisioning"
 	"gamenode/internal/rbac"
 	"gamenode/internal/tenants"
@@ -24,11 +25,17 @@ type provisionInput struct {
 	// default. It is only ever resolved into a managed storage path through
 	// tenants.TenantServerRoot server-side (see internal/provisioning); a
 	// client can never supply a host path here.
-	TenantID        string            `json:"tenant_id"`
-	ServerName      string            `json:"server_name"`
-	DirectoryName   string            `json:"directory_name"`
-	Variables       map[string]string `json:"variables"`
-	RecoverExisting bool              `json:"recover_existing"`
+	TenantID         string            `json:"tenant_id"`
+	ServerName       string            `json:"server_name"`
+	DirectoryName    string            `json:"directory_name"`
+	Variables        map[string]string `json:"variables"`
+	RecoverExisting  bool              `json:"recover_existing"`
+	RuntimeType      string            `json:"runtime_type"`
+	Image            string            `json:"image"`
+	MemoryLimitBytes int64             `json:"memory_limit_bytes"`
+	CPULimitMillis   int               `json:"cpu_limit_millis"`
+	PIDsLimit        int64             `json:"pids_limit"`
+	TmpfsSizeBytes   int64             `json:"tmpfs_size_bytes"`
 }
 
 func decodeProvisionInput(w http.ResponseWriter, r *http.Request, value *provisionInput) bool {
@@ -97,14 +104,14 @@ func (s *Server) startProvisioning(w http.ResponseWriter, r *http.Request, templ
 		forbidden(w, "permission denied")
 		return
 	}
-	job, err := s.provisioning.Start(r.Context(), provisioning.Request{TemplateID: templateID, ServerName: input.ServerName, DirectoryName: input.DirectoryName, Values: input.Variables, ActorUserID: actor.ID, ActorUsername: actor.Username, RecoverExisting: input.RecoverExisting, TenantID: tenantID})
+	job, err := s.provisioning.Start(r.Context(), provisioning.Request{TemplateID: templateID, ServerName: input.ServerName, DirectoryName: input.DirectoryName, Values: input.Variables, ActorUserID: actor.ID, ActorUsername: actor.Username, RecoverExisting: input.RecoverExisting, TenantID: tenantID, RuntimeType: input.RuntimeType, Image: input.Image, MemoryLimitBytes: input.MemoryLimitBytes, CPULimitMillis: input.CPULimitMillis, PIDsLimit: input.PIDsLimit, TmpfsSizeBytes: input.TmpfsSizeBytes})
 	if err != nil {
-		s.log.With("module", "Provisioning.Start").Warn("provisioning request rejected", "template_id", templateID, "tenant_id", tenantID, "actor_user_id", actor.ID, "failure", provisioningFailure(err))
+		s.log.With("module", "Provisioning.Start", "category", logging.CategoryProvisioning).Warn("provisioning request rejected", "template_id", templateID, "tenant_id", tenantID, "actor_user_id", actor.ID, "failure", provisioningFailure(err))
 		provisioningError(w, err)
 		return
 	}
-	s.log.With("module", "Provisioning.Start").Info("provisioning job created", "job_id", job.ID, "template_id", job.TemplateID, "tenant_id", job.TenantID, "app_id", job.AppID, "actor_user_id", actor.ID)
-	metadata, _ := json.Marshal(map[string]any{"template_id": job.TemplateID, "job_id": job.ID, "installer_type": job.InstallerType, "app_id": job.AppID, "tenant_id": job.TenantID})
+	s.log.With("module", "Provisioning.Start", "category", logging.CategoryProvisioning).Info("provisioning job created", "job_id", job.ID, "template_id", job.TemplateID, "tenant_id", job.TenantID, "app_id", job.AppID, "runtime_type", job.RuntimeType, "actor_user_id", actor.ID)
+	metadata, _ := json.Marshal(map[string]any{"template_id": job.TemplateID, "job_id": job.ID, "installer_type": job.InstallerType, "app_id": job.AppID, "runtime_type": job.RuntimeType, "tenant_id": job.TenantID})
 	s.recordAudit(r, auditInput{action: audit.ServerProvisionStart, resourceType: audit.Server, resourceName: job.ServerName, result: audit.Success, metadata: metadata, actor: &actor})
 	jsonOut(w, http.StatusAccepted, job)
 }
@@ -119,6 +126,16 @@ func provisioningFailure(err error) string {
 		return "recovery_unavailable"
 	case errors.Is(err, provisioning.ErrInvalidTenant):
 		return "invalid_tenant"
+	case errors.Is(err, provisioning.ErrPortPreflightFailed):
+		return "port_conflict"
+	case errors.Is(err, provisioning.ErrNamePreflightFailed):
+		return "name_conflict"
+	case errors.Is(err, provisioning.ErrContainerImagePolicy):
+		return "container_image_policy_blocked"
+	case errors.Is(err, provisioning.ErrContainerImageSelection):
+		return "container_image_not_declared"
+	case errors.Is(err, provisioning.ErrContainerRuntimeUnavailable):
+		return "container_runtime_unavailable"
 	case errors.Is(err, sql.ErrNoRows):
 		return "template_not_found"
 	default:
@@ -219,7 +236,7 @@ func (s *Server) provisioningJobHandler(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) recordProvisioningCompletion(event provisioning.Event) {
-	metadata, _ := json.Marshal(map[string]any{"template_id": event.Job.TemplateID, "job_id": event.Job.ID, "tenant_id": event.Job.TenantID, "installer_type": event.Job.InstallerType, "app_id": event.Job.AppID, "duration_seconds": int64(event.Duration / time.Second), "failure_phase": event.Job.FailurePhase, "failure_code": event.Job.FailureCode, "files_may_remain": event.Job.FilesMayRemain})
+	metadata, _ := json.Marshal(map[string]any{"template_id": event.Job.TemplateID, "job_id": event.Job.ID, "tenant_id": event.Job.TenantID, "installer_type": event.Job.InstallerType, "runtime_type": event.Job.RuntimeType, "selected_image": event.Job.SelectedImage, "selected_image_digest": event.Job.SelectedImageDigest, "app_id": event.Job.AppID, "duration_seconds": int64(event.Duration / time.Second), "failure_phase": event.Job.FailurePhase, "failure_code": event.Job.FailureCode, "files_may_remain": event.Job.FilesMayRemain})
 	var resourceID *string
 	var serverID *string
 	if event.Job.ServerID != "" {
@@ -253,6 +270,23 @@ func provisioningError(w http.ResponseWriter, err error) {
 		errorOut(w, http.StatusConflict, "recovery_unavailable", "the installed server cannot be safely recovered")
 	case errors.Is(err, provisioning.ErrInvalidTenant):
 		errorOut(w, http.StatusBadRequest, "invalid_tenant", "tenant does not exist")
+	case errors.Is(err, provisioning.ErrPortPreflightFailed):
+		// err.Error() is safe to surface: it is built from
+		// ErrPortPreflightFailed's fixed text plus internal/ports' collision
+		// message, which names only the conflicting protocol/port - never
+		// host internals, PIDs, or filesystem paths.
+		errorOut(w, http.StatusConflict, "port_conflict", err.Error())
+	case errors.Is(err, provisioning.ErrNamePreflightFailed):
+		// err.Error() is safe to surface for the same reason: it is
+		// ErrNamePreflightFailed's fixed text plus internal/servers'
+		// ErrDuplicateName, never raw SQL/driver text.
+		errorOut(w, http.StatusConflict, "name_conflict", err.Error())
+	case errors.Is(err, provisioning.ErrContainerImagePolicy):
+		errorOut(w, http.StatusUnprocessableEntity, "container_image_policy_blocked", "the selected Egg image is blocked by the node image policy")
+	case errors.Is(err, provisioning.ErrContainerImageSelection):
+		errorOut(w, http.StatusUnprocessableEntity, "container_image_not_declared", "the selected image is not declared by the Egg")
+	case errors.Is(err, provisioning.ErrContainerRuntimeUnavailable):
+		errorOut(w, http.StatusServiceUnavailable, "container_runtime_unavailable", "the container Egg runtime is unavailable")
 	default:
 		errorOut(w, http.StatusBadRequest, "invalid_provision_request", "provisioning request is invalid")
 	}

@@ -42,3 +42,47 @@ Engine attach feeds the existing ConsoleManager. Image Pull is explicit;
 Start never pulls or updates an image. Availability is queried from the Engine,
 and transient pull state is cleared on GameNode restart. Container memory is
 Engine/cgroup usage, not a claim of native RSS equivalence.
+
+# Container-backed Egg provisioning (v0.4)
+
+Pelican/Pterodactyl Egg imports expose separate Native and Container compatibility.
+Container provisioning is never an implicit fallback: the request must select
+`runtime_type: container`, choose a declared image allowed by the node policy, and
+use an available Docker Engine. GameNode explicitly pulls the selected game image
+and the normalized installer image before installation; an existing server's image
+and optional digest remain pinned.
+
+The Egg installation script runs only in a short-lived unprivileged installer
+container. Its command is a fixed allowlisted shell entrypoint plus `-lc` and the
+bounded normalized script. The only persistent mount is the validated server root at
+`/home/container`. No Docker CLI, host shell, daemon socket, host network/PID/IPC,
+devices, capabilities, arbitrary mounts, or registry credentials are available.
+Memory, CPU, PIDs, tmpfs, output, timeout, cancellation, and cleanup are bounded.
+Installer cleanup removes only the ephemeral container; files written below the
+persistent root are retained and reported through `files_may_remain` on failure.
+
+The registered server stores an immutable normalized Egg snapshot containing
+provenance/hash/version, image/digest, startup template/shell, variable sensitivity,
+host/container ports, resource limits, and compiled configuration operations. At
+start, only declared variables and the fixed `/home/container` `SERVER_ROOT` value
+expand the startup template. The host environment, live catalog, generic regex/eval
+configuration, and arbitrary Engine flags are never consulted.
+# Scheduled restart lifecycle
+
+Scheduled restarts are local configuration, not a second runtime. At startup
+GameNode loads enabled rows from SQLite and registers only the next future
+occurrence. If the process was offline at the configured time, that occurrence
+is skipped. Before firing, the scheduler re-reads the schedule and confirms it
+still exists and is enabled, then calls `servers.Service.Restart(serverID)`.
+That service's existing per-server lock, running-state check, stop method,
+identity checks, finalization, and normal start path remain authoritative. A
+stopped server is therefore not implicitly started; the failed or ineligible
+attempt is logged and audited as a scheduled restart.
+
+Daily and weekly times are interpreted in the schedule's stored IANA timezone.
+Nonexistent local times during spring DST transitions are skipped. Ambiguous
+fall-back times are resolved deterministically and guarded so one occurrence
+cannot execute twice within one GameNode process. Editing a schedule replaces
+its timer immediately; disabling or deleting it cancels the timer. Server
+deletion cascades schedule rows. Shutdown cancels timers and waits for their
+bounded scheduler goroutines without touching a runtime directly.

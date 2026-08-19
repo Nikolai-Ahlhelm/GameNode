@@ -122,7 +122,7 @@ Server create/update payloads accept `auto_restart_enabled`, `auto_restart_max_a
 
 `GET /api/v1/settings` returns the whitelisted application settings and requires the global-only `Settings.View` permission. `PATCH /api/v1/settings` requires global-only `Settings.Manage`, same-origin validation, and `X-CSRF-Token`; the permissions are independent. Server-scoped assignments do not grant either permission.
 
-The typed surface includes `monitoring.sample_interval_seconds` (1–300), `monitoring.history_limit` (1–10,000), `logging.level`, `branding.name` (1–64 characters), `branding.subtitle` (0–128 characters), and the live password policy fields `security.password_minimum_length` (8–128, default 8) and `security.password_maximum_length` (at least the minimum and at most 256, default 256). Branding and password-policy changes apply immediately; existing passwords are not invalidated. PATCH accepts only whitelisted typed fields and rejects unknown fields. IPv4/IPv6, database, TLS, session, filesystem, executable, environment, and arbitrary YAML values are not settings API fields. A successful mutation records one `settings.update` audit event containing only changed field names.
+The typed surface includes `monitoring.sample_interval_seconds` (1–300), `monitoring.history_limit` (1–10,000), `logging.level` (`debug`/`info`/`warn`/`error`), `logging.categories.{http,database,runtime,auth,filesystem,provisioning,steamcmd,templates,general}` (each an independent `bool`, default `true`), `logging.detailed_errors` (`bool`, default `false`), `branding.name` (1–64 characters), `branding.subtitle` (0–128 characters), and the live password policy fields `security.password_minimum_length` (8–128, default 8) and `security.password_maximum_length` (at least the minimum and at most 256, default 256). Branding, logging, and password-policy changes apply immediately; existing passwords are not invalidated. PATCH accepts only whitelisted typed fields and rejects unknown fields, including any unrecognized key inside `logging.categories` - it is a fixed set of named switches, never an arbitrary logger-configuration map. IPv4/IPv6, database, TLS, session, filesystem, executable, environment, and arbitrary YAML values are not settings API fields. A successful mutation records one `settings.update` audit event containing only changed field names - never `logging.detailed_errors`'s effect (the underlying errors it may unlock) itself, since that only ever reaches the local application log (`data/log`), never the audit record, an API response, diagnostics, or a support bundle.
 
 `PUT /api/v1/settings/favicon` and `DELETE /api/v1/settings/favicon` require global `Settings.Manage` and CSRF. Uploads are bounded to 256 KiB and accept validated PNG images up to 512×512 or structurally bounded ICO files; SVG and remote URLs are not accepted. `GET /api/v1/branding/favicon` is public so browsers can load the current icon, returns only the validated stored bytes with `nosniff`, and returns 404 when no custom favicon exists.
 
@@ -160,11 +160,15 @@ Templates are global node resources. `Templates.View` and `Templates.Manage` are
 | `GET` | `/api/v1/templates/{id}` | `Templates.View`; read one normalized template |
 | `DELETE` | `/api/v1/templates/{id}` | `Templates.Manage` + CSRF; delete and audit an imported template; Official/built-in templates return `409` |
 | `GET` | `/api/v1/templates/{id}/provisionability` | `Templates.View` (global) + global `Server.Create`; whether this node can install this template is tenant-independent, so this check stays global-only by design |
-| `POST` | `/api/v1/templates/{id}/provision` | Global `Templates.View` + CSRF + `Server.Create` effective for the request's `tenant_id` (global or that tenant); start an asynchronous native provision |
+| `POST` | `/api/v1/templates/{id}/provision` | Global `Templates.View` + CSRF + `Server.Create` effective for the request's `tenant_id` (global or that tenant); start an asynchronous explicitly selected Native or Container provision |
 | `POST` | `/api/v1/templates/{id}/resolve` | `Templates.View` + `Server.Create`; inspect an existing directory and preview a built-in resolver result |
 | `POST` | `/api/v1/templates/{id}/adopt` | `Templates.View` (global) + **global** `Server.Create` + CSRF; create a normal server from a resolved existing installation at an arbitrary admin-supplied path, so - like `POST /servers` - it deliberately never accepts tenant-scoped `Server.Create` |
 
 `POST /templates/{id}/provision`'s body is `{"tenant_id":"...","server_name":"...","directory_name":"...","variables":{...}}`. `tenant_id` selects which tenant the new managed server belongs to; left empty it defaults to the default tenant. Authorization requires global `Templates.View` (can this node install this kind of template at all - tenant-independent) **and** `Server.Create` effective for that tenant (a global grant may provision into any tenant, a tenant-scoped grant only into its own tenant; tenant membership alone never satisfies this). An unknown `tenant_id` fails with a controlled `400 invalid_tenant` for an authorized (global) caller, or `403` for a tenant-scoped caller whose grant cannot possibly match an ID that names no tenant - neither ever falls through to an internal error. The directory is always resolved under `<data>/tenants/<tenant-id>/servers/<directory>`; the body has no field for a host path, so a tenant-scoped grant can never point a managed install anywhere else. Custom Application and Adopt Existing (`POST /servers`, `POST /templates/{id}/adopt`) remain global-`Server.Create`-only for exactly this reason: both accept an arbitrary admin-supplied `working_directory`/`server_root`, and a tenant-scoped `Server.Create` grant must never unlock that.
+
+Ports the template resolves from the submitted variables (including offset ports, such as Project Zomboid's direct-connection port at `SERVER_PORT + 1`) are checked with the same authoritative collision/availability logic the Ports API uses (`internal/ports`) before anything is installed. A known conflict - already owned by another GameNode server, or reported in use by the best-effort OS probe - rejects the request synchronously with `409 port_conflict` and a message naming the conflicting `port/PROTOCOL`; no job, target reservation, or SteamCMD run is created. This is a fail-fast usability check, not a reservation: a port can still become occupied afterward, which the transactional final server registration (`registering_server`) independently rechecks and rejects the same way installation validation or launch resolution failures are reported.
+
+`server_name` gets the same early check: server names are unique case-insensitively across every tenant, and a name already taken by another GameNode server rejects the request synchronously with `409 name_conflict`, before target reservation or SteamCMD. Like the port preflight, this is a fail-fast usability check only; the final transactional registration rechecks the name and remains authoritative for the same TOCTOU window. `POST /servers` (Custom Application/Adopt Existing) reports the identical `409 name_conflict` for a duplicate name.
 
 Analyze/import accept `{"egg": <Egg JSON object>}`. Upload and pasted JSON clients use the same bounded representation. URL input is not supported. Bodies over the bounded envelope or Eggs over 256 KiB return `413 egg_too_large`; invalid Eggs return a controlled `422 invalid_egg` without raw parser errors. Responses use the GameNode template model and never return the original Egg or installation script. Sensitive defaults are discarded before a response or database write.
 
@@ -182,9 +186,36 @@ Provisioning is intentionally template-specific rather than a generic job execut
 | `POST` | `/api/v1/provisioning/jobs/{id}/cancel` | Initiating user or admin + CSRF; cancel an active installer |
 | `POST` | `/api/v1/provisioning/jobs/{id}/retry-registration` | Initiating user or admin + CSRF; retry only a recoverable persisted registration snapshot without running SteamCMD again |
 
-The start body is bounded to 128 KiB and has the form `{"server_name":"...","directory_name":"...","variables":{"KEY":"value"}}`. `directory_name` is a relative storage name, not a path; the target is always resolved below `<data>/servers`. Unknown/non-editable variables, invalid normalized values, unsupported platform plans, populated targets, and unsafe SteamCMD options are rejected with controlled errors.
+The start body is bounded to 128 KiB and has the form `{"server_name":"...","directory_name":"...","tenant_id":"...","variables":{"KEY":"value"},"runtime_type":"native|container","image":"declared-image","memory_limit_bytes":1073741824,"cpu_limit_millis":1000,"pids_limit":512,"tmpfs_size_bytes":268435456}`. `runtime_type` defaults to `native`; Container must be explicit. `directory_name` is a relative storage name, not a path; the target is always resolved below `<data>/tenants/<tenant-id>/servers`. Unknown/non-editable variables, invalid normalized values, unsupported platform plans, populated targets, unsafe SteamCMD options, undeclared images, blocked registries, and unavailable Container runtime are rejected with controlled errors.
 
 For Official SteamCMD templates, `GET /templates/{id}/provisionability` additionally reports the fixed installer, App ID, validation flag, selected host platform, and selected launch executable for review. `POST /templates/{id}/provision` never accepts an App ID, login, command, installer URL, or argument array. It requires both `Templates.View` and `Server.Create` plus CSRF, just like imported template provisioning.
+
+The provisionability response reports `native_compatibility` and
+`container_compatibility` separately, plus `container_images` and the normalized
+registry `container_image_policy`. Container compatibility findings include image,
+startup, installer-entrypoint, and supported-config decisions; a policy-blocked
+Container path does not hide a still-usable Native path. Provisioning job responses
+include `runtime_type`, selected image, optional selected image digest, bounded phase
+events/output, and `files_may_remain`. Container installer output is held in memory,
+redacted and bounded exactly like SteamCMD output; raw scripts, variables, secrets,
+credentials and Engine JSON are never returned.
+
+# Server Update API (v0.2.1)
+
+Manual updates are server-scoped, not template-specific: they act on an already-provisioned server's persisted SteamCMD metadata, never on live catalog data.
+
+| Method | Path | Authorization and behavior |
+| --- | --- | --- |
+| `GET` | `/api/v1/servers/{id}/update` | Server-scoped `Server.Update`; return eligibility/status without starting anything |
+| `POST` | `/api/v1/servers/{id}/update` | Server-scoped `Server.Update` + CSRF; start a manual update job (empty body) |
+| `GET` | `/api/v1/server-update-jobs/{id}` | Initiating user or admin, still subject to server-scoped `Server.Update`; return safe persisted status and bounded chronological events |
+| `POST` | `/api/v1/server-update-jobs/{id}/cancel` | Initiating user or admin + CSRF; cancel an active update |
+
+`GET /servers/{id}/update` returns `{"eligible":bool,"reason":"...","installer":"steamcmd","app_id":380870,"validate":true,"template_id":"...","template_version":"...","server_state":"stopped","active_job":{...}|null}`. It never returns the server's absolute working directory, executable path, or a command line. A server with no persisted SteamCMD provisioning metadata (custom/adopted servers, non-SteamCMD templates, or a server provisioned before this metadata existed) is reported `"eligible":false` with a stable reason rather than inferred from directory contents. A running/starting/stopping server, or a server with an already-active update job, is also reported ineligible.
+
+`POST /servers/{id}/update` takes no request body: the App ID, login mode, validate flag, and template provenance used are exclusively the server's persisted trusted snapshot, never client input. It returns `202` with the created job, or a controlled error: `422 not_eligible`, `409 server_not_stopped`, or `409 target_conflict` (another update is already active for this server). `Server.Update` is an independent permission - holding `Server.Edit`, `Server.Start`, or `Templates.Manage` alone is never sufficient.
+
+Job status mirrors the provisioning job model at a smaller scope: `pending`, `preparing`, `downloading_steamcmd`, `steamcmd_ready`, `updating`, `steamcmd_completed`, `validating_installation`, `completed`, `failed`, `cancelled`. Jobs persist only bounded status/phase/App ID/validate/template-provenance fields - never raw SteamCMD output, command lines, secrets, or absolute host paths. The job response's `installer_output` (plus `output_truncated`) is live SteamCMD stdout/stderr held only in memory, bounded to 1000 lines/256 KiB per job, cleared on GameNode restart, and never written to `server_update_jobs`; it lets an operator gauge approximate progress and is not a persisted record. Cancellation stops the in-flight SteamCMD process but cannot roll back files it already changed; the job's terminal summary says so explicitly. An update never migrates the server's template version, executable, arguments, ports, stop behavior, or configuration adapter snapshots, and never starts the server automatically after completion.
 
 | Method | Path | Authorization and behavior |
 |---|---|---|
@@ -197,7 +228,7 @@ Both endpoints are semantic: a field describes the meaning of a game setting, no
 
 Start returns `202` with a job. Statuses are `pending`, `preparing`, `downloading_steamcmd`, `steamcmd_ready`, `installing`, `steamcmd_completed`, `validating_installation`, `installation_validated`, `resolving_launch`, `registering_server`, `server_registered`, `completed`, `failed`, or `cancelled` (`creating_server` remains accepted for persisted compatibility). Responses contain phase summaries, failure classification, `installation_completed`, `registration_recoverable`, `files_may_remain`, and at most 200 safe chronological events, but never the registration snapshot, target absolute paths, raw SteamCMD output after restart, variable values, credentials, or command lines. A completed job contains the normal `server_id`. Registration retry is serialized and idempotent: it reuses the persisted normalized snapshot, recognizes an already committed server, and never invokes SteamCMD. A job whose managed configuration contains a secret value stores no registration snapshot and reports `registration_recoverable: false`, because replaying it would create a server with silently missing secrets; its failure summary tells the operator to provision again.
 
-Supported source fields include `meta.version`, `exported_at`, `name`, `description`, `author`, `uuid`, `startup`, `variables`, `docker_images` (metadata only), `scripts.installation` (analysis only), `config`, `features`, and tags. Unknown top-level fields become informational findings. Config parser bodies, file rewrite rules, Docker semantics, arbitrary installation hooks, and unknown config structures are not executed and may produce compatibility findings.
+Supported source fields include `meta.version`, `exported_at`, `name`, `description`, `author`, `uuid`, `startup`, `variables`, `docker_images`, `scripts.installation`, `config`, `features`, and tags. Unknown top-level fields become informational findings. Native compatibility treats Egg installation scripts as analysis-only. Container compatibility may retain only strict image refs, bounded installer/startup data, and compiled properties/key-value/JSON operations for execution inside the controlled unprivileged container boundary; arbitrary installation hooks, Docker flags, registry credentials, and unknown config structures are rejected or reported as findings.
 
 Supported variable rules are `required`, `nullable`, `integer`, `numeric`, `string`, `boolean`, `between`, `min`, `max`, and `in`. Other Laravel/Pterodactyl rules remain in `raw_rules` and produce `UNKNOWN_VALIDATION_RULE`; GameNode does not emulate the full validation language.
 # Container servers (v0.3)
@@ -209,3 +240,26 @@ include `container_port`. `POST /api/v1/servers/{id}/container/pull` requires
 server-scoped `Server.Edit`, same-origin, and CSRF protection. Start never
 pulls; a missing image returns a controlled error. No Docker JSON, credentials,
 or daemon details are API fields.
+# Scheduled restart API
+
+The local schedule endpoints are server-scoped:
+
+```text
+GET    /api/v1/servers/{id}/restart-schedules
+POST   /api/v1/servers/{id}/restart-schedules
+PATCH  /api/v1/servers/{id}/restart-schedules/{scheduleID}
+DELETE /api/v1/servers/{id}/restart-schedules/{scheduleID}
+```
+
+Reads require `Server.View`; create, update/enable/disable, and delete require
+`Server.Edit`, authentication, same-origin, and CSRF for mutations. A schedule
+body contains only `schedule_type` (`daily` or `weekly`), `time_of_day` in
+`HH:MM`, optional `day_of_week` (`0` Sunday through `6` Saturday) for weekly
+rows, and an explicit IANA `time_zone`. Responses include `next_restart_at`
+when the row is enabled. The backend calculates that timestamp, skips missed
+occurrences, and returns no next timestamp for disabled rows.
+
+The API exposes no cron expression, command, shell, update, pull, provisioning,
+remote-node, or cluster scheduling payload. Schedule mutations are audited with
+bounded recurrence metadata; automatic lifecycle events use the existing
+`server.restart` action with `origin=scheduled`.

@@ -26,7 +26,9 @@ import (
 	"gamenode/internal/ports"
 	"gamenode/internal/provisioning"
 	"gamenode/internal/rbac"
+	"gamenode/internal/scheduler"
 	"gamenode/internal/servers"
+	"gamenode/internal/serverupdates"
 	"gamenode/internal/settings"
 	"gamenode/internal/steamcmd"
 	"gamenode/internal/support"
@@ -37,28 +39,31 @@ import (
 const sessionCookie = "gamenode_session"
 
 type Server struct {
-	auth            *auth.Service
-	audit           *audit.Service
-	log             *slog.Logger
-	secureCookie    bool
-	trustLocalProxy bool
-	servers         *servers.Service
-	files           *filesystem.Service
-	identity        *identity.Service
-	rbac            *rbac.Service
-	tenants         *tenants.Service
-	ports           *ports.Service
-	settings        *settings.Service
-	diagnostics     *diagnostics.Service
-	support         supportGenerator
-	templates       *templates.Service
-	provisioning    *provisioning.Service
-	gameConfig      *gameconfig.Service
-	logs            *logging.Manager
-	setupConfig     setupConfigStore
-	steamcmd        steamBootstrapper
-	bootstrapMu     sync.Mutex
-	bootstrap       bootstrapStatus
+	auth             *auth.Service
+	audit            *audit.Service
+	log              *slog.Logger
+	secureCookie     bool
+	trustLocalProxy  bool
+	servers          *servers.Service
+	files            *filesystem.Service
+	identity         *identity.Service
+	rbac             *rbac.Service
+	tenants          *tenants.Service
+	ports            *ports.Service
+	settings         *settings.Service
+	diagnostics      *diagnostics.Service
+	support          supportGenerator
+	templates        *templates.Service
+	provisioning     *provisioning.Service
+	serverUpdates    *serverupdates.Service
+	restartSchedules *scheduler.Store
+	restartScheduler *scheduler.Scheduler
+	gameConfig       *gameconfig.Service
+	logs             *logging.Manager
+	setupConfig      setupConfigStore
+	steamcmd         steamBootstrapper
+	bootstrapMu      sync.Mutex
+	bootstrap        bootstrapStatus
 }
 
 type setupConfigStore interface {
@@ -82,17 +87,20 @@ type Options struct {
 	// TrustLocalProxy permits forwarded scheme and host headers only when the
 	// immediate peer is a loopback reverse proxy. It must not be used for a
 	// proxy reached over the network.
-	TrustLocalProxy bool
-	Filesystem      *filesystem.Service
-	Settings        *settings.Service
-	Diagnostics     *diagnostics.Service
-	Support         supportGenerator
-	Templates       *templates.Service
-	Provisioning    *provisioning.Service
-	GameConfig      *gameconfig.Service
-	Logs            *logging.Manager
-	SetupConfig     setupConfigStore
-	SteamCMD        steamBootstrapper
+	TrustLocalProxy  bool
+	Filesystem       *filesystem.Service
+	Settings         *settings.Service
+	Diagnostics      *diagnostics.Service
+	Support          supportGenerator
+	Templates        *templates.Service
+	Provisioning     *provisioning.Service
+	ServerUpdates    *serverupdates.Service
+	RestartSchedules *scheduler.Store
+	RestartScheduler *scheduler.Scheduler
+	GameConfig       *gameconfig.Service
+	Logs             *logging.Manager
+	SetupConfig      setupConfigStore
+	SteamCMD         steamBootstrapper
 }
 
 // auditInput deliberately contains only values selected by the application. It
@@ -108,6 +116,13 @@ type auditInput struct {
 	errorCode    string
 	errorSummary string
 	actor        *auth.User
+	// err is the original, unsanitized error behind errorCode/errorSummary,
+	// if any. It is never persisted to the audit log or included in any API
+	// response - recordAudit only ever attaches it to the local application
+	// log, and only when detailed error logging is enabled (see
+	// logging.ErrorDetail). This is the sole place callers need to pass the
+	// raw error; audit.Event itself only ever receives the sanitized summary.
+	err error
 }
 
 func (s *Server) recordAudit(r *http.Request, in auditInput) {
@@ -148,6 +163,9 @@ func (s *Server) recordAudit(r *http.Request, in auditInput) {
 	if in.errorCode != "" {
 		attrs = append(attrs, "error_code", in.errorCode, "error_summary", in.errorSummary)
 	}
+	if in.err != nil {
+		attrs = append(attrs, logging.ErrorDetail(in.err))
+	}
 	if in.result == audit.Success {
 		s.log.Info("application action completed", attrs...)
 	} else {
@@ -170,6 +188,8 @@ func auditFailure(err error) (string, string) {
 		return "invalid_protocol", "invalid port assignment"
 	case strings.Contains(message, "bind address must be"):
 		return "invalid_bind_address", "invalid port assignment"
+	case errors.Is(err, servers.ErrDuplicateName), errors.Is(err, provisioning.ErrNamePreflightFailed):
+		return "name_conflict", "server name is already in use"
 	case strings.Contains(message, "already running") || strings.Contains(message, "not running") || strings.Contains(message, "restart is in progress") || strings.Contains(message, "stop the server before"):
 		return "invalid_state", "server state does not allow this operation"
 	case strings.Contains(message, "container engine is unavailable"):
@@ -221,6 +241,10 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 		}
 		provisioner = options[0].Provisioning
 	}
+	var serverUpdater *serverupdates.Service
+	if len(options) > 0 {
+		serverUpdater = options[0].ServerUpdates
+	}
 	var gameConfigService *gameconfig.Service
 	if len(options) > 0 {
 		gameConfigService = options[0].GameConfig
@@ -231,11 +255,13 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	}
 	identityService := identity.New(a.Database())
 	identityService.SetPasswordPolicyProvider(settingService)
-	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identityService, rbac: rbac.New(a.Database()), tenants: tenants.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie}
+	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identityService, rbac: rbac.New(a.Database()), tenants: tenants.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, serverUpdates: serverUpdater, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie}
 	if len(options) > 0 {
 		result.trustLocalProxy = options[0].TrustLocalProxy
 		result.setupConfig = options[0].SetupConfig
 		result.steamcmd = options[0].SteamCMD
+		result.restartSchedules = options[0].RestartSchedules
+		result.restartScheduler = options[0].RestartScheduler
 	}
 	result.bootstrap = bootstrapStatus{Status: "unavailable", Summary: "SteamCMD setup is unavailable"}
 	if result.steamcmd != nil {
@@ -246,6 +272,9 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	}
 	if provisioner != nil {
 		provisioner.SetObserver(result.recordProvisioningCompletion)
+	}
+	if serverUpdater != nil {
+		serverUpdater.SetObserver(result.recordServerUpdateCompletion)
 	}
 	return result
 }
@@ -284,6 +313,7 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/template-catalog", s.templateCatalogHandler)
 	mux.HandleFunc("/api/v1/template-catalog/refresh", s.templateCatalogRefreshHandler)
 	mux.HandleFunc("/api/v1/provisioning/jobs/", s.provisioningJobHandler)
+	mux.HandleFunc("/api/v1/server-update-jobs/", s.serverUpdateJobHandler)
 	mux.Handle("/", static)
 	return s.logRequests(mux)
 }
@@ -332,11 +362,11 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	}
 	u, e := s.auth.CreateInitialAdmin(r.Context(), in.Username, in.Email, in.Password)
 	if e != nil {
-		s.log.With("module", "Auth.Setup").Warn("initial administrator creation failed", "reason", e.Error())
+		s.log.With("module", "Auth.Setup", "category", logging.CategoryAuth).Warn("initial administrator creation failed", "reason", e.Error())
 		bad(w, "initial setup could not be completed")
 		return
 	}
-	s.log.With("module", "Auth.Setup").Info("initial administrator created", "user_id", u.ID)
+	s.log.With("module", "Auth.Setup", "category", logging.CategoryAuth).Info("initial administrator created", "user_id", u.ID)
 	if in.PrepareSteamCMD {
 		s.startSteamCMDBootstrap()
 	}
@@ -422,7 +452,7 @@ func (s *Server) startSteamCMDBootstrap() {
 		defer s.bootstrapMu.Unlock()
 		if err != nil {
 			s.bootstrap = bootstrapStatus{Status: "failed", Summary: "SteamCMD could not be prepared"}
-			s.log.With("module", "SteamCMD.Setup").Error("SteamCMD bootstrap failed", "error", err.Error())
+			s.log.With("module", "SteamCMD.Setup", "category", logging.CategorySteamCMD).Error("SteamCMD bootstrap failed", "error", err.Error())
 			return
 		}
 		s.bootstrap = bootstrapStatus{Status: "ready", Summary: "SteamCMD is ready"}
@@ -450,7 +480,7 @@ func (s *Server) issueLogin(w http.ResponseWriter, r *http.Request, u auth.User,
 		u, raw, csrf, e = s.auth.Login(r.Context(), username[0], password)
 		if e != nil {
 			s.recordAudit(r, auditInput{action: audit.Login, resourceType: audit.Auth, resourceName: strings.TrimSpace(username[0]), result: audit.Failure, errorCode: "invalid_credentials", errorSummary: "invalid credentials"})
-			s.log.With("module", "Auth.Login").Warn("failed login", "source_ip", r.RemoteAddr)
+			s.log.With("module", "Auth.Login", "category", logging.CategoryAuth).Warn("failed login", "source_ip", r.RemoteAddr)
 			unauthorized(w)
 			return
 		}
@@ -467,7 +497,7 @@ func (s *Server) issueLogin(w http.ResponseWriter, r *http.Request, u auth.User,
 }
 func (s *Server) setSessionAndRespond(ctx context.Context, w http.ResponseWriter, u auth.User, raw, csrf string) {
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: raw, Path: "/", HttpOnly: true, Secure: s.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: int((24 * time.Hour).Seconds())})
-	s.log.With("module", "Auth.Login").Info("user logged in", "user_id", u.ID)
+	s.log.With("module", "Auth.Login", "category", logging.CategoryAuth).Info("user logged in", "user_id", u.ID)
 	capabilities, err := s.globalCapabilities(ctx, u)
 	if err != nil {
 		internal(w)
@@ -517,7 +547,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recordAudit(r, auditInput{action: audit.Logout, resourceType: audit.Auth, result: audit.Success, actor: &u})
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, Secure: s.secureCookie, SameSite: http.SameSiteStrictMode, MaxAge: -1})
-	s.log.With("module", "Auth.Logout").Info("user logged out", "user_id", u.ID)
+	s.log.With("module", "Auth.Logout", "category", logging.CategoryAuth).Info("user logged out", "user_id", u.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -583,7 +613,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, http.StatusOK, response)
 }
 
-var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View", "Tenants.View", "Tenants.Manage"}
+var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Server.Update", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View", "Tenants.View", "Tenants.Manage"}
 
 func (s *Server) allowed(ctx context.Context, u auth.User, permission string, scope rbac.Scope) (bool, error) {
 	return s.rbac.Allowed(ctx, u.ID, permission, scope)
@@ -815,19 +845,26 @@ func forbidden(w http.ResponseWriter, m string) { errorOut(w, 403, "forbidden", 
 func internal(w http.ResponseWriter) {
 	errorOut(w, 500, "internal_error", "an internal error occurred")
 }
+
+// logRequests records exactly one line per HTTP request: method, path
+// (stripped of any query string), status, response size, and duration -
+// never headers, cookies, or the request/response body, so it can never
+// leak Authorization headers, CSRF tokens, session cookies, or submitted
+// credentials. Routine successful traffic is logged at debug so the default
+// info level isn't flooded by normal API/browser polling; genuine HTTP
+// errors (4xx/5xx) always remain visible at warn/error regardless of level
+// or the http category setting below.
 func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		tracked := &responseLogWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(tracked, r)
-		args := []any{"module", "HTTP", "method", r.Method, "path", strings.Split(r.URL.Path, "?")[0], "status", tracked.status, "response_bytes", tracked.bytes, "duration", time.Since(start).String()}
+		args := []any{"module", "HTTP", "category", logging.CategoryHTTP, "method", r.Method, "path", strings.Split(r.URL.Path, "?")[0], "status", tracked.status, "response_bytes", tracked.bytes, "duration", time.Since(start).String()}
 		switch {
 		case tracked.status >= 500:
 			s.log.Error("http request failed", args...)
 		case tracked.status >= 400:
 			s.log.Warn("http request rejected", args...)
-		case strings.HasPrefix(r.URL.Path, "/api/"):
-			s.log.Info("http request completed", args...)
 		default:
 			s.log.Debug("http request completed", args...)
 		}

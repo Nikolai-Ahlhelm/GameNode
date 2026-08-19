@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"strconv"
@@ -130,6 +131,34 @@ func (s *Service) Check(c context.Context, server string) error {
 	}
 	return nil
 }
+
+// CheckCandidates validates a set of not-yet-persisted ports against every
+// currently registered GameNode port and a best-effort OS availability
+// probe, without writing anything. It is the same authoritative collision
+// logic Add/Update/Check use, exposed for callers that need to preflight
+// ports before they exist in server_ports - such as provisioning, which
+// resolves a template's ports before SteamCMD installation starts so a
+// known conflict fails fast instead of after a full game download. This is
+// a best-effort, point-in-time check: it does not reserve the ports, so a
+// port can still become occupied afterward (see Check, which the final
+// server registration also runs).
+func (s *Service) CheckCandidates(c context.Context, candidates []Port) error {
+	for i := range candidates {
+		p := candidates[i]
+		if e := Validate(&p); e != nil {
+			return e
+		}
+		for j := range candidates {
+			if i != j && Conflict(p, candidates[j]) {
+				return fmt.Errorf("%d/%s port conflicts with another requested port", p.Port, strings.ToUpper(p.Protocol))
+			}
+		}
+		if e := s.check(c, "", p, ""); e != nil {
+			return e
+		}
+	}
+	return nil
+}
 func (s *Service) check(c context.Context, server string, p Port, exclude string) error {
 	rows, e := s.db.QueryContext(c, "SELECT id,name,protocol,bind_address,port,container_port FROM server_ports WHERE id<>?", exclude)
 	if e != nil {
@@ -146,11 +175,11 @@ func (s *Service) check(c context.Context, server string, p Port, exclude string
 			q.ContainerPort = int(target.Int64)
 		}
 		if Conflict(p, q) {
-			return errors.New("port conflicts with another GameNode server")
+			return fmt.Errorf("%d/%s port conflicts with another GameNode server", p.Port, strings.ToUpper(p.Protocol))
 		}
 	}
 	if s.status(p) == "in_use" {
-		return errors.New("port is already in use on this host")
+		return fmt.Errorf("%d/%s port is already in use on this host", p.Port, strings.ToUpper(p.Protocol))
 	}
 	return nil
 }

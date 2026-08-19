@@ -56,3 +56,29 @@ export function buildServerCreatePayload(values: ServerCreateValues, argumentsLi
     },
   };
 }
+
+/** Builds the existing server PATCH shape without allowing native launch
+ * fields to leak into a container update. Native edits intentionally stay on
+ * the existing form serialization path. */
+export function buildContainerServerUpdatePayload(values: ServerCreateValues, containerDraft: ContainerCreateDraft): Record<string, unknown> {
+  if (values.runtime_type !== 'container') throw new Error('Container update requires the container runtime');
+
+  const image = containerDraft.image.trim();
+  const cpuLimitMillis = Number(containerDraft.cpuLimitMillis);
+  const memoryLimitMiB = Number(containerDraft.memoryLimitMiB);
+  if (!image) throw new Error('Container image is required');
+  if (!Number.isInteger(cpuLimitMillis) || cpuLimitMillis < 10 || cpuLimitMillis > 1_000_000) throw new Error('CPU limit must be a whole number between 10 and 1000000 millicores');
+  if (!Number.isInteger(memoryLimitMiB) || memoryLimitMiB < 16 || memoryLimitMiB > 1024 * 1024 * 1024) throw new Error('Memory limit must be a whole number between 16 MiB and 1073741824 MiB');
+
+  const { container: _container, executable: _executable, arguments: _arguments, environment_variables: _environment, ...shared } = values;
+  return {
+    ...shared,
+    runtime_type: 'container',
+    container: {
+      image,
+      command: containerDraft.command.split('\n').filter(Boolean),
+      cpu_limit_millis: cpuLimitMillis,
+      memory_limit_bytes: memoryLimitMiB * bytesPerMiB,
+    },
+  };
+}

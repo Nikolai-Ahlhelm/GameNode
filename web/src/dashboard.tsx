@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Activity, ArrowRight, CircleAlert, CircleStop, Network, Play, RefreshCw, RotateCcw, Server, ShieldCheck } from 'lucide-react';
 import { auditActionLabel, auditActor } from './audit-helpers';
-import { EmptyState, LoadingState, MetricCard, PageHeader, SectionHeader } from './ui';
+import { EmptyState, MetricCard, PageHeader, SectionHeader, SkeletonCards, SkeletonRows } from './ui';
 import './dashboard.css';
 
 type Recent = { id: string; timestamp: string; actor_username?: string; actor_user_id?: string; action: string; resource_type: string; resource_name?: string; result: string };
@@ -14,7 +14,7 @@ export function DashboardOverview({ canCreate, canAudit, onAudit, onServers }: {
   const [loading, setLoading] = useState(true);
   const load = () => { setLoading(true); setError(''); fetch('/api/v1/dashboard', { credentials: 'same-origin' }).then(async response => { if (!response.ok) throw Error((await response.json().catch(() => null))?.error?.message || 'Request failed'); return response.json(); }).then(setData).catch(reason => setError(reason instanceof Error ? reason.message : 'Request failed')).finally(() => setLoading(false)); };
   useEffect(() => { void load(); }, []);
-  if (loading) return <section><PageHeader title="Infrastructure overview" description="Live summary of the servers and services visible to you." eyebrow="GameNode control plane" /><LoadingState label="Loading infrastructure overview…" /></section>;
+  if (loading) return <section><PageHeader title="Infrastructure overview" description="Live summary of the servers and services visible to you." eyebrow="GameNode control plane" /><SkeletonCards count={4} label="Loading infrastructure overview…" /><SkeletonRows count={2} /></section>;
   if (error) return <section><PageHeader title="Infrastructure overview" description="Live summary of the servers and services visible to you." eyebrow="GameNode control plane" /><EmptyState title="Dashboard unavailable" description={error} icon={CircleAlert} action={<button type="button" onClick={load}><RefreshCw />Retry</button>} /></section>;
   const servers = data?.servers, monitoring = data?.monitoring, ports = data?.ports, total = num(servers, 'total'), recent = data?.audit?.recent ?? [];
   const running = num(servers, 'running'), stopped = num(servers, 'stopped'), crashed = num(servers, 'crashed'), detached = num(servers, 'detached');

@@ -59,6 +59,8 @@ type ContainerOptions struct {
 	Generation       string
 	OwnershipToken   string
 	Ports            []ContainerPort
+	PIDsLimit        int64
+	TmpfsSizeBytes   int64
 }
 type ContainerPort struct {
 	Protocol, BindAddress   string
@@ -121,4 +123,28 @@ type Runtime interface {
 type ImageManager interface {
 	ImageAvailable(context.Context, string) (bool, error)
 	PullImage(context.Context, string) error
+}
+
+// ContainerInstaller is the narrow provisioning boundary for untrusted Egg
+// installation. Implementations must run the supplied script only in a
+// short-lived unprivileged container with the fixed server-root mount.
+type ContainerInstaller interface {
+	Available(context.Context) error
+	PullImage(context.Context, string) error
+	RunInstaller(context.Context, ContainerInstallSpec, io.Writer) error
+}
+
+type ContainerInstallSpec struct {
+	Image            string
+	Entrypoint       string
+	Script           string
+	WorkingDirectory string
+	Environment      map[string]string
+	MemoryLimitBytes int64
+	CPULimitMillis   int
+	PIDsLimit        int64
+	TmpfsSizeBytes   int64
+	ServerID         string
+	Generation       string
+	OwnershipToken   string
 }
