@@ -148,7 +148,13 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("provisioning recovery completed", "module", "Provisioning.Recovery")
-	handler := api.New(auth.New(db), serverService, log, secureCookie, api.Options{TrustLocalProxy: cfg.Server.TrustLocalProxy, Filesystem: files, Settings: settingService, Diagnostics: diagnosticService, Templates: templateService, Provisioning: provisioner, GameConfig: gameConfigService, Logs: logManager, SetupConfig: configFile, SteamCMD: steamManager}).Handler(static)
+	apiServer := api.New(auth.New(db), serverService, log, secureCookie, api.Options{TrustLocalProxy: cfg.Server.TrustLocalProxy, Filesystem: files, Settings: settingService, Diagnostics: diagnosticService, Templates: templateService, Provisioning: provisioner, GameConfig: gameConfigService, Logs: logManager, SetupConfig: configFile, SteamCMD: steamManager})
+	// Remote Node Foundation (v0.5A): a bounded, periodic status refresh for
+	// this installation's own remote node registry. It never blocks startup
+	// and is stopped cleanly on shutdown; see internal/api/node_refresh.go.
+	stopHeartbeat := apiServer.StartHeartbeat()
+	defer stopHeartbeat()
+	handler := apiServer.Handler(static)
 	server := &http.Server{Addr: cfg.Server.Listen, Handler: handler, ReadHeaderTimeout: 0, ReadTimeout: 15e9, WriteTimeout: 15e9, IdleTimeout: 60e9}
 	log.Info("GameNode starting", "listen", cfg.Server.Listen, "tls", transportTLS, "trust_local_proxy", cfg.Server.TrustLocalProxy)
 	if transportTLS {

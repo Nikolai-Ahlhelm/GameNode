@@ -200,3 +200,41 @@ Start returns `202` with a job. Statuses are `pending`, `preparing`, `downloadin
 Supported source fields include `meta.version`, `exported_at`, `name`, `description`, `author`, `uuid`, `startup`, `variables`, `docker_images` (metadata only), `scripts.installation` (analysis only), `config`, `features`, and tags. Unknown top-level fields become informational findings. Config parser bodies, file rewrite rules, Docker semantics, arbitrary installation hooks, and unknown config structures are not executed and may produce compatibility findings.
 
 Supported variable rules are `required`, `nullable`, `integer`, `numeric`, `string`, `boolean`, `between`, `min`, `max`, and `in`. Other Laravel/Pterodactyl rules remain in `raw_rules` and produce `UNKNOWN_VALIDATION_RULE`; GameNode does not emulate the full validation language.
+
+# Remote Node Foundation API (v0.5A)
+
+Two structurally separate trust domains; see `docs/adr/0007-remote-node-foundation.md` and `docs/security.md`.
+
+## Node-facing API (machine-authenticated, no CSRF)
+
+Every route below requires `Authorization: Bearer <machine credential>` validated against this node's own `node_trusted_callers` table (`enroll` is the one exception - it validates a pairing token instead). A browser session cookie alone never authenticates these routes.
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `GET` | `/api/v1/node/info` | Returns `{node_id, display_name, gamenode_version, os, arch, protocol_version, capabilities, started_at, uptime_seconds}` - never environment variables, filesystem paths, secrets, the database path, or the Docker socket path |
+| `GET` | `/api/v1/node/health` | Returns `{status:"healthy"}` in this milestone |
+| `GET` | `/api/v1/node/capabilities` | Returns `{capabilities, protocol_version}` |
+| `POST` | `/api/v1/node/enroll` | Body `{"pairing_token":"..."}`; consumes a single-use pairing token and returns `{node_id, display_name, credential, protocol_version, gamenode_version, os, arch, capabilities}` exactly once |
+
+## Node-facing pairing token issuance (human-authenticated)
+
+| Method | Path | Authorization and behavior |
+| --- | --- | --- |
+| `POST` | `/api/v1/node/pairing-tokens` | `Node.Manage` + CSRF; generates a single-use, 15-minute pairing token for THIS node and returns `{pairing_token, expires_at}` exactly once |
+
+## Controller-facing Remote Node registry (human-authenticated)
+
+| Method | Path | Authorization and behavior |
+| --- | --- | --- |
+| `GET` | `/api/v1/remote-nodes` | `Node.View`; lists enrolled remote nodes (never their machine credential) |
+| `POST` | `/api/v1/remote-nodes` | `Node.Manage` + CSRF; body `{"endpoint":"...","pairing_token":"...","display_name":"..."}`; validates the endpoint, calls the remote node's own `/api/v1/node/enroll`, and persists the returned credential |
+| `GET` | `/api/v1/remote-nodes/{id}` | `Node.View`; single registry entry |
+| `PATCH` | `/api/v1/remote-nodes/{id}` | `Node.Manage` + CSRF; body `{"display_name":"...","enabled":true|false}` (either field optional); never contacts the remote node |
+| `DELETE` | `/api/v1/remote-nodes/{id}` | `Node.Manage` + CSRF; removes the registry entry only - never affects the remote node itself |
+| `POST` | `/api/v1/remote-nodes/{id}/refresh` | `Node.View` + CSRF; triggers one bounded, immediate status refresh |
+
+Every registry response includes a derived (never stored) `compatibility` field - `compatible`, `limited_capabilities`, `incompatible`, or `unknown` - computed from the remote node's `protocol_version` against this controller's own `nodeidentity.ProtocolVersion`.
+
+Remote-node errors are translated to stable codes, never raw transport/TLS errors: `node_unreachable`, `node_authentication_failed`, `node_protocol_incompatible`, `node_response_too_large`, `node_malformed_response` (HTTP `502`), plus the ordinary `not_found`/`conflict` for registry-level problems (duplicate node ID/endpoint).
+
+Remote server create/edit/start/stop/restart/kill/console/files/provisioning are not implemented in v0.5A.

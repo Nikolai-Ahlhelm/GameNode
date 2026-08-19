@@ -17,6 +17,8 @@ Run `go test ./...`, `go test -race ./...`, and `go vet ./...`, then `npm ci`, `
 
 Tenant/RBAC-scope isolation has its own regression suite, `internal/api/cross_tenant_test.go`, run as part of `go test ./internal/api`; it builds two fully independent tenants and asserts uniform `403` cross-tenant denial plus dashboard/list non-leakage. Pure tenant frontend logic (slug derivation, name/slug validation, membership candidate filtering, tenant selector locking) is covered by `web/tests/tenants-helpers.test.ts`, part of `npm run test:helpers`.
 
+Remote Node Foundation (v0.5A) backend coverage lives in `internal/nodeidentity`, `internal/nodes`, `internal/remote` (own package test suites, including `httptest`-backed transport/redirect/timeout/oversized-response cases for the remote client), and `internal/api/node_test.go` (pairing/enrollment end-to-end, machine-auth rejection of a browser session, RBAC/CSRF on the controller-facing registry API). Frontend health/compatibility/capability formatting and endpoint/pairing-token validation are covered by `web/tests/nodes-helpers.test.ts`.
+
 Theme resolution and wallpaper/preference sanitization (`web/src/theme.ts`) are covered by `web/tests/theme.test.ts`; the shared server/health status-to-tone mapping (`web/src/server-status.ts`) is covered by `web/tests/server-status.test.ts`. Both run as part of `npm run test:helpers`. The wallpaper file-processing path (`web/src/wallpaper.ts`) needs a real `createImageBitmap`/canvas and is verified manually in a browser instead (see the UI theme section of `docs/architecture.md`).
 
 ## GitHub Actions CI and releases

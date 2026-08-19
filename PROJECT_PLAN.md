@@ -1641,3 +1641,33 @@ The Official schema now supports exact platform launch maps, optional safe relat
 Official product data is grouped per game. Templates reference same-directory adapter definitions fetched and cached through the fixed catalog source. Compiled formats now include bounded `xml-properties` and strict, sectionless `ini-key-values`. Project Zomboid template `1.1.0` persists its adapter at provisioning but waits for the first game start to generate `Server/gamenode.ini`; the UI reports this pending state and never invents a partial upstream file. Updates preserve unknown keys, comments, ordering, BOM, and line endings. The Configuration tab validates typed edits, masks secrets, keeps a last-file backup, writes atomically, requires `Server.Edit` plus CSRF, records redacted audit metadata, and never restarts a server automatically. Lua configuration remains outside this milestone.
 
 Automatic NeoForge/Minecraft download, version catalogs, EULA mutation, mod/plugin management, generic script execution, and child-process handoff remain deferred. Real start/help/stop acceptance requires a compatible Java installation on the test host.
+
+# v0.4 — Container-backed Egg Runtime status
+
+v0.4 is being developed separately (concurrently with v0.5A, on a different branch/worktree). This document does not restate its status; see that branch's own tracking. v0.5A does not depend on it and does not assume any particular v0.4 completion state - see "Parallel Development" below.
+
+# v0.5A — Remote Node Foundation status
+
+v0.5A builds the secure, autonomous Remote Node foundation that later remote server management depends on. It intentionally does **not** implement remote server management itself.
+
+Implemented in this milestone:
+
+- **Durable local Node Identity** (`internal/nodeidentity`): a random `NodeID` generated once and persisted in local SQLite, independent of hostname/IP/database path; an optional operator-set display name; a small integer protocol version (currently `1`), independent of the product version string; and a fixed, reviewed list of typed capability identifiers describing what this build actually implements.
+- **Secure pairing/enrollment** (`internal/nodes`): an operator on the target node generates a single-use, 15-minute pairing token; an operator on the controller side supplies it and the node's endpoint to enroll. The node atomically consumes the token and issues a new machine credential; only salted hashes of tokens/credentials are ever stored, and plaintext values are returned exactly once, never logged or audited.
+- **Authenticated Controller → Node communication**: a machine-authenticated Node API (`GET /api/v1/node/info|health|capabilities`, `POST /api/v1/node/enroll`) structurally separate from the human browser-session/RBAC/CSRF trust domain, and a human-authenticated, RBAC- and CSRF-protected controller-facing registry API (`/api/v1/remote-nodes*`, `POST /api/v1/node/pairing-tokens`).
+- **A narrow typed remote client** (`internal/remote`): `Enroll`/`GetNodeInfo`/`GetHealth`/`GetCapabilities` only, bounded timeouts and response size, real TLS verification, endpoint normalization/validation, and no cross-host redirect following (SSRF/credential-leak mitigation).
+- **Health/connection state** that is presentation-only and never authoritative over a remote node's own server/runtime lifecycle, refreshed by a bounded, periodic, cleanly-cancellable background loop where one unreachable node never blocks another.
+- **RBAC** (`Node.View`/`Node.Manage`, global-only), **audit** for enrollment/registry mutations and pairing-token issuance (never for routine health polls or credentials), and a **read-only Nodes UI** (list, detail, pairing, enrollment).
+- A dedicated ADR (`docs/adr/0007-remote-node-foundation.md`) records the trust/protocol decisions.
+
+Deliberately out of scope for v0.5A: remote Server Create/Edit/Start/Stop/Restart/Kill, remote Console/Files/Ports mutation, remote provisioning/Egg installation, template/secret distribution, server migration, placement/scheduling, failover, and any shared/cluster database state. Every GameNode installation - enrolled or not - keeps its own local SQLite, API, UI, `servers.Service`, runtimes, ConsoleManager, Filesystem service, and lifecycle authority; a controller never gains direct access to a remote node's database or Docker/process runtime.
+
+## Future milestones
+
+- **v0.5B — Remote Server Management**: remote server CRUD and lifecycle control through the Node API established in v0.5A.
+- **v0.5C — Remote Operational Hardening**: remote console/files, richer health, and operational polish for multi-node management.
+- **v0.6 — Cluster / Scheduling**: placement, scheduling, capacity, and failover, explicitly deferred until a real multi-node operational need exists.
+
+## Parallel development note
+
+v0.5A was implemented in a separate git worktree from a concurrently developed v0.4 (Container-backed Egg Runtime). It touches no Egg parser/importer/normalization/install-script/startup code, no container-backed execution, no provisioning-job internals, and no template/adapter internals. `cmd/gamenode/main.go` gained only a minimal, additive wiring block (constructing the API server and starting/stopping its Remote Node status refresher); `internal/servers/server.go` and runtime implementation internals were not touched. `internal/rbac/catalog.go`, `internal/audit/audit.go`, and `internal/api/api.go` gained additive entries (new permissions/actions/routes/struct fields) rather than restructuring existing ones - these are the most likely merge-conflict hotspots with any concurrent v0.4 changes to the same files, and should be resolved as an ordinary additive merge (union of both sides' new catalog/route entries), not by one branch overwriting the other.

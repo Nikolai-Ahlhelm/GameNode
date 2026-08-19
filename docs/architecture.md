@@ -213,3 +213,29 @@ Theme, sidebar-collapsed, and wallpaper choices are a **personal, browser-local 
 The optional wallpaper image follows the same browser-local model instead of a server upload. `web/src/wallpaper.ts`'s `processWallpaperFile` accepts only `image/png`, `image/jpeg`, or `image/webp` (SVG is never in the accepted-type list), decodes the file with `createImageBitmap` (which rejects anything that isn't real raster image data regardless of its claimed MIME type - the actual defense against a mislabeled or polyglot upload), redraws it onto a canvas capped at 1920px, and re-exports it as a bounded PNG/JPEG data URL. That data URL must additionally pass `theme.ts`'s `isValidWallpaperImage` allow-list (`data:image/(png|jpeg|webp);base64,...`, size-capped) before it is ever written into a CSS custom property or persisted - so it is also safe to interpolate directly into `--wallpaper-image` without further escaping. The wallpaper is purely decorative (`position:fixed`, negative `z-index`, `pointer-events:none`) and never influences any business or RBAC logic; cards and panels keep their own opaque backgrounds so content stays readable under blur/dim.
 
 The application shell gained a reusable `AppTopbar` (`web/src/ui.tsx`) rendered once above the existing per-page content in `DashboardModern` - a breadcrumb/page title plus the theme switch and sidebar collapse toggle, so no page rebuilds this chrome itself. The sidebar supports an icon-only collapsed state (`[data-sidebar="collapsed"]` on `<html>`) with labels kept in the accessibility tree (via `title`) instead of removed. None of this touched routing: navigation is still the existing component-state switch in `DashboardModern`.
+
+# Remote Node Foundation (v0.5A)
+
+v0.5A adds the secure, autonomous Remote Node foundation later remote server management (v0.5B+) depends on, without implementing that management itself. See `docs/adr/0007-remote-node-foundation.md` for the trust-model decision this section documents the "how" of.
+
+## New packages
+
+- `internal/nodeidentity`: this installation's own `NodeID` (random, persisted once in `node_identity`, independent of hostname/IP/database path), optional display name, `ProtocolVersion` constant, and the fixed `Capabilities()` list this build actually implements.
+- `internal/nodes`: two roles in one package, both transport-free. Pairing/trust for THIS node being enrolled (`node_pairing_tokens`, `node_trusted_callers`) and the registry of remote nodes THIS installation enrolled as a controller (`remote_nodes`). Only salted hashes of tokens/credentials are ever persisted.
+- `internal/remote`: the typed `Client` (`Enroll`, `GetNodeInfo`, `GetHealth`, `GetCapabilities`) plus `ValidateEndpoint`. Bounded timeout (8s default) and response size (1 MiB), real TLS verification, and `CheckRedirect` stops at the first response rather than following a cross-host redirect with the `Authorization` header attached.
+
+## API surface
+
+`internal/api/node.go` adds the machine-authenticated Node-facing routes (`GET /api/v1/node/info|health|capabilities`, `POST /api/v1/node/enroll`) behind `requireMachineAuth` (a bearer credential checked against `nodes.Service.AuthenticateCaller`, structurally separate from `requireAuth`'s cookie/CSRF path) and the human-authenticated `POST /api/v1/node/pairing-tokens` (`Node.Manage` + CSRF). `internal/api/remotenodes.go` adds the controller-facing registry routes (`GET/POST /api/v1/remote-nodes`, `GET/PATCH/DELETE /api/v1/remote-nodes/{id}`, `POST /api/v1/remote-nodes/{id}/refresh`), all ordinary `Node.View`/`Node.Manage` + CSRF like every other product mutation. `internal/api/node_refresh.go` classifies remote errors into `nodes.Health` and runs the bounded periodic refresh loop (`Server.StartHeartbeat`, started/stopped once in `cmd/gamenode/main.go`).
+
+## Database
+
+Migration `023_remote_nodes.sql` adds `node_identity` (single row), `node_pairing_tokens`, `node_trusted_callers`, and `remote_nodes`. None of these tables replicate or shadow a remote node's own schema; `remote_nodes` stores only configuration and last-known status the controller is allowed to cache for presentation.
+
+## Frontend surface
+
+`web/src/nodes.tsx`/`nodes-helpers.ts` add a read-only-management Nodes page using the same shared primitives as the Tenants page (`PageHeader`, `SectionHeader`, `EmptyState`, `LoadingState`, `.data-table`) plus a dedicated `nodes.css` for its six-column table and capability chips. It is gated by `Node.View`/`Node.Manage` (`nodeCapabilities` in `nodes-helpers.ts`, mirroring `tenantCapabilities`) and reachable from the sidebar only when `Node.View` is present. The pairing-token panel and enroll form are the only two mutating surfaces; neither ever displays a previously issued secret again.
+
+## What v0.5A deliberately does not add
+
+No remote server DTOs, no `servers.Service` changes, no container/Egg-runtime-specific code, and no scheduling/placement/cluster state. A remote node's health/capabilities are cached for presentation only and never feed any local authorization or lifecycle decision.

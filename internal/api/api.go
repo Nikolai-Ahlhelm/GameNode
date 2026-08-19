@@ -23,9 +23,12 @@ import (
 	"gamenode/internal/identity"
 	"gamenode/internal/logging"
 	"gamenode/internal/monitoring"
+	"gamenode/internal/nodeidentity"
+	"gamenode/internal/nodes"
 	"gamenode/internal/ports"
 	"gamenode/internal/provisioning"
 	"gamenode/internal/rbac"
+	"gamenode/internal/remote"
 	"gamenode/internal/servers"
 	"gamenode/internal/settings"
 	"gamenode/internal/steamcmd"
@@ -59,6 +62,19 @@ type Server struct {
 	steamcmd        steamBootstrapper
 	bootstrapMu     sync.Mutex
 	bootstrap       bootstrapStatus
+	nodeIdentity    *nodeidentity.Service
+	nodes           *nodes.Service
+	remoteClient    remoteNodeClient
+}
+
+// remoteNodeClient is the narrow set of typed Remote Node operations the API
+// layer needs. internal/remote.Client satisfies it; tests may substitute a
+// fake. There is no generic "do arbitrary request" method here (see
+// AGENTS.md and internal/remote's package doc comment).
+type remoteNodeClient interface {
+	Enroll(ctx context.Context, endpoint, pairingToken string) (remote.EnrollResult, error)
+	GetNodeInfo(ctx context.Context, endpoint, credential string) (remote.NodeInfo, error)
+	GetHealth(ctx context.Context, endpoint, credential string) (remote.HealthResult, error)
 }
 
 type setupConfigStore interface {
@@ -93,6 +109,9 @@ type Options struct {
 	Logs            *logging.Manager
 	SetupConfig     setupConfigStore
 	SteamCMD        steamBootstrapper
+	NodeIdentity    *nodeidentity.Service
+	RemoteNodes     *nodes.Service
+	RemoteClient    remoteNodeClient
 }
 
 // auditInput deliberately contains only values selected by the application. It
@@ -221,11 +240,23 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	}
 	identityService := identity.New(a.Database())
 	identityService.SetPasswordPolicyProvider(settingService)
-	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identityService, rbac: rbac.New(a.Database()), tenants: tenants.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie}
+	nodeIdentityService := nodeidentity.New(a.Database(), diagnostics.Version)
+	nodesService := nodes.New(a.Database())
+	var remoteClient remoteNodeClient = remote.New()
+	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identityService, rbac: rbac.New(a.Database()), tenants: tenants.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie, nodeIdentity: nodeIdentityService, nodes: nodesService, remoteClient: remoteClient}
 	if len(options) > 0 {
 		result.trustLocalProxy = options[0].TrustLocalProxy
 		result.setupConfig = options[0].SetupConfig
 		result.steamcmd = options[0].SteamCMD
+		if options[0].NodeIdentity != nil {
+			result.nodeIdentity = options[0].NodeIdentity
+		}
+		if options[0].RemoteNodes != nil {
+			result.nodes = options[0].RemoteNodes
+		}
+		if options[0].RemoteClient != nil {
+			result.remoteClient = options[0].RemoteClient
+		}
 	}
 	result.bootstrap = bootstrapStatus{Status: "unavailable", Summary: "SteamCMD setup is unavailable"}
 	if result.steamcmd != nil {
@@ -274,6 +305,13 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/template-catalog", s.templateCatalogHandler)
 	mux.HandleFunc("/api/v1/template-catalog/refresh", s.templateCatalogRefreshHandler)
 	mux.HandleFunc("/api/v1/provisioning/jobs/", s.provisioningJobHandler)
+	mux.HandleFunc("/api/v1/node/info", s.nodeInfoHandler)
+	mux.HandleFunc("/api/v1/node/health", s.nodeHealthHandler)
+	mux.HandleFunc("/api/v1/node/capabilities", s.nodeCapabilitiesHandler)
+	mux.HandleFunc("/api/v1/node/enroll", s.nodeEnrollHandler)
+	mux.HandleFunc("/api/v1/node/pairing-tokens", s.nodePairingTokensHandler)
+	mux.HandleFunc("/api/v1/remote-nodes", s.remoteNodesHandler)
+	mux.HandleFunc("/api/v1/remote-nodes/", s.remoteNodeHandler)
 	mux.Handle("/", static)
 	return s.logRequests(mux)
 }
@@ -573,7 +611,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, http.StatusOK, response)
 }
 
-var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View", "Tenants.View", "Tenants.Manage"}
+var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View", "Tenants.View", "Tenants.Manage", "Node.View", "Node.Manage"}
 
 func (s *Server) allowed(ctx context.Context, u auth.User, permission string, scope rbac.Scope) (bool, error) {
 	return s.rbac.Allowed(ctx, u.ID, permission, scope)
