@@ -125,6 +125,19 @@ const (
 	// docs/adr/0009-cluster-scheduling-decision-vs-execution.md). Result
 	// (Success/Failure) distinguishes an accepted vs. a rejected decision.
 	ClusterPlacementDecision = "cluster.placement_decide"
+	// ClusterPlacementExecute covers one explicit
+	// POST /api/v1/cluster/placement/execute request end to end: computing
+	// the decision AND, if a node was selected, dispatching the typed
+	// provisioning request to it (locally via provisioning.Service, or
+	// remotely via the machine-authenticated Node provisioning proxy).
+	// Exactly one event is recorded per request - Success only when a node
+	// was selected AND the provisioning request was accepted by its
+	// target, Failure for a rejected decision or a failed dispatch. It
+	// never duplicates the target's own audit trail (a local dispatch
+	// records no separate event of its own here; a remote dispatch's own
+	// proxy endpoint, reached directly rather than through placement
+	// execute, records its own single event under ServerProvisionStart).
+	ClusterPlacementExecute = "cluster.placement_execute"
 )
 
 type Event struct {

@@ -16,6 +16,7 @@ import (
 	"gamenode/internal/auth"
 	"gamenode/internal/database"
 	"gamenode/internal/identity"
+	"gamenode/internal/provisioning"
 	"gamenode/internal/rbac"
 	"gamenode/internal/remote"
 	"gamenode/internal/runtime"
@@ -29,6 +30,17 @@ type fakeRemoteClient struct {
 	enrollErr    error
 	infoResult   remote.NodeInfo
 	infoErr      error
+
+	startJob    provisioning.Job
+	startErr    error
+	getJob      provisioning.Job
+	getErr      error
+	cancelJob   provisioning.Job
+	cancelErr   error
+	lastStart   remote.ProvisioningRequest
+	startCalls  int
+	getCalls    int
+	cancelCalls int
 }
 
 func (f *fakeRemoteClient) Enroll(ctx context.Context, endpoint, pairingToken string) (remote.EnrollResult, error) {
@@ -39,6 +51,19 @@ func (f *fakeRemoteClient) GetNodeInfo(ctx context.Context, endpoint, credential
 }
 func (f *fakeRemoteClient) GetHealth(ctx context.Context, endpoint, credential string) (remote.HealthResult, error) {
 	return remote.HealthResult{Status: "healthy"}, f.infoErr
+}
+func (f *fakeRemoteClient) StartProvisioning(ctx context.Context, endpoint, credential string, req remote.ProvisioningRequest) (provisioning.Job, error) {
+	f.startCalls++
+	f.lastStart = req
+	return f.startJob, f.startErr
+}
+func (f *fakeRemoteClient) GetProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error) {
+	f.getCalls++
+	return f.getJob, f.getErr
+}
+func (f *fakeRemoteClient) CancelProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error) {
+	f.cancelCalls++
+	return f.cancelJob, f.cancelErr
 }
 
 func newNodeTestServer(t *testing.T, fake *fakeRemoteClient) (http.Handler, *sql.DB) {

@@ -204,21 +204,25 @@ func (s *Server) enrollRemoteNode(w http.ResponseWriter, r *http.Request) {
 }
 
 // remoteNodeHandler implements /api/v1/remote-nodes/{id} and its
-// sub-resource /refresh.
+// sub-resources /refresh and /provisioning[/{jobID}[/cancel]].
 func (s *Server) remoteNodeHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/remote-nodes/")
 	parts := strings.Split(path, "/")
-	if parts[0] == "" || len(parts) > 2 {
+	if parts[0] == "" || len(parts) > 4 {
 		notFound(w)
 		return
 	}
 	id := parts[0]
-	if len(parts) == 2 {
-		if parts[1] != "refresh" {
-			notFound(w)
-			return
-		}
+	if len(parts) == 2 && parts[1] == "refresh" {
 		s.refreshRemoteNode(w, r, id)
+		return
+	}
+	if len(parts) >= 2 && parts[1] == "provisioning" {
+		s.remoteNodeProvisioningHandler(w, r, id, parts[2:])
+		return
+	}
+	if len(parts) > 1 {
+		notFound(w)
 		return
 	}
 	switch r.Method {

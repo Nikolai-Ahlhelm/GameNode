@@ -21,6 +21,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"gamenode/internal/provisioning"
 )
 
 // DefaultTimeout bounds every single request this client makes. Callers may
@@ -179,7 +181,166 @@ func (c *Client) GetCapabilities(ctx context.Context, endpoint, credential strin
 	return result, err
 }
 
+// ProvisioningRequest is the typed, bounded transport contract for the
+// machine-authenticated remote provisioning path
+// (POST /api/v1/node/provisioning). Its fields are exactly the fields the
+// existing local provisioning API already accepts (see
+// internal/api/provisioning.go's provisionInput and
+// internal/provisioning.Request) - there is no raw JSON payload, no generic
+// map of engine flags, and no field for mounts/devices/capabilities/host
+// networking/registry credentials/installer scripts. A target node applies
+// every validation it already applies to a local request (template/Egg
+// compatibility, image allowlist, resource limits, tenant sandbox) before
+// this ever reaches its container runtime; this client never bypasses any
+// of that by construction, because it can only send these fields.
+type ProvisioningRequest struct {
+	TemplateID       string            `json:"template_id"`
+	ServerName       string            `json:"server_name"`
+	DirectoryName    string            `json:"directory_name"`
+	Variables        map[string]string `json:"variables"`
+	RecoverExisting  bool              `json:"recover_existing"`
+	TenantID         string            `json:"tenant_id"`
+	RuntimeType      string            `json:"runtime_type"`
+	Image            string            `json:"image"`
+	MemoryLimitBytes int64             `json:"memory_limit_bytes"`
+	CPULimitMillis   int               `json:"cpu_limit_millis"`
+	PIDsLimit        int64             `json:"pids_limit"`
+	TmpfsSizeBytes   int64             `json:"tmpfs_size_bytes"`
+}
+
+// StartProvisioning submits a provisioning request to a Remote Node's own
+// provisioning.Service via the machine-authenticated Node API. The target
+// node remains the sole authority for template/Egg validation, the image
+// allowlist, resource limits, its tenant/filesystem sandbox, the container
+// installer, and job persistence - this call only ever reaches its existing
+// POST /api/v1/node/provisioning endpoint, which itself only ever calls the
+// node's local provisioning.Service.Start (see
+// docs/adr/0009-cluster-scheduling-decision-vs-execution.md). The returned
+// Job is the same typed value the node's local provisioning API returns.
+func (c *Client) StartProvisioning(ctx context.Context, endpoint, credential string, req ProvisioningRequest) (provisioning.Job, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return provisioning.Job{}, &Error{Kind: KindMalformedResponse, Detail: "encode provisioning request"}
+	}
+	var job provisioning.Job
+	err = c.doProvisioning(ctx, http.MethodPost, endpoint, "/api/v1/node/provisioning", credential, bytes.NewReader(body), &job)
+	return job, err
+}
+
+// GetProvisioningJob mirrors the node's local provisioning job status read
+// (GET /api/v1/provisioning/jobs/{id}) over the machine-authenticated Node
+// API. No second job-tracking mechanism is introduced anywhere - the
+// returned Job is read straight from the target node's own
+// provisioning.Store via its existing provisioning.Service.Get.
+func (c *Client) GetProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error) {
+	var job provisioning.Job
+	err := c.doProvisioning(ctx, http.MethodGet, endpoint, "/api/v1/node/provisioning/"+url.PathEscape(jobID), credential, nil, &job)
+	return job, err
+}
+
+// CancelProvisioningJob mirrors the node's local provisioning job cancel
+// (POST /api/v1/provisioning/jobs/{id}/cancel) over the machine-authenticated
+// Node API, delegating to the same provisioning.Service.Cancel the node's own
+// operators use.
+func (c *Client) CancelProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error) {
+	var job provisioning.Job
+	err := c.doProvisioning(ctx, http.MethodPost, endpoint, "/api/v1/node/provisioning/"+url.PathEscape(jobID)+"/cancel", credential, nil, &job)
+	return job, err
+}
+
+// ProvisioningError is a typed, sanitized mirror of the target node's own
+// provisioning error response (the same {"error":{"code","message"}} shape
+// internal/api/provisioning.go's errorOut produces for a local caller - see
+// provisioningError in that file for the full code list, e.g.
+// "not_provisionable", "container_image_policy_blocked",
+// "container_image_not_declared", "container_runtime_unavailable",
+// "port_conflict", "name_conflict", "target_conflict", "invalid_tenant").
+// The controller-side proxy mirrors Code/Message back to its own caller
+// unchanged instead of collapsing every 4xx into one generic transport
+// error, so a rejected remote container placement is exactly as
+// diagnosable as a rejected local one.
+type ProvisioningError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (e *ProvisioningError) Error() string { return e.Code + ": " + e.Message }
+
+type errorBody struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// doProvisioning is do's counterpart for the three provisioning calls above:
+// it preserves the same transport-error classification (unreachable,
+// authentication failed, protocol incompatible, oversized/malformed
+// response) but, for an application-level 4xx the target node's
+// provisioning API returned, decodes and returns a *ProvisioningError
+// instead of collapsing it to KindMalformedResponse - see
+// ProvisioningError's doc comment.
+func (c *Client) doProvisioning(ctx context.Context, method, endpoint, path, credential string, body io.Reader, out any) error {
+	status, data, err := c.roundTrip(ctx, method, endpoint, path, credential, body)
+	if err != nil {
+		return err
+	}
+	switch {
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return &Error{Kind: KindAuthenticationFailed, Detail: fmt.Sprintf("status %d", status)}
+	case status == http.StatusUpgradeRequired || status == http.StatusPreconditionFailed:
+		return &Error{Kind: KindProtocolIncompatible, Detail: fmt.Sprintf("status %d", status)}
+	case status >= 300 && status < 400:
+		return &Error{Kind: KindMalformedResponse, Detail: fmt.Sprintf("unexpected redirect status %d", status)}
+	case status >= 400:
+		var body errorBody
+		if json.Unmarshal(data, &body) == nil && body.Error.Code != "" {
+			return &ProvisioningError{StatusCode: status, Code: body.Error.Code, Message: body.Error.Message}
+		}
+		return &Error{Kind: KindMalformedResponse, Detail: fmt.Sprintf("status %d", status)}
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return &Error{Kind: KindMalformedResponse, Detail: "invalid response body"}
+	}
+	return nil
+}
+
 func (c *Client) do(ctx context.Context, method, endpoint, path, credential string, body io.Reader, out any) error {
+	status, data, err := c.roundTrip(ctx, method, endpoint, path, credential, body)
+	if err != nil {
+		return err
+	}
+	switch {
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return &Error{Kind: KindAuthenticationFailed, Detail: fmt.Sprintf("status %d", status)}
+	case status == http.StatusUpgradeRequired || status == http.StatusPreconditionFailed:
+		return &Error{Kind: KindProtocolIncompatible, Detail: fmt.Sprintf("status %d", status)}
+	case status >= 300 && status < 400:
+		// CheckRedirect stopped following; a Node API is never expected to
+		// redirect its own JSON endpoints, so treat this as malformed.
+		return &Error{Kind: KindMalformedResponse, Detail: fmt.Sprintf("unexpected redirect status %d", status)}
+	case status >= 400:
+		return &Error{Kind: KindMalformedResponse, Detail: fmt.Sprintf("status %d", status)}
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return &Error{Kind: KindMalformedResponse, Detail: "invalid response body"}
+	}
+	return nil
+}
+
+// roundTrip performs the actual HTTP call shared by do and doProvisioning:
+// build the fixed-path request, send it with the bounded client timeout,
+// and read a size-bounded response body. It never interprets the status
+// code itself - that stays in each caller so do and doProvisioning can
+// classify 4xx differently.
+func (c *Client) roundTrip(ctx context.Context, method, endpoint, path, credential string, body io.Reader) (int, []byte, error) {
 	reqCtx := ctx
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -188,7 +349,7 @@ func (c *Client) do(ctx context.Context, method, endpoint, path, credential stri
 	}
 	req, err := http.NewRequestWithContext(reqCtx, method, endpoint+path, body)
 	if err != nil {
-		return &Error{Kind: KindUnreachable, Detail: "build request"}
+		return 0, nil, &Error{Kind: KindUnreachable, Detail: "build request"}
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -198,36 +359,18 @@ func (c *Client) do(ctx context.Context, method, endpoint, path, credential stri
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return &Error{Kind: KindUnreachable, Detail: classifyTransportError(err)}
+		return 0, nil, &Error{Kind: KindUnreachable, Detail: classifyTransportError(err)}
 	}
 	defer resp.Body.Close()
 	limited := io.LimitReader(resp.Body, MaxResponseBytes+1)
 	data, err := io.ReadAll(limited)
 	if err != nil {
-		return &Error{Kind: KindUnreachable, Detail: "read response"}
+		return 0, nil, &Error{Kind: KindUnreachable, Detail: "read response"}
 	}
 	if len(data) > MaxResponseBytes {
-		return &Error{Kind: KindOversizedResponse, Detail: "response exceeded size limit"}
+		return 0, nil, &Error{Kind: KindOversizedResponse, Detail: "response exceeded size limit"}
 	}
-	switch {
-	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return &Error{Kind: KindAuthenticationFailed, Detail: fmt.Sprintf("status %d", resp.StatusCode)}
-	case resp.StatusCode == http.StatusUpgradeRequired || resp.StatusCode == http.StatusPreconditionFailed:
-		return &Error{Kind: KindProtocolIncompatible, Detail: fmt.Sprintf("status %d", resp.StatusCode)}
-	case resp.StatusCode >= 300 && resp.StatusCode < 400:
-		// CheckRedirect stopped following; a Node API is never expected to
-		// redirect its own JSON endpoints, so treat this as malformed.
-		return &Error{Kind: KindMalformedResponse, Detail: fmt.Sprintf("unexpected redirect status %d", resp.StatusCode)}
-	case resp.StatusCode >= 400:
-		return &Error{Kind: KindMalformedResponse, Detail: fmt.Sprintf("status %d", resp.StatusCode)}
-	}
-	if out == nil {
-		return nil
-	}
-	if err := json.Unmarshal(data, out); err != nil {
-		return &Error{Kind: KindMalformedResponse, Detail: "invalid response body"}
-	}
-	return nil
+	return resp.StatusCode, data, nil
 }
 
 // classifyTransportError keeps the caller-visible detail free of local file

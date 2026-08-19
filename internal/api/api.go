@@ -80,6 +80,16 @@ type remoteNodeClient interface {
 	Enroll(ctx context.Context, endpoint, pairingToken string) (remote.EnrollResult, error)
 	GetNodeInfo(ctx context.Context, endpoint, credential string) (remote.NodeInfo, error)
 	GetHealth(ctx context.Context, endpoint, credential string) (remote.HealthResult, error)
+	// StartProvisioning/GetProvisioningJob/CancelProvisioningJob are the
+	// typed remote provisioning path (see internal/remote.Client and
+	// docs/adr/0009-cluster-scheduling-decision-vs-execution.md). There is
+	// no generic remote server-create method here by design - the only
+	// remote-facing server creation this product supports goes through the
+	// existing, fully-validated provisioning.Service, never a bare
+	// servers.Server payload.
+	StartProvisioning(ctx context.Context, endpoint, credential string, req remote.ProvisioningRequest) (provisioning.Job, error)
+	GetProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error)
+	CancelProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error)
 }
 
 type setupConfigStore interface {
@@ -354,6 +364,9 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/remote-nodes/", s.remoteNodeHandler)
 	mux.HandleFunc("/api/v1/cluster/capacity", s.clusterCapacityHandler)
 	mux.HandleFunc("/api/v1/cluster/placement", s.clusterPlacementHandler)
+	mux.HandleFunc("/api/v1/cluster/placement/execute", s.clusterPlacementExecuteHandler)
+	mux.HandleFunc("/api/v1/node/provisioning", s.nodeProvisioningHandler)
+	mux.HandleFunc("/api/v1/node/provisioning/", s.nodeProvisioningJobHandler)
 	mux.Handle("/", static)
 	return s.logRequests(mux)
 }

@@ -37,11 +37,20 @@ const (
 	// existing servers.Service/provisioning create path can be used to act
 	// on the decision; nothing about that path is changed or bypassed here.
 	ExecutionLocalOnly Execution = "local_only"
-	// ExecutionRequiresV05B means the selected node is a Remote Node. There
-	// is currently no way to create or mutate a server on a Remote Node
-	// (v0.5B Remote Server Management is not implemented); the decision is
-	// a proposal only.
-	ExecutionRequiresV05B Execution = "requires_v0.5b"
+	// ExecutionRemoteProvisioning means the selected node is a Remote Node
+	// and POST /api/v1/cluster/placement/execute can act on this decision
+	// through the machine-authenticated Node provisioning path
+	// (POST /api/v1/node/provisioning on the target, proxied by
+	// POST /api/v1/remote-nodes/{id}/provisioning on the controller) - the
+	// target node's own provisioning.Service remains the sole authority for
+	// template/Egg validation, resource limits, and server registration.
+	// This is deliberately narrower than full v0.5B Remote Server
+	// Management: there is still no way to start, stop, restart, update, or
+	// delete an already-existing server on a Remote Node through this
+	// product - only the initial create-via-template/Egg flow is reachable
+	// remotely, and only through this one typed path. See
+	// docs/adr/0009-cluster-scheduling-decision-vs-execution.md.
+	ExecutionRemoteProvisioning Execution = "remote_provisioning"
 )
 
 // Reason enumerates why a candidate node was excluded, or why no node could
@@ -169,7 +178,7 @@ func Decide(req Request) Decision {
 	if selected.Kind == NodeLocal {
 		decision.Execution = ExecutionLocalOnly
 	} else {
-		decision.Execution = ExecutionRequiresV05B
+		decision.Execution = ExecutionRemoteProvisioning
 	}
 	for i := range results {
 		if results[i].NodeID == selected.NodeID && results[i].Kind == selected.Kind {

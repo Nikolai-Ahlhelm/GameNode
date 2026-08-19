@@ -125,8 +125,8 @@ func TestDecideRemoteSelectionRequiresV05B(t *testing.T) {
 	if got.Selected.Kind != NodeRemote {
 		t.Fatalf("expected the remote node to be selected, got %+v", got.Selected)
 	}
-	if got.Execution != ExecutionRequiresV05B {
-		t.Fatalf("expected execution requires_v0.5b, got %q", got.Execution)
+	if got.Execution != ExecutionRemoteProvisioning {
+		t.Fatalf("expected execution remote_provisioning, got %q", got.Execution)
 	}
 }
 
