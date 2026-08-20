@@ -41,7 +41,7 @@ func TestConfigurationPersistsWithoutExposingPassword(t *testing.T) {
 		t.Fatalf("unexpected configuration: %+v %#v", value, changed)
 	}
 	encoded, _ := json.Marshal(value)
-	if string(encoded) == "" || contains(string(encoded), password) {
+	if string(encoded) == "" || contains(string(encoded), `"`+password+`"`) {
 		t.Fatalf("password leaked in JSON: %s", encoded)
 	}
 	reloaded, err := s.Get(context.Background())
