@@ -161,7 +161,7 @@ func TestHTTPAccessLogUsesForwardedSourceOnlyForTrustedLocalProxy(t *testing.T) 
 			h, manager := newHandler(t, tc.trust)
 			h.ServeHTTP(httptest.NewRecorder(), request(tc.remote, tc.forwarded))
 			entries := allEntryLines(manager)
-			if !strings.Contains(entries, `source_ip=`+tc.want) {
+			if !strings.Contains(entries, `source_ip="`+tc.want+`"`) {
 				t.Fatalf("source IP missing or wrong: %s", entries)
 			}
 		})

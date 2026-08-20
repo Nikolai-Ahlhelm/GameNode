@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "templates": [
-    {"id":"windrose","name":"Windrose Dedicated Server","description":"Install the Windrose dedicated server through SteamCMD and launch its native Windows server executable directly.","category":"steamcmd","version":"1.0.0","template_schema_version":2,"platforms":["windows"],"installer":"steamcmd","file":"steamcmd/windrose/template.json","tags":["windrose","steam","steamcmd","survival"],"icon":"steamcmd","minimum_gamenode_version":"0.2.0"},
-    {"id":"enshrouded","name":"Enshrouded Dedicated Server","description":"Install the Enshrouded dedicated server through SteamCMD and launch enshrouded_server.exe directly without a shell.","category":"steamcmd","version":"1.0.0","template_schema_version":2,"platforms":["windows"],"installer":"steamcmd","file":"steamcmd/enshrouded/template.json","tags":["enshrouded","steam","steamcmd","survival"],"icon":"steamcmd","minimum_gamenode_version":"0.2.0"},
-    {"id":"runescape-dragonwilds","name":"RuneScape: Dragonwilds Dedicated Server","description":"Install the RuneScape: Dragonwilds dedicated server through SteamCMD and launch its native server binary directly.","category":"steamcmd","version":"1.0.0","template_schema_version":2,"platforms":["windows","linux"],"installer":"steamcmd","file":"steamcmd/runescape-dragonwilds/template.json","tags":["runescape","dragonwilds","steam","steamcmd","survival"],"icon":"steamcmd","minimum_gamenode_version":"0.2.0"},
+    {"id":"windrose","name":"Windrose Dedicated Server","description":"Install the Windrose dedicated server through SteamCMD and launch its native Windows server executable directly.","category":"steamcmd","version":"1.0.0","template_schema_version":2,"platforms":["windows"],"installer":"steamcmd","file":"steamcmd/windrose/template.json","tags":["windrose","steam","steamcmd","survival","pirate"],"icon":"steamcmd","minimum_gamenode_version":"0.2.0"},
+    {"id":"enshrouded","name":"Enshrouded Dedicated Server","description":"Install the Enshrouded dedicated server through SteamCMD and launch enshrouded_server.exe directly without a shell.","category":"steamcmd","version":"1.0.0","template_schema_version":2,"platforms":["windows"],"installer":"steamcmd","file":"steamcmd/enshrouded/template.json","tags":["enshrouded","steam","steamcmd","survival","crafting"],"icon":"steamcmd","minimum_gamenode_version":"0.2.0"},
+    {"id":"runescape-dragonwilds","name":"RuneScape: Dragonwilds Dedicated Server","description":"Install the RuneScape: Dragonwilds dedicated server through SteamCMD and launch its native server binary directly.","category":"steamcmd","version":"1.0.0","template_schema_version":2,"platforms":["windows","linux"],"installer":"steamcmd","file":"steamcmd/runescape-dragonwilds/template.json","tags":["runescape","dragonwilds","steam","steamcmd","survival","rpg"],"icon":"steamcmd","minimum_gamenode_version":"0.2.0"},
     {
       "id": "ark-survival-evolved",
       "name": "ARK: Survival Evolved Dedicated Server",
@@ -14,7 +14,7 @@
       "platforms": ["windows", "linux"],
       "installer": "steamcmd",
       "file": "steamcmd/ark-survival-evolved/template.json",
-      "tags": ["ark", "ark-survival-evolved", "steam", "steamcmd", "survival"],
+      "tags": ["ark", "ark-survival-evolved", "steam", "steamcmd", "survival", "sandbox"],
       "icon": "steamcmd",
       "minimum_gamenode_version": "0.2.0"
     },
@@ -79,7 +79,7 @@
       "name": "Palworld Dedicated Server",
       "description": "Install the official Palworld dedicated server through SteamCMD and run the Windows native server binary directly.",
       "category": "steamcmd",
-      "version": "1.2.0",
+      "version": "1.1.0",
       "template_schema_version": 2,
       "platforms": ["windows"],
       "installer": "steamcmd",

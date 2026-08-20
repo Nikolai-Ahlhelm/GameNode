@@ -21,7 +21,11 @@ func TestTransformJSONUpdatesDeclaredTopLevelScalars(t *testing.T) {
 	if err := json.Unmarshal(updated, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if string(decoded["name"]) != `"New"` || string(decoded["slotCount"]) != "8" || string(decoded["nested"]) != `{"keep":true}` {
+	var nested map[string]bool
+	if err := json.Unmarshal(decoded["nested"], &nested); err != nil {
+		t.Fatal(err)
+	}
+	if string(decoded["name"]) != `"New"` || string(decoded["slotCount"]) != "8" || !nested["keep"] {
 		t.Fatalf("unexpected JSON: %s", updated)
 	}
 }

@@ -461,7 +461,7 @@ func TestRepositoryOfficialCatalog(t *testing.T) {
 		installer string
 		platforms int
 		resolver  string
-	}{"7-days-to-die": {InstallerSteamCMD, 2, ""}, "project-zomboid": {InstallerSteamCMD, 1, ""}, "minecraft-neoforge": {InstallerExistingFiles, 2, "neoforge"}, "palworld": {InstallerSteamCMD, 1, ""}, "satisfactory": {InstallerSteamCMD, 1, ""}, "eco": {InstallerSteamCMD, 2, ""}, "valheim": {InstallerSteamCMD, 2, ""}, "vein": {InstallerSteamCMD, 1, ""}}
+	}{"windrose": {InstallerSteamCMD, 1, ""}, "enshrouded": {InstallerSteamCMD, 1, ""}, "runescape-dragonwilds": {InstallerSteamCMD, 2, ""}, "ark-survival-evolved": {InstallerSteamCMD, 2, ""}, "ark-survival-ascended": {InstallerSteamCMD, 1, ""}, "minecraft-neoforge": {InstallerExistingFiles, 2, "neoforge"}, "7-days-to-die": {InstallerSteamCMD, 2, ""}, "project-zomboid": {InstallerSteamCMD, 1, ""}, "palworld": {InstallerSteamCMD, 1, ""}, "satisfactory": {InstallerSteamCMD, 1, ""}, "eco": {InstallerSteamCMD, 2, ""}, "valheim": {InstallerSteamCMD, 2, ""}, "vein": {InstallerSteamCMD, 1, ""}, "ddnet": {InstallerSteamCMD, 1, ""}, "onset": {InstallerSteamCMD, 1, ""}, "puck": {InstallerSteamCMD, 1, ""}, "nova-life-amboise": {InstallerSteamCMD, 1, ""}, "quake-live": {InstallerSteamCMD, 1, ""}, "qanga": {InstallerSteamCMD, 1, ""}, "the-bus": {InstallerSteamCMD, 1, ""}, "battalion-legacy": {InstallerSteamCMD, 1, ""}, "post-scriptum": {InstallerSteamCMD, 1, ""}, "astro-colony": {InstallerSteamCMD, 1, ""}, "colony-survival": {InstallerSteamCMD, 1, ""}}
 	for _, entry := range manifest.Templates {
 		expected, ok := wanted[entry.ID]
 		if !ok || entry.Installer != expected.installer || len(entry.Platforms) != expected.platforms {
