@@ -1,0 +1,29 @@
+.app-sidebar nav button {
+  line-height: 1.4;
+}
+
+.sidebar-links {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.sidebar-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 5px;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+}
+
+.sidebar-link svg {
+  width: 15px;
+  height: 15px;
+}
+
+:root[data-sidebar="collapsed"] .sidebar-links {
+  grid-template-columns: repeat(2, 1fr);
+}

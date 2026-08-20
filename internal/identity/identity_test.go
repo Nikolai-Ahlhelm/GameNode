@@ -87,6 +87,34 @@ func TestUsersAreCaseInsensitiveAndSessionsAreInvalidated(t *testing.T) {
 	}
 }
 
+func TestEnsureDevelopmentAdminCreatesAndRefreshesFixedCredentials(t *testing.T) {
+	s, a := newService(t)
+	ctx := context.Background()
+
+	u, err := s.EnsureDevelopmentAdmin(ctx, "dev", "dev", "dev@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !u.IsAdmin || !u.Enabled {
+		t.Fatalf("development account flags = admin:%v enabled:%v", u.IsAdmin, u.Enabled)
+	}
+	if _, _, _, err = a.Login(ctx, "dev", "dev"); err != nil {
+		t.Fatalf("fixed development credentials did not work: %v", err)
+	}
+	if err = s.ResetPassword(ctx, u.ID, password); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err = a.Login(ctx, "dev", "dev"); err == nil {
+		t.Fatal("old development password still worked")
+	}
+	if _, err = s.EnsureDevelopmentAdmin(ctx, "dev", "dev", "dev@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err = a.Login(ctx, "dev", "dev"); err != nil {
+		t.Fatalf("development credentials were not refreshed: %v", err)
+	}
+}
+
 func TestIdentityDuplicateErrorsAreControlled(t *testing.T) {
 	s, _ := newService(t)
 	ctx := context.Background()

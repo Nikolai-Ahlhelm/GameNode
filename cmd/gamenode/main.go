@@ -25,6 +25,7 @@ import (
 	"gamenode/internal/filesystem"
 	ftpservice "gamenode/internal/ftp"
 	"gamenode/internal/gameconfig"
+	"gamenode/internal/identity"
 	"gamenode/internal/logging"
 	"gamenode/internal/monitoring"
 	"gamenode/internal/notifications"
@@ -51,6 +52,7 @@ func main() {
 		os.Exit(code)
 	}
 	configPath := flag.String("config", "", "Path to YAML configuration (defaults to config.yaml beside the executable)")
+	devMode := flag.Bool("dev", false, "Enable local development conveniences, including the fixed dev/dev administrator")
 	flag.Parse()
 	path := *configPath
 	if path == "" {
@@ -104,6 +106,14 @@ func main() {
 	if err != nil {
 		log.Error("load persisted settings failed", "error", err.Error())
 		os.Exit(1)
+	}
+	if *devMode {
+		devAdmin, devErr := identity.New(db).EnsureDevelopmentAdmin(context.Background(), "dev", "dev", "dev@example.test")
+		if devErr != nil {
+			log.Error("development administrator setup failed", "error", devErr.Error())
+			os.Exit(1)
+		}
+		log.Warn("development mode enabled; fixed dev/dev administrator is active", "user_id", devAdmin.ID)
 	}
 	log.Info("persisted settings loaded", "module", "Settings", "monitoring_interval_seconds", currentSettings.Monitoring.SampleIntervalSeconds, "monitoring_history_limit", currentSettings.Monitoring.HistoryLimit, "logging_level", currentSettings.Logging.Level, "logging_detailed_errors", currentSettings.Logging.DetailedErrors)
 	if err = logManager.SetLevel(currentSettings.Logging.Level); err != nil {

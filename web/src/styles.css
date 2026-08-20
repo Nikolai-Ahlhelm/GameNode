@@ -62,7 +62,7 @@ button,input,textarea,select{font:inherit}button{display:inline-flex;align-items
   .panel,.metric-card,.empty-state,.data-table{transition:transform var(--duration-normal) ease,border-color var(--duration-normal) ease,box-shadow var(--duration-normal) ease}
   .panel:hover,.metric-card:hover{transform:translateY(-2px);border-color:var(--border-strong);box-shadow:var(--shadow-md)}
   .table-row{transition:background-color var(--duration-fast) ease,transform var(--duration-fast) ease}
-  .table-row:hover{transform:translateX(2px)}
+  .table-row:hover{transform:translateX(2px);margin-right:2px}
   .dashboard-kpis .metric-card,.dashboard-network .metric-card,.node-status-card{animation:card-enter .42s cubic-bezier(.2,.8,.2,1) both}
   .dashboard-kpis .metric-card:nth-child(2),.dashboard-network .metric-card:nth-child(2),.node-status-card:nth-child(2){animation-delay:.05s}
   .dashboard-kpis .metric-card:nth-child(3),.dashboard-network .metric-card:nth-child(3),.node-status-card:nth-child(3){animation-delay:.1s}

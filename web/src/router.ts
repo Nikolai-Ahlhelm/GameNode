@@ -13,6 +13,7 @@ export type AppRoute =
   | { page: 'audit' }
   | { page: 'settings' }
   | { page: 'logs' }
+  | { page: 'patchnotes' }
   | { page: 'status'; slug?: string }
   | { page: 'not-found' };
 
@@ -39,7 +40,7 @@ export function parseRoute(pathname = window.location.pathname): AppRoute {
   if (parts[0] === 'nodes') return parts.length === 1 ? { page: 'nodes' } : parts.length === 2 ? { page: 'nodes', nodeID: parts[1] } : { page: 'not-found' };
   if (parts[0] === 'status') return parts.length === 1 ? { page: 'status' } : parts.length === 2 ? { page: 'status', slug: parts[1] } : { page: 'not-found' };
   if (parts[0] === 'identity' && parts.length <= 2 && (!parts[1] || ['users', 'groups', 'roles'].includes(parts[1]))) return { page: 'identity', tab: parts[1] as 'users' | 'groups' | 'roles' | undefined };
-  if (parts.length === 1 && ['templates', 'audit', 'settings', 'logs'].includes(parts[0])) return { page: parts[0] as 'templates' | 'audit' | 'settings' | 'logs' };
+  if (parts.length === 1 && ['templates', 'audit', 'settings', 'logs', 'patchnotes'].includes(parts[0])) return { page: parts[0] as 'templates' | 'audit' | 'settings' | 'logs' | 'patchnotes' };
   return { page: 'not-found' };
 }
 
