@@ -170,11 +170,19 @@ func (s *Service) MoveManagedRoot(dataRoot, source, destination string) error {
 	if filepath.Clean(source) == filepath.Clean(destination) {
 		return ErrInvalidPath
 	}
-	sourceRelative, err := filepath.Rel(sandbox.root, filepath.Clean(source))
+	relativeRoot := sandbox.root
+	relativeSource := filepath.Clean(source)
+	relativeDestination := filepath.Clean(destination)
+	if filepath.Separator == '\\' {
+		relativeRoot = strings.ToLower(relativeRoot)
+		relativeSource = strings.ToLower(relativeSource)
+		relativeDestination = strings.ToLower(relativeDestination)
+	}
+	sourceRelative, err := filepath.Rel(relativeRoot, relativeSource)
 	if err != nil || sourceRelative == "." || filepath.IsAbs(sourceRelative) || strings.HasPrefix(sourceRelative, ".."+string(filepath.Separator)) || sourceRelative == ".." {
 		return ErrPathEscapesRoot
 	}
-	destinationRelative, err := filepath.Rel(sandbox.root, filepath.Clean(destination))
+	destinationRelative, err := filepath.Rel(relativeRoot, relativeDestination)
 	if err != nil || destinationRelative == "." || filepath.IsAbs(destinationRelative) || strings.HasPrefix(destinationRelative, ".."+string(filepath.Separator)) || destinationRelative == ".." {
 		return ErrPathEscapesRoot
 	}
