@@ -2,15 +2,15 @@
   "schema_version": 2,
   "id": "valheim",
   "name": "Valheim Dedicated Server",
-  "description": "Install the official Valheim dedicated server through SteamCMD and run the native Windows server executable directly. Server name, world, password, visibility, crossplay, and save interval are managed GameNode configuration settings.",
-  "version": "1.1.0",
+  "description": "Install the official Valheim dedicated server through SteamCMD and run its native Windows or Linux server executable directly. Server name, world, password, visibility, crossplay, and save interval are managed GameNode configuration settings.",
+  "version": "1.2.0",
   "category": "steamcmd",
   "minimum_gamenode_version": "0.2.0",
   "known_limitations": [
     "Valheim accepts its server password only as a process argument. GameNode stores the password outside its API, audit, logs, diagnostics, and support bundles and inserts it into the child process argument list at start, but a sufficiently privileged local operating-system user can still inspect process arguments. This limit comes from the game and cannot be removed by GameNode.",
     "Valheim refuses to advertise a public server without a password. Leave the password empty only for a private server that players join directly.",
     "Valheim documents CTRL+C as the proper shutdown method. GameNode does not model console control events, so this template uses terminate as a bounded fallback and does not claim graceful-save semantics.",
-    "The upstream dedicated server also supports Linux, but this template advertises Windows only until the direct Linux executable, required environment, and shutdown behavior are independently acceptance-tested without invoking start_server.sh.",
+    "Linux hosts need the native runtime libraries documented by Iron Gate (including libatomic1, libpulse-dev, and libpulse0). GameNode launches valheim_server.x86_64 directly and does not execute start_server.sh.",
     "SteamCMD supports initial installation and explicit manual updates through GameNode's Update Server action; automatic, scheduled, and update-on-start updates are not enabled."
   ],
   "icon": "steamcmd",
@@ -45,6 +45,24 @@
       ],
       "environment": {
         "STEAMAPPID": "892970"
+      },
+      "working_root": "server_root",
+      "stop_method": "terminate",
+      "stop_timeout_seconds": 60
+    },
+    "linux": {
+      "executable": "valheim_server.x86_64",
+      "arguments": [
+        "-nographics",
+        "-batchmode",
+        "-port",
+        "{{SERVER_PORT}}",
+        "-savedir",
+        "data"
+      ],
+      "environment": {
+        "STEAMAPPID": "892970",
+        "LD_LIBRARY_PATH": "linux64"
       },
       "working_root": "server_root",
       "stop_method": "terminate",
@@ -188,6 +206,13 @@
       "required": true,
       "executable": true,
       "platform": "windows"
+    },
+    {
+      "path": "valheim_server.x86_64",
+      "type": "file",
+      "required": true,
+      "executable": true,
+      "platform": "linux"
     }
   ],
   "config_files": [
@@ -212,7 +237,7 @@
       "type": "os",
       "level": "hard",
       "value": "windows",
-      "description": "This reviewed template currently declares the direct Windows launch only."
+      "description": "The native Windows and Linux launchers are supported directly; the shipped wrapper scripts are not executed."
     },
     {
       "type": "steamcmd",
@@ -225,6 +250,12 @@
       "level": "informational",
       "value": "password-process-argument",
       "description": "Valheim reads its server password from a process argument. GameNode keeps the value out of its own APIs, audit, logs, and support bundles, but local operating-system process inspection remains possible."
+    },
+    {
+      "type": "note",
+      "level": "informational",
+      "value": "linux-runtime-libraries",
+      "description": "Linux installations require the native libraries documented by Iron Gate, including libatomic1, libpulse-dev, and libpulse0."
     }
   ],
   "configuration": {
@@ -249,5 +280,5 @@
     "findings": []
   },
   "read_only": true,
-  "platforms": ["windows"]
+  "platforms": ["windows", "linux"]
 }

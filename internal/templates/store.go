@@ -211,6 +211,16 @@ func (s *Service) Import(ctx context.Context, data []byte) (Template, error) {
 	}
 	return s.store.Create(ctx, template)
 }
+
+// ImportNormalized persists a template that has already passed AnalyzeEgg.
+// It is used by fixed remote Egg sources after their source path has been
+// validated; callers must not pass user-authored arbitrary Template values.
+func (s *Service) ImportNormalized(ctx context.Context, template Template) (Template, error) {
+	if template.SourceType != SourcePelicanPterodactyl || template.Name == "" {
+		return Template{}, ErrInvalidEgg
+	}
+	return s.store.Create(ctx, template)
+}
 func (s *Service) List(ctx context.Context) ([]Template, error) {
 	imported, err := s.store.List(ctx)
 	if err != nil {

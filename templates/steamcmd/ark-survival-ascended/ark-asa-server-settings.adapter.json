@@ -1,0 +1,17 @@
+{
+  "schema_version":1,
+  "id":"ark-asa-server-settings",
+  "version":"1.0.0",
+  "format":"ini-section-key-values",
+  "target":"ShooterGame/Saved/Config/WindowsServer/GameUserSettings.ini",
+  "section":"ServerSettings",
+  "restart_required":true,
+  "post_start_only":true,
+  "fields":[
+    {"key":"SERVER_PASSWORD","label":"Server password","type":"secret","property":"ServerPassword","required":false,"nullable":true,"sensitive":true,"validation":{"max_length":128}},
+    {"key":"ADMIN_PASSWORD","label":"Admin password","type":"secret","property":"ServerAdminPassword","required":false,"nullable":true,"sensitive":true,"validation":{"max_length":128}},
+    {"key":"PVE_MODE","label":"PvE mode","type":"boolean","property":"serverPVE","required":false,"nullable":false,"sensitive":false,"validation":{}},
+    {"key":"RCON_ENABLED","label":"RCON enabled","type":"boolean","property":"RCONEnabled","required":false,"nullable":false,"sensitive":false,"validation":{}},
+    {"key":"RCON_PORT","label":"RCON port","type":"integer","property":"RCONPort","required":false,"nullable":false,"sensitive":false,"validation":{"min":1024,"max":65535}}
+  ]
+}

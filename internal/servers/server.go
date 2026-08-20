@@ -52,9 +52,13 @@ var (
 	ErrProvisionedPortsConflict = errors.New("provisioned ports conflict")
 	ErrProvisionedConfigAdapter = errors.New("provisioned configuration adapter could not be stored")
 	// ErrInvalidTenant is returned when a server references a tenant ID that
-	// does not exist. Server.TenantID is otherwise immutable once created;
-	// moving a server between tenants is out of scope for this milestone.
-	ErrInvalidTenant = errors.New("invalid tenant")
+	// does not exist.
+	ErrInvalidTenant              = errors.New("invalid tenant")
+	ErrTenantMigrationSame        = errors.New("server already belongs to target tenant")
+	ErrTenantMigrationActive      = errors.New("stop the server before migrating it")
+	ErrTenantMigrationUnsupported = errors.New("tenant migration requires a provisioned server")
+	ErrTenantMigrationStorage     = errors.New("managed server storage migration is unavailable")
+	ErrTenantMigrationPath        = errors.New("provisioned server storage path is invalid")
 	// ErrUpdateInProgress is returned by BeginUpdate when a manual SteamCMD
 	// update (see internal/serverupdates) already reserved this server, and
 	// by Start/Delete when they observe that reservation.
@@ -77,8 +81,9 @@ type Server struct {
 	// TenantID is the server's owning tenant. Every server belongs to
 	// exactly one tenant (see internal/tenants and
 	// migrations/020_tenants.sql). It defaults to tenants.DefaultTenantID
-	// when left empty at creation and is immutable afterward; Store.Update
-	// never changes it.
+	// when left empty at creation and remains unchanged through ordinary
+	// updates; the explicit administrator migration service is the only move
+	// operation.
 	TenantID                      string            `json:"tenant_id"`
 	CreationMode                  string            `json:"creation_mode"`
 	Name                          string            `json:"name"`
@@ -615,8 +620,8 @@ func (store *Store) Update(ctx context.Context, id string, server Server) (Recor
 	}
 	server.ID = id
 	server.CreatedAt = existing.Server.CreatedAt
-	// TenantID is immutable after creation for this milestone (see
-	// ErrInvalidTenant doc comment); ignore whatever the caller supplied.
+	// Ordinary edits never change tenant ownership; the explicit migration
+	// operation has its own lifecycle and authorization path.
 	server.TenantID = existing.Server.TenantID
 	sensitive, err := store.SensitiveEnvironmentKeys(ctx, id)
 	if err != nil {
@@ -653,6 +658,39 @@ func (store *Store) Update(ctx context.Context, id string, server Server) (Recor
 		}
 	}
 	return store.Get(ctx, id)
+}
+
+// MigrateTenant persists the result of a completed managed-storage move. The
+// filesystem operation is performed by Service.MigrateTenant before this
+// method is called; keeping the database update separate lets the service
+// attempt a filesystem rollback if persistence fails.
+func (store *Store) MigrateTenant(ctx context.Context, id, tenantID, workingDirectory, executable string) (Record, error) {
+	existing, err := store.Get(ctx, id)
+	if err != nil {
+		return Record{}, err
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return Record{}, ErrInvalidTenant
+	}
+	if existing.Server.TenantID == tenantID {
+		return Record{}, ErrTenantMigrationSame
+	}
+	updated := time.Now().UTC()
+	result, err := store.db.ExecContext(ctx, `UPDATE servers SET tenant_id=?,working_directory=?,executable=?,updated_at=? WHERE id=?`, tenantID, workingDirectory, executable, stamp(updated), id)
+	if err != nil {
+		return Record{}, err
+	}
+	if affected, rowsErr := result.RowsAffected(); rowsErr != nil {
+		return Record{}, rowsErr
+	} else if affected == 0 {
+		return Record{}, sql.ErrNoRows
+	}
+	existing.Server.TenantID = tenantID
+	existing.Server.WorkingDirectory = workingDirectory
+	existing.Server.Executable = executable
+	existing.Server.UpdatedAt = updated
+	return existing, nil
 }
 func (store *Store) Delete(ctx context.Context, id string) error {
 	result, err := store.db.ExecContext(ctx, "DELETE FROM servers WHERE id=?", id)
@@ -786,24 +824,50 @@ func newID() (string, error) {
 }
 
 type Service struct {
-	store        *Store
-	runtime      runtime.Runtime
-	console      *console.Manager
-	monitoring   *monitoring.Service
-	ports        *ports.Service
-	locks        sync.Map
-	instances    sync.Map
-	restarts     sync.Map
-	deletions    sync.Map
-	updates      sync.Map
-	autoRestarts sync.Map
-	autoAttempts sync.Map
-	autoMu       sync.Mutex
-	pullMu       sync.Mutex
-	pulls        map[string]string
-	log          *slog.Logger
-	launch       LaunchResolver
+	store           *Store
+	runtime         runtime.Runtime
+	console         *console.Manager
+	monitoring      *monitoring.Service
+	ports           *ports.Service
+	locks           sync.Map
+	instances       sync.Map
+	restarts        sync.Map
+	deletions       sync.Map
+	updates         sync.Map
+	autoRestarts    sync.Map
+	autoAttempts    sync.Map
+	autoMu          sync.Mutex
+	pullMu          sync.Mutex
+	pulls           map[string]string
+	log             *slog.Logger
+	launch          LaunchResolver
+	observer        func(LifecycleEvent)
+	managedDataRoot string
+	tenantRootMover interface {
+		MoveManagedRoot(dataRoot, source, destination string) error
+	}
 }
+
+// LifecycleEvent is the bounded, transport-free notification emitted after a
+// durable lifecycle outcome. It deliberately contains no launch arguments,
+// environment values, console data, or host paths.
+type LifecycleEvent struct {
+	Type       string
+	ServerID   string
+	ServerName string
+	TenantID   string
+	ExitCode   *int
+	OccurredAt time.Time
+}
+
+const (
+	EventStarted           = "started"
+	EventStopped           = "stopped"
+	EventCrashed           = "crashed"
+	EventRestarted         = "restarted"
+	EventAutoRestartFailed = "auto_restart_failed"
+	EventAutoRestartLimit  = "auto_restart_limit"
+)
 
 // LaunchResolver expands the persisted base launch with reviewed managed
 // configuration immediately before the process starts. It is optional; a nil
@@ -818,6 +882,28 @@ type LaunchResolver interface {
 // composition root owns this wiring so internal/servers keeps no dependency on
 // the configuration package.
 func (s *Service) SetLaunchResolver(resolver LaunchResolver) { s.launch = resolver }
+
+// SetLifecycleObserver connects a non-blocking observer at composition time.
+// The observer must return promptly; notification delivery belongs outside
+// the lifecycle service.
+func (s *Service) SetLifecycleObserver(observer func(LifecycleEvent)) { s.observer = observer }
+
+// SetTenantMigrationStorage wires the filesystem boundary used by the
+// administrator-only provisioned-server tenant migration. Keeping this
+// dependency as a narrow interface avoids giving the lifecycle service any
+// transport or filesystem implementation knowledge.
+func (s *Service) SetTenantMigrationStorage(dataRoot string, mover interface {
+	MoveManagedRoot(dataRoot, source, destination string) error
+}) {
+	s.managedDataRoot = filepath.Clean(strings.TrimSpace(dataRoot))
+	s.tenantRootMover = mover
+}
+
+func (s *Service) observe(event LifecycleEvent) {
+	if s.observer != nil {
+		s.observer(event)
+	}
+}
 
 // processInstance binds one native process identity to the console session
 // created for it. Its finalizer is the sole owner of exit cleanup.
@@ -1065,6 +1151,111 @@ func (s *Service) Update(ctx context.Context, id string, server Server) (Record,
 	}
 	s.log.Info("server update completed", "module", "Server.Update", "server_id", id)
 	return updated, nil
+}
+
+// MigrateTenant is restricted to the administrative API path. Provisioned
+// servers are moved as a complete managed storage tree before the database
+// ownership/path update is committed. The server must be stopped so a tenant
+// boundary cannot change while lifecycle, console, or file permissions are
+// being used against a live process.
+func (s *Service) MigrateTenant(ctx context.Context, id, tenantID string) (Record, error) {
+	s.log.Info("server tenant migration started", "module", "Server.MigrateTenant", "server_id", id, "target_tenant_id", tenantID)
+	if _, updating := s.updates.Load(id); updating {
+		return Record{}, ErrUpdateInProgress
+	}
+	lock := s.lock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	record, err := s.refresh(ctx, id)
+	if err != nil {
+		return Record{}, err
+	}
+	if record.Runtime.CurrentState == StateRunning || record.Runtime.CurrentState == StateStarting || record.Runtime.CurrentState == StateStopping {
+		return Record{}, ErrTenantMigrationActive
+	}
+	if record.Server.CreationMode != CreationTemplate {
+		return Record{}, ErrTenantMigrationUnsupported
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return Record{}, ErrInvalidTenant
+	}
+	if tenantID == record.Server.TenantID {
+		return Record{}, ErrTenantMigrationSame
+	}
+	if s.tenantRootMover == nil || s.managedDataRoot == "" {
+		return Record{}, ErrTenantMigrationStorage
+	}
+	sourceRoot, destinationRoot, err := managedTenantMigrationRoots(s.managedDataRoot, record.Server, tenantID)
+	if err != nil {
+		return Record{}, err
+	}
+	if err := s.tenantRootMover.MoveManagedRoot(s.managedDataRoot, sourceRoot, destinationRoot); err != nil {
+		return Record{}, err
+	}
+	executable := record.Server.Executable
+	if filepath.IsAbs(executable) && inside(sourceRoot, filepath.Clean(executable)) {
+		relative, relativeErr := filepath.Rel(sourceRoot, filepath.Clean(executable))
+		if relativeErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+			_ = s.tenantRootMover.MoveManagedRoot(s.managedDataRoot, destinationRoot, sourceRoot)
+			return Record{}, ErrTenantMigrationPath
+		}
+		executable = filepath.Join(destinationRoot, relative)
+	}
+	updated, err := s.store.MigrateTenant(ctx, id, tenantID, destinationRoot, executable)
+	if err != nil {
+		if rollbackErr := s.tenantRootMover.MoveManagedRoot(s.managedDataRoot, destinationRoot, sourceRoot); rollbackErr != nil {
+			s.log.Error("server tenant migration rollback failed", "module", "Server.MigrateTenant", "server_id", id, "error", rollbackErr)
+		}
+		return Record{}, err
+	}
+	s.log.Info("server tenant migration completed", "module", "Server.MigrateTenant", "server_id", id, "target_tenant_id", updated.Server.TenantID)
+	return updated, nil
+}
+
+func managedTenantMigrationRoots(dataRoot string, server Server, targetTenantID string) (string, string, error) {
+	directory, err := managedServerDirectoryName(dataRoot, server.TenantID, server.WorkingDirectory)
+	if err != nil {
+		return "", "", err
+	}
+	sourceRoot, err := tenants.TenantServerRoot(dataRoot, server.TenantID, directory)
+	if err != nil {
+		return "", "", ErrTenantMigrationPath
+	}
+	destinationRoot, err := tenants.TenantServerRoot(dataRoot, targetTenantID, directory)
+	if err != nil {
+		return "", "", ErrTenantMigrationPath
+	}
+	return sourceRoot, destinationRoot, nil
+}
+
+func managedServerDirectoryName(dataRoot, tenantID, workingDirectory string) (string, error) {
+	root, err := filepath.Abs(filepath.Clean(strings.TrimSpace(dataRoot)))
+	if err != nil || root == "." || strings.TrimSpace(dataRoot) == "" {
+		return "", ErrTenantMigrationPath
+	}
+	serversRoot := filepath.Join(root, "tenants", tenantID, "servers")
+	relative, err := filepath.Rel(serversRoot, filepath.Clean(workingDirectory))
+	if err != nil || relative == "." || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.Dir(relative) != "." {
+		return "", ErrTenantMigrationPath
+	}
+	resolved, err := tenants.TenantServerRoot(root, tenantID, relative)
+	if err != nil || !sameManagedPath(resolved, workingDirectory) {
+		return "", ErrTenantMigrationPath
+	}
+	return relative, nil
+}
+
+func sameManagedPath(left, right string) bool {
+	left, leftErr := filepath.Abs(filepath.Clean(left))
+	right, rightErr := filepath.Abs(filepath.Clean(right))
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	if filepath.Separator == '\\' {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 func (s *Service) Delete(ctx context.Context, id string) error {
 	s.log.Info("server deletion started", "module", "Server.Delete", "server_id", id)
@@ -1329,6 +1520,11 @@ func (s *Service) start(ctx context.Context, id string, restart bool) (Record, e
 		s.log.Error("started server state could not be loaded", "module", "Server.Start", "server_id", id, "pid", identity.PID, "error", err)
 		return Record{}, err
 	}
+	eventType := EventStarted
+	if restart {
+		eventType = EventRestarted
+	}
+	s.observe(LifecycleEvent{Type: eventType, ServerID: id, ServerName: result.Server.Name, TenantID: result.Server.TenantID, OccurredAt: now})
 	return result, nil
 }
 
@@ -1530,6 +1726,7 @@ func (s *Service) finalizeInstance(instance *processInstance, exit runtime.ExitR
 		if err == nil && record.Runtime.PID == instance.identity.PID && record.Runtime.processStartKey == instance.identity.StartKey {
 			now := time.Now().UTC()
 			stopping := record.Runtime.CurrentState == StateStopping
+			_, restarting := s.restarts.Load(instance.serverID)
 			record.Runtime.PID = 0
 			record.Runtime.processStartKey = ""
 			record.Runtime.ProcessStartAt = nil
@@ -1548,6 +1745,10 @@ func (s *Service) finalizeInstance(instance *processInstance, exit runtime.ExitR
 			}
 			if saveErr := s.store.SaveRuntime(context.Background(), instance.serverID, record.Runtime); saveErr != nil {
 				s.log.Error("final server process state could not be persisted", "module", "Server.Exit", "server_id", instance.serverID, "error", saveErr)
+			} else if record.Runtime.CurrentState == StateCrashed {
+				s.observe(LifecycleEvent{Type: EventCrashed, ServerID: instance.serverID, ServerName: record.Server.Name, TenantID: record.Server.TenantID, ExitCode: &exit.ExitCode, OccurredAt: now})
+			} else if !restarting {
+				s.observe(LifecycleEvent{Type: EventStopped, ServerID: instance.serverID, ServerName: record.Server.Name, TenantID: record.Server.TenantID, ExitCode: &exit.ExitCode, OccurredAt: now})
 			}
 			s.monitoring.ObserveExit(instance.serverID, instance.identity)
 			if record.Runtime.CurrentState == StateCrashed {
@@ -1594,6 +1795,7 @@ func (s *Service) scheduleAutoRestart(id, generation string, server Server) {
 		}
 		s.autoAttempts.Store(id, kept)
 		s.log.Warn("automatic restart limit reached", "module", "Server.AutoRestart", "server_id", id, "attempts", len(kept))
+		s.observe(LifecycleEvent{Type: EventAutoRestartLimit, ServerID: id, ServerName: server.Name, TenantID: server.TenantID, OccurredAt: now})
 		return
 	}
 	kept = append(kept, now)
@@ -1622,6 +1824,7 @@ func (s *Service) scheduleAutoRestart(id, generation string, server Server) {
 		s.log.Info("automatic server restart starting", "module", "Server.AutoRestart", "server_id", id)
 		if _, err := s.start(context.Background(), id, true); err != nil {
 			s.log.Error("automatic server restart failed", "module", "Server.AutoRestart", "server_id", id, "error", err)
+			s.observe(LifecycleEvent{Type: EventAutoRestartFailed, ServerID: id, ServerName: server.Name, TenantID: server.TenantID, OccurredAt: time.Now().UTC()})
 		}
 	}()
 }

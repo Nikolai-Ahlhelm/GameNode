@@ -52,3 +52,41 @@ button,input,textarea,select{font:inherit}button{display:inline-flex;align-items
 @media(max-width:760px){.app{display:block}.app-sidebar{position:sticky;height:auto;padding:11px 14px;border-right:0;border-bottom:1px solid var(--border)}.brand-mark{width:32px;height:32px}.brand-copy small,.nav-label,.sidebar-footer{display:none}.app-sidebar nav{display:flex;gap:5px;margin-top:10px;overflow-x:auto}.app-sidebar nav button{width:auto;white-space:nowrap}.app-sidebar nav button span{display:none}.app-sidebar nav button.active{box-shadow:inset 0 -2px var(--accent)}.sidebar-collapse-toggle{display:none}.app-topbar{padding:12px 18px}.app-topbar__crumb span{display:none}.mobile-hide{display:none}.content{padding:24px 18px 44px}.form-panel form{grid-template-columns:1fr}.row{flex-wrap:wrap}.card{padding:25px}.server-card{grid-template-columns:minmax(0,1fr) auto}.server-card__meta{display:none}.detail-top{padding:20px;flex-direction:column}.detail-actions{justify-content:flex-start}.detail-tabs{padding:0 14px}.detail-body{padding:0 16px 20px}.monitoring{grid-template-columns:repeat(2,minmax(0,1fr))}.table-head,.table-row{min-width:650px}.mobile-only{display:initial}}
 @media(max-width:480px){.content{padding-inline:14px}.page-actions,.page-actions button{width:100%}.server-card{padding:15px}.detail-heading{gap:11px}.detail-icon{display:none}.monitoring{grid-template-columns:1fr}.definition-row{grid-template-columns:1fr;gap:2px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}.loading-spinner{animation:spin 1.8s linear infinite!important}}
+
+/* Motion is intentionally brief and tied to meaningful UI changes: page
+   navigation, entering data, and direct hover feedback. Nothing loops apart
+   from status/activity indicators, and the whole layer is omitted when the
+   operating system requests reduced motion. */
+@media(prefers-reduced-motion:no-preference){
+  .content>section{animation:page-enter .38s cubic-bezier(.2,.8,.2,1) both}
+  .panel,.metric-card,.empty-state,.data-table{transition:transform var(--duration-normal) ease,border-color var(--duration-normal) ease,box-shadow var(--duration-normal) ease}
+  .panel:hover,.metric-card:hover{transform:translateY(-2px);border-color:var(--border-strong);box-shadow:var(--shadow-md)}
+  .table-row{transition:background-color var(--duration-fast) ease,transform var(--duration-fast) ease}
+  .table-row:hover{transform:translateX(2px)}
+  .dashboard-kpis .metric-card,.dashboard-network .metric-card,.node-status-card{animation:card-enter .42s cubic-bezier(.2,.8,.2,1) both}
+  .dashboard-kpis .metric-card:nth-child(2),.dashboard-network .metric-card:nth-child(2),.node-status-card:nth-child(2){animation-delay:.05s}
+  .dashboard-kpis .metric-card:nth-child(3),.dashboard-network .metric-card:nth-child(3),.node-status-card:nth-child(3){animation-delay:.1s}
+  .dashboard-kpis .metric-card:nth-child(4),.node-status-card:nth-child(4){animation-delay:.15s}
+  .node-status-card{transition:transform var(--duration-normal) ease,border-color var(--duration-normal) ease,box-shadow var(--duration-normal) ease}
+  .node-status-card:hover{transform:translateY(-2px);border-color:var(--border-strong);box-shadow:var(--shadow-md)}
+  .status.starting:before,.status.stopping:before,.status.degraded:before{animation:status-breathe 1.6s ease-in-out infinite}
+}
+@keyframes page-enter{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes card-enter{from{opacity:0;transform:translateY(10px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes status-breathe{0%,100%{opacity:.55;transform:scale(.9)}50%{opacity:1;transform:scale(1.12)}}
+
+/* Shared layout rhythm: keeps nested server sections visually separate. */
+.panel + .panel{margin-top:var(--space-5)}
+.detail-shell{isolation:isolate}
+.detail-tabs{margin:0 var(--space-5);padding:0 var(--space-2);border:1px solid var(--border);border-top:0;border-radius:0 0 var(--radius-sm) var(--radius-sm);background:var(--surface-subtle);scrollbar-width:none;overscroll-behavior-x:contain}
+.detail-tabs::-webkit-scrollbar{display:none}
+.detail-tabs button{padding-inline:var(--space-3)}
+.detail-tabs button.active{color:var(--text-primary)}
+.detail-body{display:grid;gap:var(--space-6);padding-top:var(--space-6)}
+.detail-body>:where(.overview-layout,.console-panel,.files-panel,.ports-page,.monitoring-page,.game-config-list,.remote-tool){margin-top:0}
+.overview-layout{margin-top:0}
+.detail-body .files-panel{padding-top:0}
+.detail-body .config-summary{margin-top:0}
+.detail-body .section-header:first-child{margin-top:0}
+.table-head{background:var(--surface-raised)}
+@media(max-width:760px){.detail-tabs{margin-inline:var(--space-3);padding-inline:var(--space-1)}.detail-body{padding-top:var(--space-5);gap:var(--space-5)}}

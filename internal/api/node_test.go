@@ -90,6 +90,9 @@ func (f *fakeRemoteClient) GetNodeInfo(ctx context.Context, endpoint, credential
 func (f *fakeRemoteClient) GetHealth(ctx context.Context, endpoint, credential string) (remote.HealthResult, error) {
 	return remote.HealthResult{Status: "healthy"}, f.infoErr
 }
+func (f *fakeRemoteClient) GetNodeStatus(ctx context.Context, endpoint, credential string) (remote.NodeStatus, error) {
+	return remote.NodeStatus{}, nil
+}
 
 func (f *fakeRemoteClient) StartProvisioning(ctx context.Context, endpoint, credential string, req remote.ProvisioningRequest) (provisioning.Job, error) {
 	f.startCalls++
@@ -316,6 +319,13 @@ func TestPairingAndEnrollmentEndToEnd(t *testing.T) {
 	h.ServeHTTP(w, info)
 	if w.Code != http.StatusOK {
 		t.Fatalf("node info with issued credential: %d %s", w.Code, w.Body.String())
+	}
+	status := httptest.NewRequest(http.MethodGet, "/api/v1/node/status", nil)
+	status.Header.Set("Authorization", "Bearer "+enrollBody.Credential)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, status)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"servers"`) || !strings.Contains(w.Body.String(), `"workload"`) {
+		t.Fatalf("node status with issued credential: %d %s", w.Code, w.Body.String())
 	}
 }
 

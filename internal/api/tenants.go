@@ -93,7 +93,7 @@ func (s *Server) tenantsHandler(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &in) {
 			return
 		}
-		tenant, err := s.tenants.Create(r.Context(), in)
+		tenant, err := s.tenants.CreateForOwner(r.Context(), in, actor.ID)
 		if err != nil {
 			s.recordTenantAudit(r, actor, audit.TenantCreate, "", in.Name, nil, err)
 			tenantError(w, err)
@@ -119,6 +119,10 @@ func (s *Server) tenantHandler(w http.ResponseWriter, r *http.Request) {
 	id := parts[0]
 	if len(parts) == 2 && parts[1] == "members" {
 		s.tenantMembersHandler(w, r, id)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "invitations" {
+		s.tenantInvitationHandler(w, r, id)
 		return
 	}
 	if len(parts) == 3 && parts[1] == "members" {
@@ -163,7 +167,7 @@ func (s *Server) tenantHandler(w http.ResponseWriter, r *http.Request) {
 			tenantError(w, err)
 			return
 		}
-		s.recordTenantAudit(r, actor, audit.TenantUpdate, tenant.ID, tenant.Name, map[string]any{"slug": tenant.Slug}, nil)
+		s.recordTenantAudit(r, actor, audit.TenantUpdate, tenant.ID, tenant.Name, map[string]any{"slug": tenant.Slug, "status_page_enabled": tenant.StatusPageEnabled, "status_page_public": tenant.StatusPagePublic}, nil)
 		jsonOut(w, http.StatusOK, map[string]any{"tenant": tenant})
 	case http.MethodDelete:
 		actor, _, ok := s.requireGlobalPermission(w, r, "Tenants.Manage", true)

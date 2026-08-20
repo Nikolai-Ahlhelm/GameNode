@@ -8,7 +8,9 @@ import (
 	"net/http"
 
 	"gamenode/internal/audit"
+	"gamenode/internal/emailverification"
 	"gamenode/internal/logging"
+	"gamenode/internal/notifications"
 	"gamenode/internal/settings"
 )
 
@@ -55,6 +57,124 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		method(w)
 	}
+}
+
+func (s *Server) emailVerificationSettingsHandler(w http.ResponseWriter, r *http.Request) {
+	if s.emailVerification == nil {
+		internal(w)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		if _, _, ok := s.requireGlobalPermission(w, r, "Settings.View", false); !ok {
+			return
+		}
+		value, err := s.emailVerification.GetConfiguration(r.Context())
+		if err != nil {
+			internal(w)
+			return
+		}
+		jsonOut(w, http.StatusOK, value)
+	case http.MethodPatch:
+		actor, _, ok := s.requireGlobalPermission(w, r, "Settings.Manage", true)
+		if !ok {
+			return
+		}
+		var patch emailverification.ConfigurationPatch
+		if !decode(w, r, &patch) {
+			return
+		}
+		value, changed, err := s.emailVerification.UpdateConfiguration(r.Context(), patch)
+		if err != nil {
+			persistence := errors.Is(err, emailverification.ErrPersistence)
+			code := "invalid_email_verification_settings"
+			if persistence {
+				code = "operation_failed"
+			}
+			s.recordAudit(r, auditInput{action: audit.SettingsUpdate, resourceType: audit.Settings, result: audit.Failure, actor: &actor, errorCode: code, errorSummary: "email verification settings could not be updated", err: err})
+			if persistence {
+				internal(w)
+				return
+			}
+			bad(w, err.Error())
+			return
+		}
+		metadata, _ := json.Marshal(map[string]any{"changed_fields": changed})
+		s.recordAudit(r, auditInput{action: audit.SettingsUpdate, resourceType: audit.Settings, result: audit.Success, actor: &actor, metadata: metadata})
+		jsonOut(w, http.StatusOK, value)
+	default:
+		method(w)
+	}
+}
+
+func (s *Server) emailAlertsHandler(w http.ResponseWriter, r *http.Request) {
+	if s.emailAlerts == nil {
+		internal(w)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		if _, _, ok := s.requireGlobalPermission(w, r, "Settings.View", false); !ok {
+			return
+		}
+		value, err := s.emailAlerts.Get(r.Context())
+		if err != nil {
+			internal(w)
+			return
+		}
+		jsonOut(w, http.StatusOK, value)
+	case http.MethodPatch:
+		actor, _, ok := s.requireGlobalPermission(w, r, "Settings.Manage", true)
+		if !ok {
+			return
+		}
+		var patch notifications.Patch
+		if !decode(w, r, &patch) {
+			return
+		}
+		value, changed, err := s.emailAlerts.Update(r.Context(), patch)
+		if err != nil {
+			persistence := errors.Is(err, notifications.ErrPersistence)
+			code := "invalid_email_alert_settings"
+			if persistence {
+				code = "operation_failed"
+			}
+			s.recordAudit(r, auditInput{action: audit.SettingsUpdate, resourceType: audit.Settings, result: audit.Failure, actor: &actor, errorCode: code, errorSummary: "email alert settings could not be updated", err: err})
+			if persistence {
+				internal(w)
+				return
+			}
+			bad(w, err.Error())
+			return
+		}
+		metadata, _ := json.Marshal(map[string]any{"changed_fields": changed})
+		s.recordAudit(r, auditInput{action: audit.SettingsUpdate, resourceType: audit.Settings, result: audit.Success, actor: &actor, metadata: metadata})
+		jsonOut(w, http.StatusOK, value)
+	default:
+		method(w)
+	}
+}
+
+func (s *Server) emailAlertsTestHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		method(w)
+		return
+	}
+	actor, _, ok := s.requireGlobalPermission(w, r, "Settings.Manage", true)
+	if !ok {
+		return
+	}
+	if s.emailAlerts == nil {
+		internal(w)
+		return
+	}
+	if err := s.emailAlerts.Test(r.Context()); err != nil {
+		s.recordAudit(r, auditInput{action: audit.SettingsEmailTest, resourceType: audit.Settings, result: audit.Failure, actor: &actor, errorCode: "email_delivery_failed", errorSummary: "test email could not be delivered", err: err})
+		errorOut(w, http.StatusBadGateway, "email_delivery_failed", "test email could not be delivered; verify the SMTP settings")
+		return
+	}
+	s.recordAudit(r, auditInput{action: audit.SettingsEmailTest, resourceType: audit.Settings, result: audit.Success, actor: &actor})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) brandingFaviconHandler(w http.ResponseWriter, r *http.Request) {

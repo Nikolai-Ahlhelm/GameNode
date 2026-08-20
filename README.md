@@ -229,6 +229,60 @@ The template does not download Minecraft or NeoForge, write `eula.txt`, overwrit
 
 ## Version history
 
+### v1.0.0
+
+GameNode v1.0.0 expands the platform from a server-management foundation into
+an operational multi-tenant release with external access, status publishing,
+notifications, and a broader template catalog.
+
+#### Tenants, users, and access
+
+- Tenant owners, administrators, invitations, registration, and quotas.
+- Safe migration of existing servers between tenants.
+- Built-in Tenant, Server, and GameNode roles for common operator profiles.
+- Password-reset and email-verification building blocks.
+- Stricter tenant-boundary and server-ownership validation throughout the API.
+
+#### FTP and FTPS
+
+- Embedded per-server FTP/FTPS service with configurable TLS and passive mode.
+- Revocable, rotatable credentials managed from each server's FTP tab.
+- Every session is confined to the server's configured working directory.
+- No operating-system user provisioning, shell execution, or Docker dependency.
+
+#### Status pages and notifications
+
+- Opt-in public or permission-protected status pages per tenant.
+- Persisted server status history with availability and health visualization.
+- Bounded background sampling and retention of status history.
+- Asynchronous lifecycle email alerts with SMTP and Microsoft Graph providers.
+- Configurable recipients and event types without exposing secrets in audit data.
+
+#### Templates and Game Library
+
+- Restricted Pelican/Pterodactyl source analysis for approved GitHub Egg files.
+- Pelican SteamCMD catalog import with bounded, normalized template data.
+- Eleven additional SteamCMD templates, including Astro Colony, DDNet,
+  Colony Survival, Post Scriptum, Qanga, Quake Live, and The Bus.
+- Existing native and Container safety boundaries remain enforced for imports.
+
+#### Web interface and API
+
+- Browser-history navigation with deep links to servers, tenants, and status
+  pages.
+- New FTP, tenant registration, password-reset, status, and tenant-migration
+  API surfaces.
+- Expanded tenant, server, settings, dashboard, and audit workflows.
+- Updated API, architecture, and security documentation.
+
+#### Reliability and security
+
+- Fixed Windows path canonicalization and reparse-point test handling.
+- Fixed CRLF-sensitive template documentation parsing.
+- Fixed a Container runtime test race that caused Linux race-detector failures.
+- Improved lifecycle, tenant-isolation, and audit validation.
+- SPA handling now accepts only GET and HEAD requests.
+
 ### v0.9.0
 
 GameNode v0.9.0 brings together the current server-management, provisioning,

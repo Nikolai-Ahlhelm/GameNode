@@ -87,6 +87,18 @@ func (s *Service) ResolveServerPath(root, relativePath string) (string, error) {
 	return sandbox.resolve(relativePath)
 }
 
+// ResolveServerMutationPath validates a root-relative mutation target while
+// allowing the final path component not to exist. It is exposed for trusted
+// protocol adapters such as the embedded FTP service; callers must still use
+// the returned absolute path directly and must never append client input.
+func (s *Service) ResolveServerMutationPath(root, relativePath string) (string, error) {
+	sandbox, err := newSandbox(root)
+	if err != nil {
+		return "", err
+	}
+	return sandbox.mutationPath(relativePath)
+}
+
 func (s *Service) ListDirectory(root, relativePath string) ([]Entry, error) {
 	sandbox, err := newSandbox(root)
 	if err != nil {
@@ -141,6 +153,64 @@ func (s *Service) Move(root, source, destination string) error {
 		return err
 	}
 	return sandbox.move(source, destination)
+}
+
+// MoveManagedRoot atomically moves one complete managed server directory
+// below the GameNode data root. Both paths are resolved through the same
+// sandbox boundary and reparse-point checks as ordinary server-file moves;
+// callers must provide paths that have already been derived from validated
+// tenant storage identifiers. The destination parent is created when needed.
+// Cross-filesystem moves are deliberately not copied implicitly: callers get
+// the underlying rename error so a partial, unbounded copy can never occur.
+func (s *Service) MoveManagedRoot(dataRoot, source, destination string) error {
+	sandbox, err := newSandbox(dataRoot)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(source) == filepath.Clean(destination) {
+		return ErrInvalidPath
+	}
+	sourceRelative, err := filepath.Rel(sandbox.root, filepath.Clean(source))
+	if err != nil || sourceRelative == "." || filepath.IsAbs(sourceRelative) || strings.HasPrefix(sourceRelative, ".."+string(filepath.Separator)) || sourceRelative == ".." {
+		return ErrPathEscapesRoot
+	}
+	destinationRelative, err := filepath.Rel(sandbox.root, filepath.Clean(destination))
+	if err != nil || destinationRelative == "." || filepath.IsAbs(destinationRelative) || strings.HasPrefix(destinationRelative, ".."+string(filepath.Separator)) || destinationRelative == ".." {
+		return ErrPathEscapesRoot
+	}
+	sourcePath, err := sandbox.mutationPath(filepath.ToSlash(sourceRelative))
+	if err != nil {
+		return err
+	}
+	sourceInfo, err := os.Lstat(sourcePath)
+	if err != nil {
+		return mapPathError(err)
+	}
+	if !sourceInfo.IsDir() {
+		return ErrExpectedDir
+	}
+	if unsafe, err := isReparsePoint(sourcePath); err != nil {
+		return mapPathError(err)
+	} else if unsafe {
+		return ErrSpecialFile
+	}
+	destinationParent := filepath.Dir(filepath.Clean(destination))
+	if err := os.MkdirAll(destinationParent, 0o700); err != nil {
+		return mapPathError(err)
+	}
+	destinationPath, err := sandbox.mutationPath(filepath.ToSlash(destinationRelative))
+	if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(destinationPath); err == nil {
+		return ErrAlreadyExists
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return mapPathError(err)
+	}
+	if err := os.Rename(sourcePath, destinationPath); err != nil {
+		return mapPathError(err)
+	}
+	return nil
 }
 
 func (s *Service) Delete(root, relativePath string, recursive bool) error {

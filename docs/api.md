@@ -40,7 +40,8 @@ The API integration suite covers setup/login/logout, server CRUD/lifecycle, WebS
 | GET | `/api/v1/servers/creatable-tenants` | The tenants the caller may create a managed server in (any authenticated user; empty list if none). Exists so the Create Server/Game Library UI can offer or lock a tenant selector without requiring `Tenants.View` - it reveals only `id`/`name`, the same information already shown on every server the caller can see |
 | POST | `/api/v1/servers` | Creates or adopts a native server definition; accepts an arbitrary `working_directory`, so it requires *global* `Server.Create` even though the permission itself also supports tenant scope (see Tenant isolation below) |
 | GET | `/api/v1/servers/{id}` | Reads one server and runtime state; response includes `tenant_id`/`tenant_name` |
-| PATCH | `/api/v1/servers/{id}` | Updates a stopped server definition; `tenant_id` in the body is ignored, a server's tenant is immutable after creation |
+| PATCH | `/api/v1/servers/{id}` | Updates a stopped server definition; `tenant_id` in the body is ignored (use the explicit administrator migration endpoint to change ownership) |
+| POST | `/api/v1/servers/{id}/tenant` | GameNode administrator only; physically migrates a stopped provisioned server to an existing tenant, including its managed server directory |
 | DELETE | `/api/v1/servers/{id}` | Force-terminates an active process and deletes the server definition; files are retained |
 | POST | `/api/v1/servers/{id}/start` | Starts the native application |
 | POST | `/api/v1/servers/{id}/stop` | Stops it with timeout escalation |
@@ -59,6 +60,9 @@ The API integration suite covers setup/login/logout, server CRUD/lifecycle, WebS
 | POST | `/api/v1/servers/{id}/files/move` | Renames or moves a file or directory inside the root |
 | POST | `/api/v1/servers/{id}/files/upload?path=...` | Streams one multipart file into a server-root-relative directory |
 | GET | `/api/v1/servers/{id}/files/download?path=...` | Streams one regular file as an attachment |
+| GET | `/api/v1/servers/{id}/ftp` | Reads per-server FTP/FTPS status and connection details with `FTP.View` |
+| PATCH | `/api/v1/servers/{id}/ftp` | Enables or disables that server's FTP identity with `FTP.Manage` |
+| POST | `/api/v1/servers/{id}/ftp/credentials` | Rotates and enables the server credential with `FTP.Manage`; returns the plaintext password once |
 
 ## Files API
 
@@ -71,6 +75,12 @@ Content responses contain `path`, `size`, `modified_at`, `encoding` (`utf-8`), a
 Files are RBAC-enforced per server: `Files.View` lists and reads text content; `Files.Download` authorizes downloads; `Files.Edit` creates files/directories and writes text; `Files.Rename` moves or renames; `Files.Delete` removes content; and `Files.Upload` authorizes uploads. These permissions are independent: for example, `Files.View` does not imply download or edit access.
 
 All file mutations require the normal administrator session, same-origin validation, and `X-CSRF-Token`. Mutation JSON uses only relative paths: `{"path":"config/server.properties","content":"..."}` for creates/writes, and `{"source":"old.txt","destination":"archive/old.txt"}` for moves. Create operations return a conflict when the target exists; directory creation is non-recursive. Writes replace existing regular text files through a temporary file in the same directory followed by an atomic replacement. Deletes are non-recursive unless `recursive=true` is explicitly supplied; the server root itself cannot be deleted.
+
+### FTP/FTPS
+
+The embedded FTP service is configured at startup under the `ftp` YAML section and is disabled by default. Deployments that enable it should configure a certificate and keep `require_tls: true`; clear-text FTP is appropriate only on a trusted loopback/private network. Passive data connections use the configured bounded port range and optional `public_host` IPv4 address.
+
+Migration `029_server_ftp_credentials.sql` creates one identity row for every existing and future server. A row is disabled and has no usable password until an operator calls the credential rotation endpoint. Passwords are random URL-safe values and are stored only as Argon2id hashes. The password is returned only in the rotation response and is never logged or audited. FTP users are not browser users and are confined to the server's configured working directory. Enabling is rejected when an adopted server root overlaps another server root, because two overlapping roots cannot provide isolation.
 
 ### Upload and download
 
@@ -124,6 +134,10 @@ Server create/update payloads accept `auto_restart_enabled`, `auto_restart_max_a
 
 The typed surface includes `monitoring.sample_interval_seconds` (1–300), `monitoring.history_limit` (1–10,000), `logging.level` (`debug`/`info`/`warn`/`error`), `logging.categories.{http,database,runtime,auth,filesystem,provisioning,steamcmd,templates,general}` (each an independent `bool`, default `true`), `logging.detailed_errors` (`bool`, default `false`), `branding.name` (1–64 characters), `branding.subtitle` (0–128 characters), and the live password policy fields `security.password_minimum_length` (8–128, default 8) and `security.password_maximum_length` (at least the minimum and at most 256, default 256). Branding, logging, and password-policy changes apply immediately; existing passwords are not invalidated. PATCH accepts only whitelisted typed fields and rejects unknown fields, including any unrecognized key inside `logging.categories` - it is a fixed set of named switches, never an arbitrary logger-configuration map. IPv4/IPv6, database, TLS, session, filesystem, executable, environment, and arbitrary YAML values are not settings API fields. A successful mutation records one `settings.update` audit event containing only changed field names - never `logging.detailed_errors`'s effect (the underlying errors it may unlock) itself, since that only ever reaches the local application log (`data/log`), never the audit record, an API response, diagnostics, or a support bundle.
 
+`GET`/`PATCH /api/v1/settings/email-alerts` use global-only `Settings.View`/`Settings.Manage`. The typed configuration covers SMTP host, port, `starttls`/implicit `tls`/unauthenticated `none`, username, write-only password, sender, up to 20 recipients, subject prefix, and independent switches for server start, stop, crash, restart, auto-restart failure, and auto-restart-limit events. Responses expose only `password_configured`; the password is never returned. SMTP authentication is rejected without TLS. `POST /api/v1/settings/email-alerts/test` requires `Settings.Manage`, same-origin validation, and CSRF, performs one bounded synchronous test delivery, and records a sanitized `settings.email_test` audit event. Normal lifecycle delivery uses a bounded asynchronous queue and never blocks `servers.Service` lifecycle/finalization.
+
+`GET`/`PATCH /api/v1/settings/email-verification` provide the administrative backend configuration for future self-registration and use global-only `Settings.View`/`Settings.Manage` with the normal CSRF and audit rules. The typed fields are `enabled`, `lifetime_minutes` (5–1,440), `resend_cooldown_seconds` (30–3,600), and `max_attempts` (1–20); the feature defaults to disabled. There is intentionally no public registration, verification-request, or verification-submit endpoint yet. Those routes are deferred until the registration workflow is implemented and can add request/IP abuse controls as one reviewed boundary.
+
 `PUT /api/v1/settings/favicon` and `DELETE /api/v1/settings/favicon` require global `Settings.Manage` and CSRF. Uploads are bounded to 256 KiB and accept validated PNG images up to 512×512 or structurally bounded ICO files; SVG and remote URLs are not accepted. `GET /api/v1/branding/favicon` is public so browsers can load the current icon, returns only the validated stored bytes with `nosniff`, and returns 404 when no custom favicon exists.
 
 ## Diagnostics
@@ -143,7 +157,7 @@ Console WebSocket connections require `Console.View`. `Console.Send` is checked 
 An enabled administrator bypasses these checks. `Users.Manage` does not permit setting or clearing `is_admin`; only an active administrator can change that flag, and last-active-admin protection remains independent. `Roles.Manage` may delegate catalogized RBAC permissions, but cannot create unknown permission keys or an administrator bypass.
 # Audit log
 
-`GET /api/v1/dashboard` is read-only and returns capability-filtered server, monitoring, port, and (only with global `Audit.View`) recent audit summaries. It never reports hidden servers or performs port scans or mutations.
+`GET /api/v1/dashboard` is read-only and returns capability-filtered server, monitoring, port, and (only with global `Audit.View`) recent audit summaries. Its `workload` aggregate contains only monitored, visible GameNode-managed server processes; it is not host-wide CPU or memory telemetry. It never reports hidden servers or performs port scans or mutations.
 
 `GET /api/v1/audit` is a read-only, global audit endpoint. It requires the global-only `Audit.View` permission (a server-scoped assignment does not grant access); administrators retain the normal bypass. It accepts bounded `limit` (default 100, maximum 500) and `offset`, plus `actor_user_id`, `action`, `resource_type`, `resource_id`, `server_id`, and `result` filters. The optional bounded `query` filter searches action, actor snapshot, resource type/name/IDs, server ID, and controlled error fields; SQL wildcard characters in user input are treated literally. Results are newest first (`timestamp DESC`, `id DESC`) and return `items`, `limit`, and `offset`. Each item uses lower-snake-case JSON fields such as `timestamp`, `actor_username`, and `resource_id`, and contains its persisted actor/resource snapshots, result, direct remote IP, controlled metadata, and sanitized error fields. Deleted resources remain visible through those snapshots. GameNode exposes no audit mutation, clear, or delete endpoint.
 # Templates API
@@ -153,10 +167,15 @@ Templates are global node resources. `Templates.View` and `Templates.Manage` are
 | Method | Path | Authorization and behavior |
 |---|---|---|
 | `POST` | `/api/v1/templates/analyze/egg` | `Templates.Manage` + CSRF; normalize and return a preview without persistence |
+| `POST` | `/api/v1/templates/analyze/egg-url` | `Templates.Manage` + CSRF; fetch and normalize one approved GitHub JSON link without persistence |
+| `POST` | `/api/v1/templates/import/egg-url` | `Templates.Manage` + CSRF; re-fetch, normalize, and persist one approved GitHub JSON link |
 | `POST` | `/api/v1/templates/import/egg` | `Templates.Manage` + CSRF; normalize, persist, and audit exactly one import mutation |
 | `GET` | `/api/v1/templates` | `Templates.View`; list normalized templates |
 | `GET` | `/api/v1/template-catalog` | `Templates.View`; return validated Official templates plus remote/cache/offline status; never triggers network I/O |
 | `POST` | `/api/v1/template-catalog/refresh` | `Templates.View` + CSRF; refresh the fixed Official source, returning cached data on remote failure when available |
+| `GET` | `/api/v1/pelican-catalog` | `Templates.View`; return the separate cached Pelican Egg catalog and normalized compatibility results |
+| `POST` | `/api/v1/pelican-catalog/refresh` | `Templates.View` + CSRF; refresh the fixed Pelican SteamCMD repository source |
+| `POST` | `/api/v1/pelican-catalog/import` | `Templates.Manage` + CSRF; import one reviewed-by-the-operator Pelican path into the normal normalized-template store |
 | `GET` | `/api/v1/templates/{id}` | `Templates.View`; read one normalized template |
 | `DELETE` | `/api/v1/templates/{id}` | `Templates.Manage` + CSRF; delete and audit an imported template; Official/built-in templates return `409` |
 | `GET` | `/api/v1/templates/{id}/provisionability` | `Templates.View` (global) + global `Server.Create`; whether this node can install this template is tenant-independent, so this check stays global-only by design |
@@ -175,6 +194,10 @@ Analyze/import accept `{"egg": <Egg JSON object>}`. Upload and pasted JSON clien
 The NeoForge resolve/adopt body is `{"server_name":"...","server_root":"absolute existing path","minimum_memory_mb":1024,"maximum_memory_mb":4096,"nogui":true}`. Resolve returns detected NeoForge/Minecraft versions, platform argfile launch, Java discovery state, working directory, and stop semantics. Adopt fails with `java_not_found` unless Java is available through `JAVA_HOME` or `PATH`; it does not alter the selected installation.
 
 `GET /template-catalog` reports `source` (`remote`, `cache`, or `none`), `fetched_at`, `cached`, `offline`, a bounded generic `last_error`, and the count of isolated invalid templates. Refresh returns `503 official_catalog_unavailable` only when no valid Official data exists; a last-good cache is returned with `200` and offline status. Catalog reads and manual refreshes are not audited.
+
+`GET /pelican-catalog` is deliberately separate from the Official catalog. It reads the fixed `pelican-eggs/games-steamcmd` repository tree, normalizes each bounded Egg through the same analyzer, and returns only normalized metadata plus the source path - never raw Egg JSON or installation scripts. The result is cached in memory for a bounded interval and is not a startup dependency. Import accepts only a source path present in the current fixed catalog; it re-fetches and re-analyzes that Egg before persisting it as an ordinary `pelican-pterodactyl` template. Existing Official templates are never replaced.
+
+Direct Egg import also supports a guided one-file flow. The upload endpoint accepts a bounded local JSON document; the URL endpoints accept only HTTPS `github.com/.../blob/...json` or `raw.githubusercontent.com/...json` links, without query parameters, and follow redirects only within those approved hosts. GameNode analyzes the Egg first and persists it only after the operator explicitly confirms the normalized preview. Other hosts and arbitrary download URLs are rejected.
 
 # Provisioning API
 
@@ -276,6 +299,7 @@ Every route below requires `Authorization: Bearer <machine credential>` validate
 | --- | --- | --- |
 | `GET` | `/api/v1/node/info` | Returns `{node_id, display_name, gamenode_version, os, arch, protocol_version, capabilities, started_at, uptime_seconds}` - never environment variables, filesystem paths, secrets, the database path, or the Docker socket path |
 | `GET` | `/api/v1/node/health` | Returns `{status:"healthy"}` in this milestone |
+| `GET` | `/api/v1/node/status` | Machine-authenticated bounded aggregate of managed-server states and CPU/RAM workload; never host-wide telemetry |
 | `GET` | `/api/v1/node/capabilities` | Returns `{capabilities, protocol_version}` |
 | `POST` | `/api/v1/node/enroll` | Body `{"pairing_token":"..."}`; consumes a single-use pairing token and returns `{node_id, display_name, credential, protocol_version, gamenode_version, os, arch, capabilities}` exactly once |
 
@@ -295,6 +319,7 @@ Every route below requires `Authorization: Bearer <machine credential>` validate
 | `PATCH` | `/api/v1/remote-nodes/{id}` | `Node.Manage` + CSRF; body `{"display_name":"...","enabled":true|false}` (either field optional); never contacts the remote node |
 | `DELETE` | `/api/v1/remote-nodes/{id}` | `Node.Manage` + CSRF; removes the registry entry only - never affects the remote node itself |
 | `POST` | `/api/v1/remote-nodes/{id}/refresh` | `Node.View` + CSRF; triggers one bounded, immediate status refresh |
+| `GET` | `/api/v1/remote-nodes/{id}/status` | global `Node.View` + global `RemoteServer.View` + global `RemoteMonitoring.View`; returns the remote node's bounded managed-workload aggregate. Tenant-scoped grants cannot access node-wide totals. |
 
 # Cluster Scheduling API (v0.6)
 
@@ -347,6 +372,10 @@ Jobs created through this path carry a fixed synthetic actor identity (`"remote-
 Every registry response includes a derived (never stored) `compatibility` field - `compatible`, `limited_capabilities`, `incompatible`, or `unknown` - computed from the remote node's `protocol_version` against this controller's own `nodeidentity.ProtocolVersion`.
 
 Remote-node errors are translated to stable codes, never raw transport/TLS errors: `node_unreachable`, `node_authentication_failed`, `node_protocol_incompatible`, `node_response_too_large`, `node_malformed_response` (HTTP `502`), plus the ordinary `not_found`/`conflict` for registry-level problems (duplicate node ID/endpoint).
+
+## Tenant status dashboards
+
+`GET /api/v1/status/{tenant-slug}` returns the enabled tenant status dashboard. A tenant marked public needs no session; a private dashboard requires an authenticated user with effective `Monitoring.View` for that tenant. Disabled and unknown dashboards both return `404`. The response is intentionally reduced to tenant display identity, service names, current health/state, availability percentage calculated from persisted five-minute checks, and 90 compressed points covering the last 30 days (`up`, `degraded`, `down`, or `unknown`). It never contains process IDs, paths, resource metrics, console data, or error details. `/api/v1/status` resolves to the `default` tenant.
 
 ### Remote Server Management and Operational Hardening (v0.5B/v0.5C)
 

@@ -35,10 +35,12 @@ const (
 	// Adapter formats. The first three edit a game-owned file in place; the
 	// fourth stores typed values in GameNode and binds them to the native
 	// launch. Adapter schema v2 is required for ManagedLaunch.
-	FormatXMLProperties = "xml-properties"
-	FormatINIKeyValues  = "ini-key-values"
-	FormatSectionTuple  = "section-tuple-key-values"
-	FormatManagedLaunch = "managed-launch"
+	FormatXMLProperties       = "xml-properties"
+	FormatINIKeyValues        = "ini-key-values"
+	FormatJSONKeyValues       = "json-key-values"
+	FormatINISectionKeyValues = "ini-section-key-values"
+	FormatSectionTuple        = "section-tuple-key-values"
+	FormatManagedLaunch       = "managed-launch"
 
 	// Binding types are a closed whitelist. There is deliberately no
 	// expression, template, or index-based argument manipulation.

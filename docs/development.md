@@ -157,7 +157,7 @@ $env:GAMENODE_SATISFACTORY_FULL_ACCEPTANCE_DATA='C:\temp\gamenode-satisfactory-f
 go test ./internal/provisioning -run '^TestSatisfactoryFullDeploymentIntegration$' -count=1 -v -timeout 75m
 ```
 
-The acceptance provisions App ID `1690800`, verifies `FactoryServer.exe`, structured port/player arguments, three registered port rows, start stability, terminate behavior, and restart. It does not claim or configure the server through the game API and does not characterize Windows terminate as graceful.
+The acceptance provisions App ID `1690800`, verifies `FactoryServer.exe`, structured port/player arguments, three registered port rows, start stability, Windows `console_interrupt` stop behavior, and restart. It does not claim or configure the server through the game API.
 # Container development
 
 Normal unit tests use a fake Engine and fake Container installer and do not require

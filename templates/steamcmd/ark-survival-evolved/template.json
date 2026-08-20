@@ -1,0 +1,71 @@
+{
+  "schema_version": 2,
+  "id": "ark-survival-evolved",
+  "name": "ARK: Survival Evolved Dedicated Server",
+  "description": "Install the ARK: Survival Evolved dedicated server through SteamCMD and launch its native server binary directly without a shell.",
+  "version": "1.0.0",
+  "category": "steamcmd",
+  "minimum_gamenode_version": "0.2.0",
+  "known_limitations": [
+    "GameNode manages selected ServerSettings values through a bounded sectioned INI adapter. Advanced gameplay, mod, cluster, BattlEye, and other INI settings remain unmanaged.",
+    "The adapter targets the generated WindowsServer configuration; Linux ASE configuration remains documented only because adapter targets are currently not platform-specific.",
+    "GameNode uses bounded native termination. ARK's save-on-shutdown behavior is not claimed as a guaranteed graceful stop.",
+    "Automatic updates, mod installation, cluster orchestration, and update-on-start are outside this template. SteamCMD updates are explicit through GameNode's Update Server action."
+  ],
+  "icon": "steamcmd",
+  "source_type": "official",
+  "source_identifier": "ark-survival-evolved",
+  "source_format_version": "2",
+  "tags": ["ark", "ark-survival-evolved", "steam", "steamcmd", "survival", "sandbox"],
+  "source_metadata": {"author": "GameNode", "tags": ["ark", "ark-survival-evolved", "steam", "steamcmd", "survival", "sandbox"]},
+  "installer": {"type": "steamcmd", "steamcmd": {"app_id": 376030, "validate": true, "login_mode": "anonymous", "platform": "native", "install_target": "server_root"}},
+  "platform_launches": {
+    "windows": {
+      "executable": "ShooterGame/Binaries/Win64/ShooterGameServer.exe",
+      "arguments": ["{{MAP}}?listen?SessionName={{SERVER_NAME}}?Port={{SERVER_PORT}}?QueryPort={{QUERY_PORT}}?MaxPlayers={{MAX_PLAYERS}}", "-server", "-log"],
+      "working_root": "server_root", "stop_method": "terminate", "stop_timeout_seconds": 90
+    },
+    "linux": {
+      "executable": "ShooterGame/Binaries/Linux/ShooterGame",
+      "arguments": ["{{MAP}}?listen?SessionName={{SERVER_NAME}}?Port={{SERVER_PORT}}?QueryPort={{QUERY_PORT}}?MaxPlayers={{MAX_PLAYERS}}", "-server", "-log"],
+      "working_root": "server_root", "stop_method": "terminate", "stop_timeout_seconds": 90
+    }
+  },
+  "variables": [
+    {"name":"Map", "description":"Map identifier passed to the dedicated server. The default is TheIsland.", "key":"MAP", "default_value":"TheIsland", "user_viewable":true, "user_editable":true, "type":"enum", "sensitive":false, "required":true, "nullable":false, "validation":{"allowed":["TheIsland","TheCenter","ScorchedEarth","Ragnarok","Aberration","Extinction","Valguero","Genesis","CrystalIsles","LostIsland","Fjordur"]}, "group":"General"},
+    {"name":"Server name", "description":"Name shown in the ARK server browser.", "key":"SERVER_NAME", "default_value":"GameNode ARK", "user_viewable":true, "user_editable":true, "type":"string", "sensitive":false, "required":true, "nullable":false, "validation":{"min_length":1,"max_length":64}, "group":"General"},
+    {"name":"Game port", "description":"UDP port for ARK game traffic.", "key":"SERVER_PORT", "default_value":"7777", "user_viewable":true, "user_editable":true, "type":"integer", "sensitive":false, "required":true, "nullable":false, "validation":{"min":1024,"max":65534}, "group":"Network"},
+    {"name":"Query port", "description":"UDP query port used by the server browser.", "key":"QUERY_PORT", "default_value":"27015", "user_viewable":true, "user_editable":true, "type":"integer", "sensitive":false, "required":true, "nullable":false, "validation":{"min":1024,"max":65535}, "group":"Network"},
+    {"name":"Maximum players", "description":"Maximum number of simultaneous players.", "key":"MAX_PLAYERS", "default_value":"70", "user_viewable":true, "user_editable":true, "type":"integer", "sensitive":false, "required":true, "nullable":false, "validation":{"min":1,"max":200}, "group":"Gameplay"},
+    {"name":"Server password", "description":"Optional password required to join.", "key":"SERVER_PASSWORD", "default_value":"", "user_viewable":true, "user_editable":true, "type":"secret", "sensitive":true, "required":false, "nullable":true, "validation":{"max_length":128}, "group":"Security"},
+    {"name":"Admin password", "description":"Optional password for ARK administrator commands.", "key":"ADMIN_PASSWORD", "default_value":"", "user_viewable":true, "user_editable":true, "type":"secret", "sensitive":true, "required":false, "nullable":true, "validation":{"max_length":128}, "group":"Security"},
+    {"name":"PvE mode", "description":"Disable PvP and run the server in PvE mode.", "key":"PVE_MODE", "default_value":"false", "user_viewable":true, "user_editable":true, "type":"boolean", "sensitive":false, "required":false, "nullable":false, "validation":{}, "group":"Gameplay"},
+    {"name":"RCON enabled", "description":"Enable ARK remote console support.", "key":"RCON_ENABLED", "default_value":"false", "user_viewable":true, "user_editable":true, "type":"boolean", "sensitive":false, "required":false, "nullable":false, "validation":{}, "group":"Administration"},
+    {"name":"RCON port", "description":"TCP port used by ARK RCON when enabled.", "key":"RCON_PORT", "default_value":"27020", "user_viewable":true, "user_editable":true, "type":"integer", "sensitive":false, "required":false, "nullable":false, "validation":{"min":1024,"max":65535}, "group":"Administration"}
+  ],
+  "ports": [
+    {"name":"Game", "protocol":"udp", "variable":"SERVER_PORT", "required":true, "purpose":"ARK game traffic"},
+    {"name":"Query", "protocol":"udp", "variable":"QUERY_PORT", "required":true, "purpose":"Server browser query"}
+  ],
+  "expected_files": [
+    {"path":"ShooterGame/Binaries/Win64/ShooterGameServer.exe", "type":"file", "required":true, "executable":true, "platform":"windows"},
+    {"path":"ShooterGame/Binaries/Linux/ShooterGame", "type":"file", "required":true, "executable":true, "platform":"linux"}
+  ],
+  "config_files": [
+    {"path":"ShooterGame/Saved/Config/WindowsServer/GameUserSettings.ini", "format":"ini", "description":"Generated Windows ARK server settings."},
+    {"path":"ShooterGame/Saved/Config/WindowsServer/Game.ini", "format":"ini", "description":"Generated Windows ARK gameplay settings."},
+    {"path":"ShooterGame/Saved/Config/LinuxServer/GameUserSettings.ini", "format":"ini", "description":"Generated Linux ARK server settings."},
+    {"path":"ShooterGame/Saved/Config/LinuxServer/Game.ini", "format":"ini", "description":"Generated Linux ARK gameplay settings."}
+  ],
+  "configuration":{"adapters":[{"id":"ark-se-server-settings","schema_version":1,"file":"ark-se-server-settings.adapter.json"}]},
+  "requirements": [
+    {"type":"steamcmd", "level":"hard", "value":"anonymous", "description":"Managed anonymous SteamCMD installation is required."},
+    {"type":"architecture", "level":"hard", "value":"amd64", "description":"The reviewed ARK dedicated-server builds target x86-64 hosts."},
+    {"type":"disk", "level":"informational", "description":"Ensure sufficient storage for the current server build, saves, and optional mods."}
+  ],
+  "help": {"summary":"GameNode installs SteamCMD App ID 376030 and launches the platform-specific ARK server binary directly.", "notes":["Forward the registered UDP game and query ports.","Advanced settings belong in the generated platform-specific INI files; GameNode does not rewrite them.","The map variable uses ARK's map identifier, not a filesystem path."]},
+  "compatibility": {"status":"partially_compatible", "findings":[{"severity":"warning","component":"configuration","code":"ARK_ADVANCED_CONFIGURATION_UNMANAGED","summary":"Advanced ARK settings, passwords, mods, cluster configuration, and BattlEye are documented but not managed by a compiled GameNode adapter."},{"severity":"warning","component":"stop","code":"ARK_GRACEFUL_STOP_UNGUARANTEED","summary":"GameNode uses bounded native termination and does not claim that ARK will always save before termination."}]},
+  "read_only": true,
+  "platforms": ["windows", "linux"],
+  "prerequisites": ["Network access to Steam content servers during installation", "An amd64 Windows or Linux host", "Sufficient storage for server files and world saves"]
+}

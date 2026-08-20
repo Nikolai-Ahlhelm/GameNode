@@ -1,6 +1,7 @@
 data/
 dist/
 config.yaml
+.codex-tmp
 
 # Local Go toolchain caches (the module manifest remains go.mod/go.sum).
 .gocache/

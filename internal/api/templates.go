@@ -24,6 +24,14 @@ type eggInput struct {
 	Egg json.RawMessage `json:"egg"`
 }
 
+type eggURLInput struct {
+	URL string `json:"url"`
+}
+
+type pelicanImportInput struct {
+	Path string `json:"path"`
+}
+
 type neoForgeInput struct {
 	ServerName      string `json:"server_name"`
 	ServerRoot      string `json:"server_root"`
@@ -120,6 +128,113 @@ func (s *Server) templateCatalogRefreshHandler(w http.ResponseWriter, r *http.Re
 	jsonOut(w, http.StatusOK, result)
 }
 
+func (s *Server) pelicanCatalogHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w)
+		return
+	}
+	if _, _, ok := s.requireGlobalPermission(w, r, "Templates.View", false); !ok {
+		return
+	}
+	if s.pelican == nil {
+		errorOut(w, http.StatusServiceUnavailable, "pelican_unavailable", "Pelican Egg catalog is unavailable")
+		return
+	}
+	result, err := s.pelican.List(r.Context())
+	if err != nil && len(result.Templates) == 0 {
+		errorOut(w, http.StatusServiceUnavailable, "pelican_unavailable", "Pelican Egg catalog is unavailable")
+		return
+	}
+	jsonOut(w, http.StatusOK, result)
+}
+
+func (s *Server) pelicanCatalogRefreshHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		method(w)
+		return
+	}
+	if _, _, ok := s.requireGlobalPermission(w, r, "Templates.View", true); !ok {
+		return
+	}
+	if s.pelican == nil {
+		errorOut(w, http.StatusServiceUnavailable, "pelican_unavailable", "Pelican Egg catalog is unavailable")
+		return
+	}
+	result, err := s.pelican.Refresh(r.Context())
+	if err != nil && len(result.Templates) == 0 {
+		errorOut(w, http.StatusServiceUnavailable, "pelican_unavailable", "Pelican Egg catalog is unavailable")
+		return
+	}
+	jsonOut(w, http.StatusOK, result)
+}
+
+func (s *Server) pelicanCatalogImportHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		method(w)
+		return
+	}
+	actor, _, ok := s.requireGlobalPermission(w, r, "Templates.Manage", true)
+	if !ok {
+		return
+	}
+	if s.pelican == nil {
+		errorOut(w, http.StatusServiceUnavailable, "pelican_unavailable", "Pelican Egg catalog is unavailable")
+		return
+	}
+	var input pelicanImportInput
+	if !decode(w, r, &input) || strings.TrimSpace(input.Path) == "" || len(input.Path) > 240 {
+		bad(w, "invalid Pelican Egg selection")
+		return
+	}
+	template, err := s.pelican.Import(r.Context(), strings.TrimSpace(input.Path))
+	if err == nil {
+		template.SourceIdentifier = strings.TrimSpace(input.Path)
+		template, err = s.templates.ImportNormalized(r.Context(), template)
+	}
+	if err != nil {
+		s.recordTemplateAudit(r, actor, audit.TemplateImport, audit.Failure, templates.Template{}, err)
+		errorOut(w, http.StatusUnprocessableEntity, "pelican_import_failed", "Pelican Egg could not be safely imported")
+		return
+	}
+	s.recordTemplateAudit(r, actor, audit.TemplateImport, audit.Success, template, nil)
+	jsonOut(w, http.StatusCreated, template)
+}
+
+func (s *Server) eggURLHandler(w http.ResponseWriter, r *http.Request, importTemplate bool) {
+	if r.Method != http.MethodPost {
+		method(w)
+		return
+	}
+	actor, _, ok := s.requireGlobalPermission(w, r, "Templates.Manage", importTemplate)
+	if !ok {
+		return
+	}
+	var input eggURLInput
+	if !decode(w, r, &input) || strings.TrimSpace(input.URL) == "" {
+		bad(w, "invalid Egg URL")
+		return
+	}
+	template, canonical, err := templates.AnalyzeEggURL(r.Context(), input.URL)
+	if err != nil {
+		s.log.Warn("Egg URL analysis rejected", "module", "Templates.AnalyzeURL", "category", logging.CategoryTemplates, "actor_user_id", actor.ID, "error", err)
+		errorOut(w, http.StatusUnprocessableEntity, "invalid_egg_url", "Egg URL could not be safely analyzed")
+		return
+	}
+	template.SourceIdentifier = canonical
+	if !importTemplate {
+		jsonOut(w, http.StatusOK, template)
+		return
+	}
+	template, err = s.templates.ImportNormalized(r.Context(), template)
+	if err != nil {
+		s.recordTemplateAudit(r, actor, audit.TemplateImport, audit.Failure, templates.Template{}, err)
+		errorOut(w, http.StatusUnprocessableEntity, "egg_import_failed", "Egg could not be safely imported")
+		return
+	}
+	s.recordTemplateAudit(r, actor, audit.TemplateImport, audit.Success, template, nil)
+	jsonOut(w, http.StatusCreated, template)
+}
+
 func decodeEggInput(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	data, err := io.ReadAll(io.LimitReader(r.Body, maxEggEnvelopeBytes+1))
 	if err != nil {
@@ -194,6 +309,14 @@ func (s *Server) templateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if parts := strings.Split(path, "/"); len(parts) == 2 && parts[0] != "" && parts[1] == "provisionability" {
 		s.templateProvisionability(w, r, parts[0])
+		return
+	}
+	if path == "analyze/egg-url" {
+		s.eggURLHandler(w, r, false)
+		return
+	}
+	if path == "import/egg-url" {
+		s.eggURLHandler(w, r, true)
 		return
 	}
 	if path == "analyze/egg" || path == "import/egg" {

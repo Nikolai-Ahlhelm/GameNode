@@ -59,6 +59,7 @@ const actionLabels: Record<string, string> = {
   'role.assignment_remove': 'Role assignment removed',
   'settings.update': 'Settings updated',
   'settings.logs_clear': 'Application logs cleared',
+  'settings.email_test': 'Email alert tested',
   'support.bundle_generate': 'Support bundle generated',
   'template.import': 'Template imported',
   'template.delete': 'Template deleted',

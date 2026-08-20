@@ -189,6 +189,32 @@ func (c *Client) GetHealth(ctx context.Context, endpoint, credential string) (He
 	return result, err
 }
 
+// NodeStatus is a deliberately small operational summary for a whole node.
+// CPU and memory are the aggregate of GameNode-managed server processes, not
+// host-wide figures. This avoids presenting an estimate as host telemetry.
+type NodeStatus struct {
+	Servers struct {
+		Total    int `json:"total"`
+		Running  int `json:"running"`
+		Stopped  int `json:"stopped"`
+		Crashed  int `json:"crashed"`
+		Detached int `json:"detached"`
+	} `json:"servers"`
+	Workload struct {
+		CPUPercent     float64 `json:"cpu_percent"`
+		MemoryBytes    uint64  `json:"memory_bytes"`
+		SampledServers int     `json:"sampled_servers"`
+	} `json:"workload"`
+}
+
+// GetNodeStatus retrieves a bounded aggregate from the fixed Node API
+// endpoint. It is intentionally not a generic metrics endpoint.
+func (c *Client) GetNodeStatus(ctx context.Context, endpoint, credential string) (NodeStatus, error) {
+	var result NodeStatus
+	err := c.do(ctx, http.MethodGet, endpoint, "/api/v1/node/status", credential, nil, &result)
+	return result, err
+}
+
 type CapabilitiesResult struct {
 	Capabilities []string `json:"capabilities"`
 }

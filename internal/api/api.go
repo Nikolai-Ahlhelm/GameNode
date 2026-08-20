@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -18,21 +19,27 @@ import (
 	"gamenode/internal/auth"
 	"gamenode/internal/dashboard"
 	"gamenode/internal/diagnostics"
+	"gamenode/internal/emailverification"
 	"gamenode/internal/filesystem"
+	ftpservice "gamenode/internal/ftp"
 	"gamenode/internal/gameconfig"
 	"gamenode/internal/identity"
 	"gamenode/internal/logging"
 	"gamenode/internal/monitoring"
 	"gamenode/internal/nodeidentity"
 	"gamenode/internal/nodes"
+	"gamenode/internal/notifications"
+	"gamenode/internal/passwordreset"
 	"gamenode/internal/ports"
 	"gamenode/internal/provisioning"
 	"gamenode/internal/rbac"
+	"gamenode/internal/registration"
 	"gamenode/internal/remote"
 	"gamenode/internal/scheduler"
 	"gamenode/internal/servers"
 	"gamenode/internal/serverupdates"
 	"gamenode/internal/settings"
+	"gamenode/internal/statushistory"
 	"gamenode/internal/steamcmd"
 	"gamenode/internal/support"
 	"gamenode/internal/templates"
@@ -42,34 +49,41 @@ import (
 const sessionCookie = "gamenode_session"
 
 type Server struct {
-	auth             *auth.Service
-	audit            *audit.Service
-	log              *slog.Logger
-	secureCookie     bool
-	trustLocalProxy  bool
-	servers          *servers.Service
-	files            *filesystem.Service
-	identity         *identity.Service
-	rbac             *rbac.Service
-	tenants          *tenants.Service
-	ports            *ports.Service
-	settings         *settings.Service
-	diagnostics      *diagnostics.Service
-	support          supportGenerator
-	templates        *templates.Service
-	provisioning     *provisioning.Service
-	serverUpdates    *serverupdates.Service
-	restartSchedules *scheduler.Store
-	restartScheduler *scheduler.Scheduler
-	gameConfig       *gameconfig.Service
-	logs             *logging.Manager
-	setupConfig      setupConfigStore
-	steamcmd         steamBootstrapper
-	bootstrapMu      sync.Mutex
-	bootstrap        bootstrapStatus
-	nodeIdentity     *nodeidentity.Service
-	nodes            *nodes.Service
-	remoteClient     remoteNodeClient
+	auth              *auth.Service
+	audit             *audit.Service
+	log               *slog.Logger
+	secureCookie      bool
+	trustLocalProxy   bool
+	servers           *servers.Service
+	files             *filesystem.Service
+	ftp               *ftpservice.Service
+	identity          *identity.Service
+	rbac              *rbac.Service
+	tenants           *tenants.Service
+	ports             *ports.Service
+	settings          *settings.Service
+	diagnostics       *diagnostics.Service
+	support           supportGenerator
+	templates         *templates.Service
+	pelican           *templates.PelicanCatalog
+	provisioning      *provisioning.Service
+	serverUpdates     *serverupdates.Service
+	statusHistory     *statushistory.Store
+	restartSchedules  *scheduler.Store
+	restartScheduler  *scheduler.Scheduler
+	gameConfig        *gameconfig.Service
+	logs              *logging.Manager
+	setupConfig       setupConfigStore
+	steamcmd          steamBootstrapper
+	bootstrapMu       sync.Mutex
+	bootstrap         bootstrapStatus
+	nodeIdentity      *nodeidentity.Service
+	nodes             *nodes.Service
+	remoteClient      remoteNodeClient
+	emailAlerts       *notifications.Service
+	emailVerification *emailverification.Service
+	registration      *registration.Service
+	passwordReset     *passwordreset.Service
 }
 
 // remoteNodeClient is the narrow set of typed Remote Node operations the API
@@ -80,6 +94,7 @@ type remoteNodeClient interface {
 	Enroll(ctx context.Context, endpoint, pairingToken string) (remote.EnrollResult, error)
 	GetNodeInfo(ctx context.Context, endpoint, credential string) (remote.NodeInfo, error)
 	GetHealth(ctx context.Context, endpoint, credential string) (remote.HealthResult, error)
+	GetNodeStatus(ctx context.Context, endpoint, credential string) (remote.NodeStatus, error)
 
 	// Remote Server Management (v0.5B) / Operational Hardening (v0.5C).
 	ListServers(ctx context.Context, endpoint, credential string) ([]remote.ServerSummary, error)
@@ -130,23 +145,33 @@ type Options struct {
 	// TrustLocalProxy permits forwarded scheme and host headers only when the
 	// immediate peer is a loopback reverse proxy. It must not be used for a
 	// proxy reached over the network.
-	TrustLocalProxy  bool
-	Filesystem       *filesystem.Service
-	Settings         *settings.Service
-	Diagnostics      *diagnostics.Service
-	Support          supportGenerator
-	Templates        *templates.Service
-	Provisioning     *provisioning.Service
-	ServerUpdates    *serverupdates.Service
-	RestartSchedules *scheduler.Store
-	RestartScheduler *scheduler.Scheduler
-	GameConfig       *gameconfig.Service
-	Logs             *logging.Manager
-	SetupConfig      setupConfigStore
-	SteamCMD         steamBootstrapper
-	NodeIdentity     *nodeidentity.Service
-	RemoteNodes      *nodes.Service
-	RemoteClient     remoteNodeClient
+	TrustLocalProxy bool
+	Filesystem      *filesystem.Service
+	// DataDirectory is the GameNode data root used for safe physical
+	// migration of provisioned servers between tenant storage trees.
+	DataDirectory     string
+	FTP               *ftpservice.Service
+	Settings          *settings.Service
+	Diagnostics       *diagnostics.Service
+	Support           supportGenerator
+	Templates         *templates.Service
+	Pelican           *templates.PelicanCatalog
+	Provisioning      *provisioning.Service
+	ServerUpdates     *serverupdates.Service
+	StatusHistory     *statushistory.Store
+	RestartSchedules  *scheduler.Store
+	RestartScheduler  *scheduler.Scheduler
+	GameConfig        *gameconfig.Service
+	Logs              *logging.Manager
+	SetupConfig       setupConfigStore
+	SteamCMD          steamBootstrapper
+	NodeIdentity      *nodeidentity.Service
+	RemoteNodes       *nodes.Service
+	RemoteClient      remoteNodeClient
+	EmailAlerts       *notifications.Service
+	EmailVerification *emailverification.Service
+	Registration      *registration.Service
+	PasswordReset     *passwordreset.Service
 }
 
 // auditInput deliberately contains only values selected by the application. It
@@ -236,6 +261,14 @@ func auditFailure(err error) (string, string) {
 		return "invalid_bind_address", "invalid port assignment"
 	case errors.Is(err, servers.ErrDuplicateName), errors.Is(err, provisioning.ErrNamePreflightFailed):
 		return "name_conflict", "server name is already in use"
+	case errors.Is(err, servers.ErrTenantMigrationUnsupported):
+		return "tenant_migration_unsupported", "only provisioned servers can be physically migrated"
+	case errors.Is(err, servers.ErrTenantMigrationStorage):
+		return "tenant_migration_unavailable", "managed server storage migration is unavailable"
+	case errors.Is(err, servers.ErrTenantMigrationPath):
+		return "tenant_migration_invalid_path", "the provisioned server is not located in its managed tenant storage"
+	case errors.Is(err, filesystem.ErrAlreadyExists):
+		return "tenant_migration_target_exists", "the target tenant already contains a server directory with this name"
 	case strings.Contains(message, "already running") || strings.Contains(message, "not running") || strings.Contains(message, "restart is in progress") || strings.Contains(message, "stop the server before"):
 		return "invalid_state", "server state does not allow this operation"
 	case strings.Contains(message, "container engine is unavailable"):
@@ -265,6 +298,9 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	files := filesystem.New()
 	if len(options) > 0 && options[0].Filesystem != nil {
 		files = options[0].Filesystem
+	}
+	if len(options) > 0 && options[0].DataDirectory != "" {
+		serverService.SetTenantMigrationStorage(options[0].DataDirectory, files)
 	}
 	settingService := settings.New(a.Database(), settings.Defaults{})
 	if len(options) > 0 && options[0].Settings != nil {
@@ -304,9 +340,16 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	nodeIdentityService := nodeidentity.New(a.Database(), diagnostics.Version)
 	nodesService := nodes.New(a.Database())
 	var remoteClient remoteNodeClient = remote.New()
-	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identityService, rbac: rbac.New(a.Database()), tenants: tenants.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, provisioning: provisioner, serverUpdates: serverUpdater, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie, nodeIdentity: nodeIdentityService, nodes: nodesService, remoteClient: remoteClient}
+	historyStore := statushistory.New(a.Database())
+	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identityService, rbac: rbac.New(a.Database()), tenants: tenants.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, pelican: templates.NewPelicanCatalog(), provisioning: provisioner, serverUpdates: serverUpdater, statusHistory: historyStore, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie, nodeIdentity: nodeIdentityService, nodes: nodesService, remoteClient: remoteClient}
+	result.registration = registration.New(a.Database(), identityService, nil)
+	result.passwordReset = passwordreset.New(a.Database(), identityService, nil)
 	if len(options) > 0 {
 		result.trustLocalProxy = options[0].TrustLocalProxy
+		if options[0].Pelican != nil {
+			result.pelican = options[0].Pelican
+		}
+		result.ftp = options[0].FTP
 		result.setupConfig = options[0].SetupConfig
 		result.steamcmd = options[0].SteamCMD
 		result.restartSchedules = options[0].RestartSchedules
@@ -319,6 +362,21 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 		}
 		if options[0].RemoteClient != nil {
 			result.remoteClient = options[0].RemoteClient
+		}
+		result.emailAlerts = options[0].EmailAlerts
+		result.emailVerification = options[0].EmailVerification
+		if options[0].Registration != nil {
+			result.registration = options[0].Registration
+		} else if options[0].EmailAlerts != nil {
+			result.registration = registration.New(a.Database(), identityService, options[0].EmailAlerts)
+		}
+		if options[0].PasswordReset != nil {
+			result.passwordReset = options[0].PasswordReset
+		} else if options[0].EmailAlerts != nil {
+			result.passwordReset = passwordreset.New(a.Database(), identityService, options[0].EmailAlerts)
+		}
+		if options[0].StatusHistory != nil {
+			result.statusHistory = options[0].StatusHistory
 		}
 	}
 	result.bootstrap = bootstrapStatus{Status: "unavailable", Summary: "SteamCMD setup is unavailable"}
@@ -346,12 +404,17 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/auth/logout", s.logout)
 	mux.HandleFunc("/api/v1/auth/me", s.me)
 	mux.HandleFunc("/api/v1/dashboard", s.dashboard)
+	mux.HandleFunc("/api/v1/status", s.statusPageHandler)
+	mux.HandleFunc("/api/v1/status/", s.statusPageHandler)
 	mux.HandleFunc("/api/v1/audit", s.auditHandler)
 	mux.HandleFunc("/api/v1/settings", s.settingsHandler)
 	mux.HandleFunc("/api/v1/settings/favicon", s.settingsFaviconHandler)
 	mux.HandleFunc("/api/v1/branding/favicon", s.brandingFaviconHandler)
 	mux.HandleFunc("/api/v1/settings/logs", s.applicationLogsHandler)
 	mux.HandleFunc("/api/v1/settings/logs/clear", s.clearLogsHandler)
+	mux.HandleFunc("/api/v1/settings/email-alerts", s.emailAlertsHandler)
+	mux.HandleFunc("/api/v1/settings/email-alerts/test", s.emailAlertsTestHandler)
+	mux.HandleFunc("/api/v1/settings/email-verification", s.emailVerificationSettingsHandler)
 	mux.HandleFunc("/api/v1/diagnostics", s.diagnosticsHandler)
 	mux.HandleFunc("/api/v1/support/bundle", s.supportBundleHandler)
 	mux.HandleFunc("/api/v1/users", s.usersHandler)
@@ -366,15 +429,22 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/servers/", s.serverHandler)
 	mux.HandleFunc("/api/v1/tenants", s.tenantsHandler)
 	mux.HandleFunc("/api/v1/tenants/", s.tenantHandler)
+	mux.HandleFunc("/api/v1/registration", s.registrationHandler)
+	mux.HandleFunc("/api/v1/registration/", s.registrationHandler)
+	mux.HandleFunc("/api/v1/password-reset", s.passwordResetHandler)
 	mux.HandleFunc("/api/v1/templates", s.templatesHandler)
 	mux.HandleFunc("/api/v1/templates/", s.templateHandler)
 	mux.HandleFunc("/api/v1/template-catalog", s.templateCatalogHandler)
 	mux.HandleFunc("/api/v1/template-catalog/refresh", s.templateCatalogRefreshHandler)
+	mux.HandleFunc("/api/v1/pelican-catalog", s.pelicanCatalogHandler)
+	mux.HandleFunc("/api/v1/pelican-catalog/refresh", s.pelicanCatalogRefreshHandler)
+	mux.HandleFunc("/api/v1/pelican-catalog/import", s.pelicanCatalogImportHandler)
 	mux.HandleFunc("/api/v1/provisioning/jobs/", s.provisioningJobHandler)
 	mux.HandleFunc("/api/v1/server-update-jobs/", s.serverUpdateJobHandler)
 	mux.HandleFunc("/api/v1/node/info", s.nodeInfoHandler)
 	mux.HandleFunc("/api/v1/node/health", s.nodeHealthHandler)
 	mux.HandleFunc("/api/v1/node/capabilities", s.nodeCapabilitiesHandler)
+	mux.HandleFunc("/api/v1/node/status", s.nodeStatusHandler)
 	mux.HandleFunc("/api/v1/node/enroll", s.nodeEnrollHandler)
 	mux.HandleFunc("/api/v1/node/pairing-tokens", s.nodePairingTokensHandler)
 	mux.HandleFunc("/api/v1/node/servers", s.nodeServersHandler)
@@ -386,6 +456,9 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/cluster/placement/execute", s.clusterPlacementExecuteHandler)
 	mux.HandleFunc("/api/v1/node/provisioning", s.nodeProvisioningHandler)
 	mux.HandleFunc("/api/v1/node/provisioning/", s.nodeProvisioningJobHandler)
+	// API paths are never SPA routes. Keep an unknown API request from being
+	// answered with index.html by the browser-app fallback below.
+	mux.Handle("/api/", http.NotFoundHandler())
 	mux.Handle("/", static)
 	return s.logRequests(mux)
 }
@@ -638,6 +711,9 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	visible := []dashboard.Server{}
 	visiblePorts := []dashboard.Port{}
+	workloadCPU := 0.0
+	var workloadMemory uint64
+	workloadSamples := 0
 	for _, record := range records {
 		allowed, err := s.allowed(r.Context(), u, "Server.View", rbac.Scope{Type: "server", ID: &record.Server.ID})
 		if err != nil {
@@ -655,6 +731,11 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		snap := monitoring.Snapshot{}
 		if monitorAllowed {
 			snap, _ = s.servers.MonitoringSnapshot(r.Context(), record.Server.ID)
+			if record.Runtime.CurrentState == "running" && !record.Runtime.ConsoleDetached {
+				workloadCPU += snap.CPUPercent
+				workloadMemory += snap.MemoryBytes
+				workloadSamples++
+			}
 		}
 		visible = append(visible, dashboard.Server{State: record.Runtime.CurrentState, Monitoring: snap})
 		portsAllowed, err := s.allowed(r.Context(), u, "Ports.View", rbac.Scope{Type: "server", ID: &record.Server.ID})
@@ -675,7 +756,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		internal(w)
 		return
 	}
-	response := map[string]any{"user": u, "servers": summary.Servers, "monitoring": summary.Monitoring, "ports": summary.Ports, "audit": map[string]any{"available": auditAvailable, "recent": []audit.Event{}}}
+	response := map[string]any{"user": u, "servers": summary.Servers, "monitoring": summary.Monitoring, "ports": summary.Ports, "workload": map[string]any{"cpu_percent": workloadCPU, "memory_bytes": workloadMemory, "sampled_servers": workloadSamples}, "audit": map[string]any{"available": auditAvailable, "recent": []audit.Event{}}}
 	if auditAvailable {
 		events, e := s.audit.List(r.Context(), audit.Filter{Limit: 10})
 		if e == nil {
@@ -685,7 +766,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, http.StatusOK, response)
 }
 
-var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Server.Update", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View", "Tenants.View", "Tenants.Manage", "Node.View", "Node.Manage", "Cluster.View", "Cluster.Schedule", "RemoteServer.View", "RemoteServer.Manage", "RemoteConsole.View", "RemoteConsole.Send", "RemoteFiles.View", "RemoteFiles.Edit", "RemoteFiles.Upload", "RemoteFiles.Download", "RemoteFiles.Delete", "RemoteFiles.Rename", "RemoteMonitoring.View"}
+var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Server.Update", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "FTP.View", "FTP.Manage", "TenantAccess.Manage", "ServerAccess.Manage", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View", "Tenants.View", "Tenants.Manage", "Tenants.Invite", "Node.View", "Node.Manage", "Cluster.View", "Cluster.Schedule", "RemoteServer.View", "RemoteServer.Manage", "RemoteConsole.View", "RemoteConsole.Send", "RemoteFiles.View", "RemoteFiles.Edit", "RemoteFiles.Upload", "RemoteFiles.Download", "RemoteFiles.Delete", "RemoteFiles.Rename", "RemoteMonitoring.View"}
 
 func (s *Server) allowed(ctx context.Context, u auth.User, permission string, scope rbac.Scope) (bool, error) {
 	return s.rbac.Allowed(ctx, u.ID, permission, scope)
@@ -714,6 +795,41 @@ func (s *Server) requireServerPermission(w http.ResponseWriter, r *http.Request,
 
 func (s *Server) requireGlobalPermission(w http.ResponseWriter, r *http.Request, permission string, csrfRequired bool) (auth.User, string, bool) {
 	return s.requirePermission(w, r, permission, rbac.Scope{Type: "global"}, csrfRequired)
+}
+
+// requireAssignmentManage permits global role administrators as well as the
+// owner of the requested tenant/server scope to change assignments there.
+func (s *Server) requireAssignmentManage(w http.ResponseWriter, r *http.Request, scope rbac.Scope) (auth.User, string, bool) {
+	u, csrf, ok := s.requireAuth(w, r, true)
+	if !ok {
+		return auth.User{}, "", false
+	}
+	if allowed, err := s.allowed(r.Context(), u, "Roles.Manage", rbac.Scope{Type: "global"}); err != nil {
+		internal(w)
+		return auth.User{}, "", false
+	} else if allowed {
+		return u, csrf, true
+	}
+	permission := ""
+	switch scope.Type {
+	case "tenant":
+		permission = "TenantAccess.Manage"
+	case "server":
+		permission = "ServerAccess.Manage"
+	default:
+		forbidden(w, "permission denied")
+		return auth.User{}, "", false
+	}
+	allowed, err := s.allowed(r.Context(), u, permission, scope)
+	if err != nil {
+		internal(w)
+		return auth.User{}, "", false
+	}
+	if !allowed {
+		forbidden(w, "permission denied")
+		return auth.User{}, "", false
+	}
+	return u, csrf, true
 }
 
 func (s *Server) globalCapabilities(ctx context.Context, u auth.User) ([]string, error) {
@@ -931,7 +1047,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		start := time.Now()
 		tracked := &responseLogWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(tracked, r)
-		args := []any{"module", "HTTP", "category", logging.CategoryHTTP, "method", r.Method, "path", strings.Split(r.URL.Path, "?")[0], "status", tracked.status, "response_bytes", tracked.bytes, "duration", time.Since(start).String()}
+		args := []any{"module", "HTTP", "category", logging.CategoryHTTP, "method", r.Method, "path", strings.Split(r.URL.Path, "?")[0], "source_ip", s.requestSourceIP(r), "status", tracked.status, "response_bytes", tracked.bytes, "duration", time.Since(start).String()}
 		switch {
 		case tracked.status >= 500:
 			s.log.Error("http request failed", args...)
@@ -941,6 +1057,33 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 			s.log.Debug("http request completed", args...)
 		}
 	})
+}
+
+// requestSourceIP returns the direct peer unless the request arrived through
+// the explicitly configured local reverse proxy. Only then may the proxy's
+// X-Forwarded-For value identify the original client. A malformed or chained
+// value is ignored rather than copying untrusted request text into logs.
+func (s *Server) requestSourceIP(r *http.Request) string {
+	direct := remoteHost(r.RemoteAddr)
+	if !s.trustLocalProxy || !isLoopbackPeer(r.RemoteAddr) {
+		return direct
+	}
+	forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if forwarded == "" || strings.Contains(forwarded, ",") {
+		return direct
+	}
+	ip, err := netip.ParseAddr(forwarded)
+	if err != nil {
+		return direct
+	}
+	return ip.String()
+}
+
+func remoteHost(remoteAddr string) string {
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return host
+	}
+	return remoteAddr
 }
 
 type responseLogWriter struct {

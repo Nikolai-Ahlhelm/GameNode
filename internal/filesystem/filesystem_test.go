@@ -33,7 +33,10 @@ func TestResolveServerPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(root, "nested", "file.txt")
+	want, err := filepath.EvalSymlinks(filepath.Join(root, "nested", "file.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resolved != want {
 		t.Fatalf("resolved = %q, want %q", resolved, want)
 	}
@@ -79,7 +82,11 @@ func TestResolveServerPathSecurityMatrix(t *testing.T) {
 	}
 
 	resolved, err := service.ResolveServerPath(root, "nested\\file.txt")
-	if err != nil || resolved != filepath.Join(root, "nested", "file.txt") {
+	want, wantErr := filepath.EvalSymlinks(filepath.Join(root, "nested", "file.txt"))
+	if wantErr != nil {
+		t.Fatal(wantErr)
+	}
+	if err != nil || resolved != want {
 		t.Fatalf("mixed separator safe path = %q, %v", resolved, err)
 	}
 }
@@ -263,6 +270,34 @@ func TestMoveAndDelete(t *testing.T) {
 	}
 	if err := service.Delete(root, ".", true); !errors.Is(err, ErrRootOperation) {
 		t.Fatalf("root delete error = %v", err)
+	}
+}
+
+func TestMoveManagedRoot(t *testing.T) {
+	service := New()
+	dataRoot := t.TempDir()
+	source := filepath.Join(dataRoot, "tenants", "default", "servers", "game")
+	destination := filepath.Join(dataRoot, "tenants", "destination", "servers", "game")
+	if err := os.MkdirAll(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "world.dat"), []byte("world"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.MoveManagedRoot(dataRoot, source, destination); err != nil {
+		t.Fatalf("MoveManagedRoot() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "world.dat")); err != nil {
+		t.Fatalf("moved file missing: %v", err)
+	}
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("source still exists: %v", err)
+	}
+	if err := service.MoveManagedRoot(dataRoot, filepath.Join(dataRoot, "tenants", "destination", "servers", "game"), filepath.Join(dataRoot, "tenants", "other", "servers", "game")); err != nil {
+		t.Fatalf("second MoveManagedRoot() error = %v", err)
+	}
+	if err := service.MoveManagedRoot(dataRoot, filepath.Join(dataRoot, "tenants", "other", "servers", "game"), filepath.Join(dataRoot, "tenants", "other", "servers", "game")); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("same-root move error = %v", err)
 	}
 }
 

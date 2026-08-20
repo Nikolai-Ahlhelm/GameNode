@@ -4,11 +4,13 @@ import (
 	"context"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
 
 type fakeContainerEngine struct {
+	mu      sync.Mutex
 	id      string
 	running bool
 	options ContainerOptions
@@ -16,16 +18,32 @@ type fakeContainerEngine struct {
 
 func (f *fakeContainerEngine) Available(context.Context) error { return nil }
 func (f *fakeContainerEngine) Create(_ context.Context, options ContainerOptions, _ StartOptions) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.options = options
 	return f.id, nil
 }
-func (f *fakeContainerEngine) Start(context.Context, string) error { f.running = true; return nil }
+func (f *fakeContainerEngine) Start(context.Context, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.running = true
+	return nil
+}
 func (f *fakeContainerEngine) Stop(context.Context, string, time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.running = false
 	return nil
 }
-func (f *fakeContainerEngine) Kill(context.Context, string) error { f.running = false; return nil }
+func (f *fakeContainerEngine) Kill(context.Context, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.running = false
+	return nil
+}
 func (f *fakeContainerEngine) Inspect(context.Context, string) (containerInspection, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return containerInspection{Running: f.running, Known: true, Labels: map[string]string{"io.gamenode.managed": "true", "io.gamenode.server_id": f.options.ServerID, "io.gamenode.instance_generation": f.options.Generation, "io.gamenode.ownership_token": f.options.OwnershipToken}}, nil
 }
 func (f *fakeContainerEngine) Stats(context.Context, string) (Metrics, error) {

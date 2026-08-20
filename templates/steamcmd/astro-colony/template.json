@@ -1,0 +1,21 @@
+{
+  "schema_version": 2, "id": "astro-colony", "name": "Astro Colony Dedicated Server",
+  "description": "Install the Astro Colony dedicated server through SteamCMD and launch its native Linux server directly.",
+  "version": "1.0.0", "category": "steamcmd", "minimum_gamenode_version": "0.2.0",
+  "known_limitations": ["World generation, passwords, save selection, and gameplay toggles remain file-managed.", "Stop uses the bounded terminate fallback."],
+  "icon": "steamcmd", "source_type": "official", "source_identifier": "pelican-eggs/astro_colony", "source_format_version": "2",
+  "tags": ["astro-colony", "steam", "steamcmd", "simulation", "space"],
+  "source_metadata": {"author": "GameNode, normalized from Pelican Eggs", "tags": ["astro-colony", "steam", "steamcmd", "simulation", "space"]},
+  "installer": {"type": "steamcmd", "steamcmd": {"app_id": 2934900, "validate": true, "login_mode": "anonymous", "platform": "native", "install_target": "server_root"}},
+  "platform_launches": {"linux": {"executable": "AstroColony/Binaries/Linux/AstroColonyServer", "arguments": ["-log", "-QueryPort={{QUERY_PORT}}", "-SteamServerName={{SERVER_NAME}}"], "working_root": "server_root", "stop_method": "terminate", "stop_timeout_seconds": 60}},
+  "variables": [
+    {"name": "Query port", "key": "QUERY_PORT", "default_value": "27015", "user_viewable": true, "user_editable": true, "type": "integer", "sensitive": false, "required": true, "nullable": false, "validation": {"min": 1024, "max": 65535}, "group": "Network"},
+    {"name": "Server name", "key": "SERVER_NAME", "default_value": "GameNode Astro Colony Server", "user_viewable": true, "user_editable": true, "type": "string", "sensitive": false, "required": true, "nullable": false, "validation": {"min_length": 1, "max_length": 80}, "group": "Server"}
+  ],
+  "ports": [{"name": "Game", "protocol": "udp", "port": 7777, "required": true}, {"name": "Query", "protocol": "udp", "variable": "QUERY_PORT", "required": true}],
+  "expected_files": [{"path": "AstroColony/Binaries/Linux/AstroColonyServer", "type": "file", "required": true, "executable": true, "platform": "linux"}],
+  "requirements": [{"type": "os", "level": "hard", "value": "linux", "description": "The reviewed Pelican launch targets Linux."}, {"type": "steamcmd", "level": "hard", "value": "anonymous", "description": "Managed anonymous SteamCMD is required."}],
+  "help": {"summary": "GameNode installs Steam App 2934900 anonymously and launches AstroColonyServer directly."},
+  "compatibility": {"status": "partially_compatible", "findings": [{"severity": "warning", "component": "configuration", "code": "ASTRO_COLONY_FILE_CONFIGURATION", "summary": "Only settings present in the safe direct startup are exposed."}]},
+  "read_only": true, "platforms": ["linux"], "prerequisites": ["64-bit Linux host", "Network access to Steam content servers"]
+}

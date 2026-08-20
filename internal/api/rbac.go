@@ -224,6 +224,10 @@ func rbacError(w http.ResponseWriter, e error) {
 		bad(w, "Remove the role's tenant assignments before making the role empty or adding permissions that do not support tenant scope.")
 		return
 	}
+	if errors.Is(e, rbac.ErrBuiltinRoleProtected) {
+		errorOut(w, http.StatusConflict, "builtin_role", "built-in roles cannot be deleted; adjust their name, description, or permissions instead")
+		return
+	}
 	if errors.Is(e, rbac.ErrDuplicateAssignment) || strings.Contains(strings.ToLower(e.Error()), "constraint") {
 		errorOut(w, http.StatusConflict, "conflict", "conflicting role data")
 		return
@@ -244,16 +248,16 @@ func (s *Server) userRolesHandler(w http.ResponseWriter, r *http.Request, user s
 			}
 			jsonOut(w, http.StatusOK, map[string]any{"assignments": x})
 		case http.MethodPost:
-			actor, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true)
-			if !ok {
-				return
-			}
 			var in struct {
 				RoleID    string  `json:"role_id"`
 				ScopeType string  `json:"scope_type"`
 				ScopeID   *string `json:"scope_id"`
 			}
 			if !decode(w, r, &in) {
+				return
+			}
+			actor, _, ok := s.requireAssignmentManage(w, r, rbac.Scope{Type: in.ScopeType, ID: in.ScopeID})
+			if !ok {
 				return
 			}
 			if e := s.rbac.AssignUser(r.Context(), user, in.RoleID, rbac.Scope{Type: in.ScopeType, ID: in.ScopeID}); e != nil {
@@ -287,10 +291,6 @@ func (s *Server) userRolesHandler(w http.ResponseWriter, r *http.Request, user s
 		return
 	}
 	if len(parts) == 3 && r.Method == http.MethodDelete {
-		actor, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true)
-		if !ok {
-			return
-		}
 		var assignment rbac.Assignment
 		if list, err := s.rbac.ListUserAssignments(r.Context(), user); err == nil {
 			for _, candidate := range list {
@@ -299,6 +299,10 @@ func (s *Server) userRolesHandler(w http.ResponseWriter, r *http.Request, user s
 					break
 				}
 			}
+		}
+		actor, _, ok := s.requireAssignmentManage(w, r, assignment.Scope)
+		if !ok {
+			return
 		}
 		if e := s.rbac.RemoveUserAssignmentFor(r.Context(), user, parts[2]); e != nil {
 			s.recordRoleAudit(r, actor, audit.RoleAssignmentRemove, audit.Failure, assignment.RoleID, assignment.RoleName, nil, e)
@@ -329,16 +333,16 @@ func (s *Server) groupRolesHandler(w http.ResponseWriter, r *http.Request, group
 			}
 			jsonOut(w, http.StatusOK, map[string]any{"assignments": x})
 		case http.MethodPost:
-			actor, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true)
-			if !ok {
-				return
-			}
 			var in struct {
 				RoleID    string  `json:"role_id"`
 				ScopeType string  `json:"scope_type"`
 				ScopeID   *string `json:"scope_id"`
 			}
 			if !decode(w, r, &in) {
+				return
+			}
+			actor, _, ok := s.requireAssignmentManage(w, r, rbac.Scope{Type: in.ScopeType, ID: in.ScopeID})
+			if !ok {
 				return
 			}
 			if e := s.rbac.AssignGroup(r.Context(), group, in.RoleID, rbac.Scope{Type: in.ScopeType, ID: in.ScopeID}); e != nil {
@@ -372,10 +376,6 @@ func (s *Server) groupRolesHandler(w http.ResponseWriter, r *http.Request, group
 		return
 	}
 	if len(parts) == 3 && r.Method == http.MethodDelete {
-		actor, _, ok := s.requireGlobalPermission(w, r, "Roles.Manage", true)
-		if !ok {
-			return
-		}
 		var assignment rbac.Assignment
 		if list, err := s.rbac.ListGroupAssignments(r.Context(), group); err == nil {
 			for _, candidate := range list {
@@ -384,6 +384,10 @@ func (s *Server) groupRolesHandler(w http.ResponseWriter, r *http.Request, group
 					break
 				}
 			}
+		}
+		actor, _, ok := s.requireAssignmentManage(w, r, assignment.Scope)
+		if !ok {
+			return
 		}
 		if e := s.rbac.RemoveGroupAssignmentFor(r.Context(), group, parts[2]); e != nil {
 			s.recordRoleAudit(r, actor, audit.RoleAssignmentRemove, audit.Failure, assignment.RoleID, assignment.RoleName, nil, e)

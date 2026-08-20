@@ -1,0 +1,63 @@
+{
+  "schema_version": 2,
+  "id": "ark-survival-ascended",
+  "name": "ARK: Survival Ascended Dedicated Server",
+  "description": "Install the ARK: Survival Ascended dedicated server through SteamCMD and launch its native Windows server binary directly without a shell.",
+  "version": "1.0.0",
+  "category": "steamcmd",
+  "minimum_gamenode_version": "0.2.0",
+  "known_limitations": [
+    "The current Steam dedicated-server manifest advertises a Windows server only; GameNode does not pretend that a Proton/Wine wrapper is a native Linux launch.",
+    "GameNode manages selected ServerSettings values through a bounded sectioned INI adapter. Advanced gameplay, mod, cluster, BattlEye, and other INI settings remain unmanaged.",
+    "GameNode uses bounded native termination and does not claim guaranteed graceful save behavior. Automatic updates, mod installation, and update-on-start are outside this template."
+  ],
+  "icon": "steamcmd",
+  "source_type": "official",
+  "source_identifier": "ark-survival-ascended",
+  "source_format_version": "2",
+  "tags": ["ark", "ark-survival-ascended", "asa", "steam", "steamcmd", "survival"],
+  "source_metadata": {"author": "GameNode", "tags": ["ark", "ark-survival-ascended", "asa", "steam", "steamcmd", "survival"]},
+  "installer": {"type": "steamcmd", "steamcmd": {"app_id": 2430930, "validate": true, "login_mode": "anonymous", "platform": "native", "install_target": "server_root"}},
+  "platform_launches": {
+    "windows": {
+      "executable": "ShooterGame/Binaries/Win64/ArkAscendedServer.exe",
+      "arguments": ["{{MAP}}?listen?SessionName={{SERVER_NAME}}?Port={{SERVER_PORT}}?QueryPort={{QUERY_PORT}}?MaxPlayers={{MAX_PLAYERS}}", "-server", "-log"],
+      "working_root": "server_root", "stop_method": "terminate", "stop_timeout_seconds": 90
+    }
+  },
+  "variables": [
+    {"name":"Map", "description":"Map identifier passed to the dedicated server. The default is TheIsland_WP.", "key":"MAP", "default_value":"TheIsland_WP", "user_viewable":true, "user_editable":true, "type":"enum", "sensitive":false, "required":true, "nullable":false, "validation":{"allowed":["TheIsland_WP","ScorchedEarth_WP","TheCenter_WP","Aberration_WP","Extinction_WP","Ragnarok_WP","Astraeos_WP"]}, "group":"General"},
+    {"name":"Server name", "description":"Name shown in the ASA server browser.", "key":"SERVER_NAME", "default_value":"GameNode ASA", "user_viewable":true, "user_editable":true, "type":"string", "sensitive":false, "required":true, "nullable":false, "validation":{"min_length":1,"max_length":64}, "group":"General"},
+    {"name":"Game port", "description":"UDP port for ASA game traffic.", "key":"SERVER_PORT", "default_value":"7777", "user_viewable":true, "user_editable":true, "type":"integer", "sensitive":false, "required":true, "nullable":false, "validation":{"min":1024,"max":65534}, "group":"Network"},
+    {"name":"Query port", "description":"UDP query port used by the server browser.", "key":"QUERY_PORT", "default_value":"27015", "user_viewable":true, "user_editable":true, "type":"integer", "sensitive":false, "required":true, "nullable":false, "validation":{"min":1024,"max":65535}, "group":"Network"},
+    {"name":"Maximum players", "description":"Maximum number of simultaneous players.", "key":"MAX_PLAYERS", "default_value":"70", "user_viewable":true, "user_editable":true, "type":"integer", "sensitive":false, "required":true, "nullable":false, "validation":{"min":1,"max":200}, "group":"Gameplay"},
+    {"name":"Server password", "description":"Optional password required to join.", "key":"SERVER_PASSWORD", "default_value":"", "user_viewable":true, "user_editable":true, "type":"secret", "sensitive":true, "required":false, "nullable":true, "validation":{"max_length":128}, "group":"Security"},
+    {"name":"Admin password", "description":"Optional password for ASA administrator commands.", "key":"ADMIN_PASSWORD", "default_value":"", "user_viewable":true, "user_editable":true, "type":"secret", "sensitive":true, "required":false, "nullable":true, "validation":{"max_length":128}, "group":"Security"},
+    {"name":"PvE mode", "description":"Disable PvP and run the server in PvE mode.", "key":"PVE_MODE", "default_value":"false", "user_viewable":true, "user_editable":true, "type":"boolean", "sensitive":false, "required":false, "nullable":false, "validation":{}, "group":"Gameplay"},
+    {"name":"RCON enabled", "description":"Enable ASA remote console support.", "key":"RCON_ENABLED", "default_value":"false", "user_viewable":true, "user_editable":true, "type":"boolean", "sensitive":false, "required":false, "nullable":false, "validation":{}, "group":"Administration"},
+    {"name":"RCON port", "description":"TCP port used by ASA RCON when enabled.", "key":"RCON_PORT", "default_value":"27020", "user_viewable":true, "user_editable":true, "type":"integer", "sensitive":false, "required":false, "nullable":false, "validation":{"min":1024,"max":65535}, "group":"Administration"}
+  ],
+  "configuration":{"adapters":[{"id":"ark-asa-server-settings","schema_version":1,"file":"ark-asa-server-settings.adapter.json"}]},
+  "ports": [
+    {"name":"Game", "protocol":"udp", "variable":"SERVER_PORT", "required":true, "purpose":"ASA game traffic"},
+    {"name":"Query", "protocol":"udp", "variable":"QUERY_PORT", "required":true, "purpose":"Server browser query"}
+  ],
+  "expected_files": [
+    {"path":"ShooterGame/Binaries/Win64/ArkAscendedServer.exe", "type":"file", "required":true, "executable":true, "platform":"windows"}
+  ],
+  "config_files": [
+    {"path":"ShooterGame/Saved/Config/WindowsServer/GameUserSettings.ini", "format":"ini", "description":"Generated Windows ASA server settings."},
+    {"path":"ShooterGame/Saved/Config/WindowsServer/Game.ini", "format":"ini", "description":"Generated Windows ASA gameplay settings."}
+  ],
+  "requirements": [
+    {"type":"os", "level":"hard", "value":"windows", "description":"The current reviewed Steam dedicated-server manifest advertises Windows."},
+    {"type":"steamcmd", "level":"hard", "value":"anonymous", "description":"Managed anonymous SteamCMD installation is required."},
+    {"type":"architecture", "level":"hard", "value":"amd64", "description":"The ASA dedicated server requires an x86-64 host."},
+    {"type":"disk", "level":"informational", "description":"Ensure sufficient storage for the current ASA server build, saves, and optional mods."}
+  ],
+  "help": {"summary":"GameNode installs SteamCMD App ID 2430930 and launches ArkAscendedServer.exe directly.", "notes":["Forward the registered UDP game and query ports.","Advanced settings belong in the generated WindowsServer INI files; GameNode does not rewrite them.","The map variable uses ASA's _WP map identifier."]},
+  "compatibility": {"status":"partially_compatible", "findings":[{"severity":"warning","component":"platform","code":"ASA_WINDOWS_ONLY_CURRENT_MANIFEST","summary":"The current Steam dedicated-server configuration advertises Windows only; Linux Proton/Wine is intentionally not treated as a native supported platform."},{"severity":"warning","component":"configuration","code":"ASA_ADVANCED_CONFIGURATION_UNMANAGED","summary":"Advanced ASA settings, passwords, mods, cluster configuration, and BattlEye are documented but not managed by a compiled GameNode adapter."},{"severity":"warning","component":"stop","code":"ASA_GRACEFUL_STOP_UNGUARANTEED","summary":"GameNode uses bounded native termination and does not claim that ASA will always save before termination."}]},
+  "read_only": true,
+  "platforms": ["windows"],
+  "prerequisites": ["Network access to Steam content servers during installation", "An amd64 Windows host", "Sufficient storage for server files and world saves"]
+}

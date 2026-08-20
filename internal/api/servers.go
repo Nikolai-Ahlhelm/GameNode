@@ -39,6 +39,16 @@ func (s *Server) recordServerAudit(r *http.Request, actor auth.User, action, res
 	s.recordAudit(r, in)
 }
 
+func (s *Server) recordServerTenantMigrationAudit(r *http.Request, actor auth.User, result, serverID, serverName, fromTenantID, toTenantID string, err error) {
+	metadata, _ := json.Marshal(map[string]string{"from_tenant_id": fromTenantID, "to_tenant_id": toTenantID})
+	in := auditInput{action: audit.ServerTenantMigrate, resourceType: audit.Server, resourceID: &serverID, resourceName: serverName, serverID: &serverID, result: result, metadata: metadata, actor: &actor}
+	if err != nil {
+		in.errorCode, in.errorSummary = auditFailure(err)
+		in.err = err
+	}
+	s.recordAudit(r, in)
+}
+
 type fileContentInput struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
@@ -172,8 +182,16 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[0]
+	if len(parts) == 2 && parts[1] == "tenant" {
+		s.serverTenantMigrationHandler(w, r, id)
+		return
+	}
 	if len(parts) >= 2 && parts[1] == "restart-schedules" {
 		s.restartSchedulesHandler(w, r, id, parts[2:])
+		return
+	}
+	if len(parts) >= 2 && parts[1] == "ftp" {
+		s.ftpHandler(w, r, id, parts[2:])
 		return
 	}
 	if len(parts) == 2 && parts[1] == "access" {
@@ -398,6 +416,59 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOut(w, http.StatusOK, record)
+}
+
+func (s *Server) serverTenantMigrationHandler(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		method(w)
+		return
+	}
+	actor, _, ok := s.requireAuth(w, r, true)
+	if !ok {
+		return
+	}
+	if !actor.IsAdmin {
+		forbidden(w, "administrator access required")
+		return
+	}
+	var input struct {
+		TenantID string `json:"tenant_id"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	targetTenantID := strings.TrimSpace(input.TenantID)
+	if targetTenantID == "" {
+		bad(w, "tenant_id is required")
+		return
+	}
+	existing, err := s.servers.Get(r.Context(), id)
+	if err != nil {
+		serverError(w, err, false)
+		return
+	}
+	if _, err = s.tenants.Get(r.Context(), targetTenantID); err != nil {
+		if errors.Is(err, tenants.ErrTenantNotFound) || errors.Is(err, sql.ErrNoRows) {
+			notFound(w)
+		} else {
+			internal(w)
+		}
+		s.recordServerTenantMigrationAudit(r, actor, audit.Failure, id, existing.Server.Name, existing.Server.TenantID, targetTenantID, err)
+		return
+	}
+	record, err := s.servers.MigrateTenant(r.Context(), id, targetTenantID)
+	if err != nil {
+		s.recordServerTenantMigrationAudit(r, actor, audit.Failure, id, existing.Server.Name, existing.Server.TenantID, targetTenantID, err)
+		serverError(w, err, true)
+		return
+	}
+	s.recordServerTenantMigrationAudit(r, actor, audit.Success, id, record.Server.Name, existing.Server.TenantID, record.Server.TenantID, nil)
+	record, err = s.publicServerRecord(r.Context(), record)
+	if err != nil {
+		internal(w)
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"server": record.Server, "runtime": record.Runtime, "tenant_name": s.tenantName(r.Context(), record.Server.TenantID)})
 }
 
 func (s *Server) filesHandler(w http.ResponseWriter, r *http.Request, id string) {
@@ -739,6 +810,22 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request, csrf bool)
 func serverError(w http.ResponseWriter, err error, conflict bool) {
 	if errors.Is(err, sql.ErrNoRows) {
 		errorOut(w, http.StatusNotFound, "not_found", "server not found")
+		return
+	}
+	if errors.Is(err, servers.ErrTenantMigrationUnsupported) {
+		errorOut(w, http.StatusConflict, "tenant_migration_unsupported", "only provisioned servers can be physically migrated between tenants")
+		return
+	}
+	if errors.Is(err, servers.ErrTenantMigrationStorage) {
+		errorOut(w, http.StatusServiceUnavailable, "tenant_migration_unavailable", "managed server storage migration is unavailable")
+		return
+	}
+	if errors.Is(err, servers.ErrTenantMigrationPath) {
+		errorOut(w, http.StatusConflict, "tenant_migration_invalid_path", "the provisioned server is not located in its managed tenant storage")
+		return
+	}
+	if errors.Is(err, filesystem.ErrAlreadyExists) {
+		errorOut(w, http.StatusConflict, "tenant_migration_target_exists", "the target tenant already contains a server directory with this name")
 		return
 	}
 	// Console-interrupt outcomes get their own safe, specific messages instead

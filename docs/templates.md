@@ -101,10 +101,12 @@ Each `expected_files` item has a relative `path`, `type` (`file` or `directory`)
 
 ### Supported configuration adapter formats
 
-Adapter schema v1 covers the three file formats. Adapter schema v2 adds `managed-launch` and keeps every v1 adapter readable and unchanged.
+Adapter schema v1 covers the compiled file formats. Adapter schema v2 adds `managed-launch` and keeps every v1 adapter readable and unchanged.
 
 - `xml-properties` updates approved unique XML `<property name="..." value="...">` attributes.
 - `ini-key-values` updates approved sectionless `key=value` records.
+- `json-key-values` updates only approved top-level scalar properties in a bounded JSON object; it has no JSONPath, nested traversal, array, or expression support.
+- `ini-section-key-values` updates only approved scalar properties in one declared INI section and preserves other sections and unknown keys.
 - `section-tuple-key-values` updates approved typed key/value settings stored in one parenthesized container property inside one configured section, for example `[Server]` followed by `Settings=(Name="Test",Port=1234,Enabled=True)`.
 - `managed-launch` stores typed values in GameNode and binds each one to a reviewed launch argument or environment entry. It declares no `target`, `section`, `container_property`, `initialization`, or `post_start_only`.
 

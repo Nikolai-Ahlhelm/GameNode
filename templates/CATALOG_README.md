@@ -51,9 +51,17 @@ the validation boolean, and the existing constrained beta-branch mechanism. It d
 not permit credentials, Steam Guard, Workshop, arbitrary commands/flags, download
 URLs, scripts, update-before-start, or config-file generation.
 
-Current SteamCMD game directories are `steamcmd/7-days-to-die/`,
-`steamcmd/eco/`, `steamcmd/palworld/`, `steamcmd/project-zomboid/`,
-`steamcmd/satisfactory/`, and `steamcmd/valheim/`. Project Zomboid includes a
+Current SteamCMD game directories include the reviewed GameNode templates for
+`steamcmd/windrose/`, `steamcmd/enshrouded/`, and
+`steamcmd/runescape-dragonwilds/`,
+`steamcmd/ark-survival-evolved/`, `steamcmd/ark-survival-ascended/`,
+`steamcmd/7-days-to-die/`, `steamcmd/eco/`, `steamcmd/palworld/`,
+`steamcmd/project-zomboid/`, `steamcmd/satisfactory/`, `steamcmd/valheim/`,
+`steamcmd/astro-colony/`, `steamcmd/battalion-legacy/`,
+`steamcmd/colony-survival/`, `steamcmd/ddnet/`, `steamcmd/nova-life-amboise/`,
+`steamcmd/onset/`, `steamcmd/post-scriptum/`, `steamcmd/puck/`,
+`steamcmd/qanga/`, `steamcmd/quake-live/`, and `steamcmd/the-bus/`.
+Project Zomboid includes a
 same-directory, post-start INI adapter. Its generated Lua configuration remains
 unmanaged; remote template data must never introduce a generic parser or
 executable configuration language. Valheim includes a schema-v2 `managed-launch`
@@ -73,7 +81,7 @@ steamcmd/7-days-to-die/
 
 `template.json` may reference adapter JSON by basename only. The reference cannot use a URL, subdirectory, absolute path, drive, UNC path, or traversal. GameNode fetches it relative to the template directory through the same fixed GitHub Raw origin, validates it, and caches it beside the template.
 
-Schema v1 supports the compiled formats `xml-properties`, `ini-key-values`, and
+Schema v1 supports the compiled formats `xml-properties`, `ini-key-values`, `json-key-values`, `ini-section-key-values`, and
 `section-tuple-key-values`. The latter selects one exact `section` and
 `container_property` whose value is a parenthesized typed key/value tuple. It
 preserves unknown properties and is not a generic Unreal configuration parser.
@@ -84,6 +92,11 @@ The INI implementation accepts a flat, sectionless `key=value` document, rejects
 malformed/duplicate/missing managed keys, and preserves comments, ordering, line
 endings, and all unknown keys. `post_start_only` adapters may expose validated
 configuration-only fields and stay pending until the game generates their file.
+The JSON implementation edits only declared top-level scalar properties in a
+bounded object. It preserves unknown properties but does not support JSONPath,
+nested traversal, arrays, or expressions.
+The sectioned INI implementation edits only declared scalar properties in one
+declared section and preserves all other sections and unknown keys.
 Definitions cannot contain XPath, regular expressions, scripts, hooks, parser
 code, external URLs, or escaping target paths. Fixtures document expected
 upstream shape but are never copied or executed.

@@ -2,6 +2,9 @@ server:
   listen: "127.0.0.1:8443"
   # tls_cert: ""
   # tls_key: ""
+  # Set only when TLS is terminated by a reverse proxy on this same host.
+  # HTTP access logs then use the proxy's single valid X-Forwarded-For value.
+  # trust_local_proxy: false
 data:
   directory: "./data"
 database:
@@ -11,6 +14,19 @@ logging:
 filesystem:
   # Maximum bytes accepted for one multipart upload.
   max_upload_bytes: 67108864
+# Embedded per-server FTP/FTPS service. Disabled until a listener and TLS
+# certificate are deliberately configured. Each server credential is managed
+# from that server's FTP tab and is confined to its working directory.
+ftp:
+  enabled: false
+  listen: "127.0.0.1:2121"
+  # Public IPv4 returned for passive-mode clients behind NAT.
+  public_host: ""
+  passive_port_start: 50000
+  passive_port_end: 50100
+  tls_cert: ""
+  tls_key: ""
+  require_tls: true
 monitoring:
   sample_interval_seconds: 5
   history_limit: 300
