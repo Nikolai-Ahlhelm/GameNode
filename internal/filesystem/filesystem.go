@@ -170,9 +170,22 @@ func (s *Service) MoveManagedRoot(dataRoot, source, destination string) error {
 	if filepath.Clean(source) == filepath.Clean(destination) {
 		return ErrInvalidPath
 	}
+	resolvedSource, err := filepath.EvalSymlinks(filepath.Clean(source))
+	if err != nil {
+		return mapPathError(err)
+	}
+	destinationParent := filepath.Dir(filepath.Clean(destination))
+	if err := os.MkdirAll(destinationParent, 0o700); err != nil {
+		return mapPathError(err)
+	}
+	resolvedDestinationParent, err := filepath.EvalSymlinks(destinationParent)
+	if err != nil {
+		return mapPathError(err)
+	}
+	resolvedDestination := filepath.Join(resolvedDestinationParent, filepath.Base(filepath.Clean(destination)))
 	relativeRoot := sandbox.root
-	relativeSource := filepath.Clean(source)
-	relativeDestination := filepath.Clean(destination)
+	relativeSource := filepath.Clean(resolvedSource)
+	relativeDestination := filepath.Clean(resolvedDestination)
 	if filepath.Separator == '\\' {
 		relativeRoot = strings.ToLower(relativeRoot)
 		relativeSource = strings.ToLower(relativeSource)
@@ -201,10 +214,6 @@ func (s *Service) MoveManagedRoot(dataRoot, source, destination string) error {
 		return mapPathError(err)
 	} else if unsafe {
 		return ErrSpecialFile
-	}
-	destinationParent := filepath.Dir(filepath.Clean(destination))
-	if err := os.MkdirAll(destinationParent, 0o700); err != nil {
-		return mapPathError(err)
 	}
 	destinationPath, err := sandbox.mutationPath(filepath.ToSlash(destinationRelative))
 	if err != nil {
@@ -264,18 +273,18 @@ func newSandbox(root string) (*sandbox, error) {
 	} else if unsafe {
 		return nil, ErrSpecialFile
 	}
-	_, err = filepath.EvalSymlinks(absRoot)
+	resolvedRoot, err := filepath.EvalSymlinks(absRoot)
 	if err != nil {
 		return nil, mapPathError(err)
 	}
-	info, err := os.Stat(absRoot)
+	info, err := os.Stat(resolvedRoot)
 	if err != nil {
 		return nil, mapPathError(err)
 	}
 	if !info.IsDir() {
 		return nil, ErrExpectedDir
 	}
-	return &sandbox{root: filepath.Clean(absRoot)}, nil
+	return &sandbox{root: filepath.Clean(resolvedRoot)}, nil
 }
 
 func (s *sandbox) resolve(relativePath string) (string, error) {
