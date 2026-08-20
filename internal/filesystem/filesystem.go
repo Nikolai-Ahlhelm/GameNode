@@ -264,18 +264,18 @@ func newSandbox(root string) (*sandbox, error) {
 	} else if unsafe {
 		return nil, ErrSpecialFile
 	}
-	resolvedRoot, err := filepath.EvalSymlinks(absRoot)
+	_, err = filepath.EvalSymlinks(absRoot)
 	if err != nil {
 		return nil, mapPathError(err)
 	}
-	info, err := os.Stat(resolvedRoot)
+	info, err := os.Stat(absRoot)
 	if err != nil {
 		return nil, mapPathError(err)
 	}
 	if !info.IsDir() {
 		return nil, ErrExpectedDir
 	}
-	return &sandbox{root: filepath.Clean(resolvedRoot)}, nil
+	return &sandbox{root: filepath.Clean(absRoot)}, nil
 }
 
 func (s *sandbox) resolve(relativePath string) (string, error) {
