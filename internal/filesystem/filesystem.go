@@ -378,6 +378,10 @@ func rejectReparseComponents(root string, segments []string) error {
 }
 
 func within(root, target string) bool {
+	if filepath.Separator == '\\' {
+		root = strings.ToLower(filepath.Clean(root))
+		target = strings.ToLower(filepath.Clean(target))
+	}
 	relative, err := filepath.Rel(root, target)
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
 }

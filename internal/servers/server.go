@@ -282,6 +282,10 @@ func (s Server) ResolvedExecutable() string {
 	return filepath.Join(s.WorkingDirectory, s.Executable)
 }
 func inside(root, target string) bool {
+	if filepath.Separator == '\\' {
+		root = strings.ToLower(filepath.Clean(root))
+		target = strings.ToLower(filepath.Clean(target))
+	}
 	relative, err := filepath.Rel(root, target)
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
 }
@@ -1235,7 +1239,14 @@ func managedServerDirectoryName(dataRoot, tenantID, workingDirectory string) (st
 		return "", ErrTenantMigrationPath
 	}
 	serversRoot := filepath.Join(root, "tenants", tenantID, "servers")
-	relative, err := filepath.Rel(serversRoot, filepath.Clean(workingDirectory))
+	workingDirectory = filepath.Clean(workingDirectory)
+	relativeRoot := serversRoot
+	relativeTarget := workingDirectory
+	if filepath.Separator == '\\' {
+		relativeRoot = strings.ToLower(relativeRoot)
+		relativeTarget = strings.ToLower(relativeTarget)
+	}
+	relative, err := filepath.Rel(relativeRoot, relativeTarget)
 	if err != nil || relative == "." || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.Dir(relative) != "." {
 		return "", ErrTenantMigrationPath
 	}
