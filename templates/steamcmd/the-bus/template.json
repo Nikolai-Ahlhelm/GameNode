@@ -1,0 +1,18 @@
+{
+  "schema_version": 2, "id": "the-bus", "name": "The Bus Dedicated Server",
+  "description": "Install The Bus dedicated server through SteamCMD and launch its native Linux server directly.",
+  "version": "1.0.0", "category": "steamcmd", "minimum_gamenode_version": "0.2.0",
+  "known_limitations": ["Administrator password, player limit, listing, and join password are not present in the reviewed Egg startup command and are not exposed as ineffective variables.", "Stop uses the bounded terminate fallback."],
+  "icon": "steamcmd", "source_type": "official", "source_identifier": "pelican-eggs/the_bus", "source_format_version": "2",
+  "tags": ["the-bus", "steam", "steamcmd", "simulation"],
+  "source_metadata": {"author": "GameNode, normalized from Pelican Eggs", "tags": ["the-bus", "steam", "steamcmd", "simulation"]},
+  "installer": {"type": "steamcmd", "steamcmd": {"app_id": 507320, "validate": true, "login_mode": "anonymous", "platform": "native", "install_target": "server_root"}},
+  "platform_launches": {"linux": {"executable": "TheBus/Binaries/Linux/TheBusServer_Linux", "arguments": ["-log", "-newconsole", "-useperfthreads", "-port={{SERVER_PORT}}"], "working_root": "server_root", "stop_method": "terminate", "stop_timeout_seconds": 60}},
+  "variables": [{"name": "Game port", "key": "SERVER_PORT", "default_value": "7777", "user_viewable": true, "user_editable": true, "type": "integer", "sensitive": false, "required": true, "nullable": false, "validation": {"min": 1024, "max": 65535}, "group": "Network"}],
+  "ports": [{"name": "Game", "protocol": "udp", "variable": "SERVER_PORT", "required": true}],
+  "expected_files": [{"path": "TheBus/Binaries/Linux/TheBusServer_Linux", "type": "file", "required": true, "executable": true, "platform": "linux"}],
+  "requirements": [{"type": "os", "level": "hard", "value": "linux", "description": "The reviewed Pelican launch targets Linux."}, {"type": "steamcmd", "level": "hard", "value": "anonymous", "description": "Managed anonymous SteamCMD is required."}],
+  "help": {"summary": "GameNode installs Steam App 507320 anonymously and starts TheBusServer_Linux directly."},
+  "compatibility": {"status": "partially_compatible", "findings": [{"severity": "warning", "component": "configuration", "code": "THE_BUS_EGG_VARIABLES_UNUSED", "summary": "Variables unused by the upstream startup are intentionally omitted."}]},
+  "read_only": true, "platforms": ["linux"], "prerequisites": ["64-bit Linux host", "Network access to Steam content servers"]
+}

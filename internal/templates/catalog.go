@@ -616,8 +616,8 @@ func decodeConfigAdapter(data []byte, reference ConfigAdapterReference, template
 		}
 	} else {
 		extension := strings.ToLower(path.Ext(adapter.Target))
-		standardFormat := adapter.Format == FormatXMLProperties || adapter.Format == FormatINIKeyValues
-		if (!standardFormat && !tupleFormat) || (adapter.Format == FormatXMLProperties && extension != ".xml") || ((adapter.Format == FormatINIKeyValues || tupleFormat) && extension != ".ini") || validateRelativeConfigTarget(adapter.Target) != nil {
+		standardFormat := adapter.Format == FormatXMLProperties || adapter.Format == FormatINIKeyValues || adapter.Format == FormatJSONKeyValues || adapter.Format == FormatINISectionKeyValues
+		if (!standardFormat && !tupleFormat) || (adapter.Format == FormatXMLProperties && extension != ".xml") || ((adapter.Format == FormatINIKeyValues || adapter.Format == FormatINISectionKeyValues || tupleFormat) && extension != ".ini") || (adapter.Format == FormatJSONKeyValues && extension != ".json") || validateRelativeConfigTarget(adapter.Target) != nil {
 			return ConfigAdapterDefinition{}, errors.New("configuration adapter target is unsafe")
 		}
 	}
@@ -627,6 +627,10 @@ func decodeConfigAdapter(data []byte, reference ConfigAdapterReference, template
 		if !sectionPattern.MatchString(adapter.Section) || !propertyPattern.MatchString(adapter.ContainerProperty) {
 			return ConfigAdapterDefinition{}, errors.New("configuration adapter container is invalid")
 		}
+	} else if adapter.Format == FormatINISectionKeyValues {
+		if !sectionPattern.MatchString(adapter.Section) || adapter.ContainerProperty != "" {
+			return ConfigAdapterDefinition{}, errors.New("configuration adapter section is invalid")
+		}
 	} else if adapter.Section != "" || adapter.ContainerProperty != "" {
 		return ConfigAdapterDefinition{}, errors.New("configuration adapter container is invalid")
 	}
@@ -635,7 +639,7 @@ func decodeConfigAdapter(data []byte, reference ConfigAdapterReference, template
 			return ConfigAdapterDefinition{}, errors.New("configuration adapter initialization is invalid")
 		}
 	}
-	if adapter.PostStartOnly && adapter.Format != FormatINIKeyValues {
+	if adapter.PostStartOnly && adapter.Format != FormatINIKeyValues && adapter.Format != FormatJSONKeyValues && adapter.Format != FormatINISectionKeyValues {
 		return ConfigAdapterDefinition{}, errors.New("configuration adapter lifecycle is invalid")
 	}
 	variables := map[string]TemplateVariable{}

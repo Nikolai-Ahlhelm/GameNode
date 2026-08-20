@@ -1,0 +1,24 @@
+{
+  "schema_version": 2, "id": "colony-survival", "name": "Colony Survival Dedicated Server",
+  "description": "Install the Colony Survival dedicated server through SteamCMD and launch its native Linux server directly.",
+  "version": "1.0.0", "category": "steamcmd", "minimum_gamenode_version": "0.2.0",
+  "known_limitations": ["Advanced world configuration remains file-managed.", "Stop uses the bounded terminate fallback."],
+  "icon": "steamcmd", "source_type": "official", "source_identifier": "pelican-eggs/colony_survival", "source_format_version": "2",
+  "tags": ["colony-survival", "steam", "steamcmd", "survival", "strategy"],
+  "source_metadata": {"author": "GameNode, normalized from Pelican Eggs", "tags": ["colony-survival", "steam", "steamcmd", "survival", "strategy"]},
+  "installer": {"type": "steamcmd", "steamcmd": {"app_id": 748090, "validate": true, "login_mode": "anonymous", "platform": "native", "install_target": "server_root"}},
+  "platform_launches": {"linux": {"executable": "colonyserver.x86_64", "arguments": ["-batchmode", "-nographics", "+server.world", "{{WORLD_NAME}}", "+server.networktype", "SteamOnline", "+server.name", "{{SERVER_NAME}}", "+server.maxplayers", "{{MAX_PLAYERS}}", "+server.gameport", "{{SERVER_PORT}}", "+server.ip", "0.0.0.0", "+server.steamport", "{{STEAM_PORT}}"], "working_root": "server_root", "stop_method": "terminate", "stop_timeout_seconds": 60}},
+  "variables": [
+    {"name": "Game port", "key": "SERVER_PORT", "default_value": "27004", "user_viewable": true, "user_editable": true, "type": "integer", "sensitive": false, "required": true, "nullable": false, "validation": {"min": 1024, "max": 65535}, "group": "Network"},
+    {"name": "Steam port", "key": "STEAM_PORT", "default_value": "27005", "user_viewable": true, "user_editable": true, "type": "integer", "sensitive": false, "required": true, "nullable": false, "validation": {"min": 1024, "max": 65535}, "group": "Network"},
+    {"name": "World name", "key": "WORLD_NAME", "default_value": "GameNode", "user_viewable": true, "user_editable": true, "type": "string", "sensitive": false, "required": true, "nullable": false, "validation": {"min_length": 1, "max_length": 64}, "group": "World"},
+    {"name": "Server name", "key": "SERVER_NAME", "default_value": "GameNode Colony Survival Server", "user_viewable": true, "user_editable": true, "type": "string", "sensitive": false, "required": true, "nullable": false, "validation": {"min_length": 1, "max_length": 80}, "group": "Server"},
+    {"name": "Maximum players", "key": "MAX_PLAYERS", "default_value": "10", "user_viewable": true, "user_editable": true, "type": "integer", "sensitive": false, "required": true, "nullable": false, "validation": {"min": 1, "max": 100}, "group": "Server"}
+  ],
+  "ports": [{"name": "Game", "protocol": "udp", "variable": "SERVER_PORT", "required": true}, {"name": "Steam", "protocol": "udp", "variable": "STEAM_PORT", "required": true}],
+  "expected_files": [{"path": "colonyserver.x86_64", "type": "file", "required": true, "executable": true, "platform": "linux"}],
+  "requirements": [{"type": "os", "level": "hard", "value": "linux", "description": "The reviewed Pelican launch targets Linux."}, {"type": "steamcmd", "level": "hard", "value": "anonymous", "description": "Managed anonymous SteamCMD is required."}],
+  "help": {"summary": "GameNode installs Steam App 748090 anonymously and launches colonyserver.x86_64 directly."},
+  "compatibility": {"status": "compatible", "findings": [{"severity": "info", "component": "configuration", "code": "COLONY_SURVIVAL_FILE_CONFIGURATION", "summary": "Advanced settings remain file-managed."}]},
+  "read_only": true, "platforms": ["linux"], "prerequisites": ["64-bit Linux host", "Network access to Steam content servers"]
+}

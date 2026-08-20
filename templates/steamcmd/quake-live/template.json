@@ -1,0 +1,32 @@
+{
+  "schema_version": 2,
+  "id": "quake-live",
+  "name": "Quake Live Dedicated Server",
+  "description": "Install the Quake Live dedicated server through SteamCMD and launch its native Linux server directly.",
+  "version": "1.0.0",
+  "category": "steamcmd",
+  "minimum_gamenode_version": "0.2.0",
+  "known_limitations": ["Advanced Quake Live settings and workshop content remain file-managed."],
+  "icon": "steamcmd",
+  "source_type": "official",
+  "source_identifier": "pelican-eggs/quake_live",
+  "source_format_version": "2",
+  "tags": ["quake-live", "steam", "steamcmd", "fps"],
+  "source_metadata": {"author": "GameNode, normalized from Pelican Eggs", "tags": ["quake-live", "steam", "steamcmd", "fps"]},
+  "installer": {"type": "steamcmd", "steamcmd": {"app_id": 349090, "validate": true, "login_mode": "anonymous", "platform": "native", "install_target": "server_root"}},
+  "platform_launches": {"linux": {"executable": "qzeroded.x64", "arguments": ["+set", "net_port", "{{SERVER_PORT}}", "+set", "sv_hostname", "{{SERVER_NAME}}", "+set", "sv_serverType", "{{SERVER_TYPE}}", "+sv_fps", "{{FPS}}"], "working_root": "server_root", "environment": {"LD_LIBRARY_PATH": "./linux64"}, "stop_method": "stdin_command", "stop_command": "quit", "stop_timeout_seconds": 30}},
+  "variables": [
+    {"name": "Server port", "key": "SERVER_PORT", "default_value": "27960", "user_viewable": true, "user_editable": true, "type": "integer", "sensitive": false, "required": true, "nullable": false, "validation": {"min": 1024, "max": 65535}, "group": "Network"},
+    {"name": "Server name", "key": "SERVER_NAME", "default_value": "GameNode Quake Live Server", "user_viewable": true, "user_editable": true, "type": "string", "sensitive": false, "required": true, "nullable": false, "validation": {"min_length": 1, "max_length": 80}, "group": "Server"},
+    {"name": "Server type", "description": "Quake Live sv_serverType value.", "key": "SERVER_TYPE", "default_value": "2", "user_viewable": true, "user_editable": true, "type": "integer", "sensitive": false, "required": true, "nullable": false, "validation": {"min": 0, "max": 2}, "group": "Server"},
+    {"name": "Server FPS", "key": "FPS", "default_value": "40", "user_viewable": true, "user_editable": true, "type": "integer", "sensitive": false, "required": true, "nullable": false, "validation": {"min": 20, "max": 125}, "group": "Advanced", "advanced": true}
+  ],
+  "ports": [{"name": "Game", "protocol": "udp", "variable": "SERVER_PORT", "required": true, "purpose": "Quake Live game and query traffic"}],
+  "expected_files": [{"path": "qzeroded.x64", "type": "file", "required": true, "executable": true, "platform": "linux"}],
+  "requirements": [{"type": "os", "level": "hard", "value": "linux", "description": "The reviewed Pelican launch targets the native Linux server."}, {"type": "steamcmd", "level": "hard", "value": "anonymous", "description": "Managed anonymous SteamCMD installation is required."}],
+  "help": {"summary": "GameNode installs Steam App 349090 anonymously and launches qzeroded.x64 directly."},
+  "compatibility": {"status": "compatible", "findings": []},
+  "read_only": true,
+  "platforms": ["linux"],
+  "prerequisites": ["64-bit Linux host", "Network access to Steam content servers"]
+}

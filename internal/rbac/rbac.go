@@ -24,6 +24,7 @@ var ErrRoleHasServerAssignments = errors.New("role has server-scoped assignments
 var ErrInvalidTenantScope = errors.New("role contains permissions that cannot be assigned at tenant scope")
 var ErrEmptyTenantRole = errors.New("role has no permissions and cannot be assigned at tenant scope")
 var ErrRoleHasTenantAssignments = errors.New("role has tenant-scoped assignments and must remain tenant-assignable")
+var ErrBuiltinRoleProtected = errors.New("built-in roles cannot be deleted")
 
 var roleNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_. -]*$`)
 
@@ -43,6 +44,7 @@ type Role struct {
 	// existing assignments.
 	ServerAssignable     bool      `json:"server_assignable"`
 	TenantAssignable     bool      `json:"tenant_assignable"`
+	BuiltIn              bool      `json:"built_in"`
 	CreatedAt, UpdatedAt time.Time `json:"-"`
 }
 type Assignment struct {
@@ -83,7 +85,7 @@ func (s *Service) CreateRole(c context.Context, name, description string) (Role,
 	return r, e
 }
 func (s *Service) ListRoles(c context.Context) ([]Role, error) {
-	rows, e := s.db.QueryContext(c, "SELECT id,name,description,created_at,updated_at FROM roles ORDER BY name COLLATE NOCASE")
+	rows, e := s.db.QueryContext(c, "SELECT id,name,description,built_in,created_at,updated_at FROM roles ORDER BY name COLLATE NOCASE")
 	if e != nil {
 		return nil, e
 	}
@@ -91,7 +93,7 @@ func (s *Service) ListRoles(c context.Context) ([]Role, error) {
 	for rows.Next() {
 		var r Role
 		var a, b string
-		if e = rows.Scan(&r.ID, &r.Name, &r.Description, &a, &b); e != nil {
+		if e = rows.Scan(&r.ID, &r.Name, &r.Description, &r.BuiltIn, &a, &b); e != nil {
 			return nil, e
 		}
 		r.CreatedAt, _ = time.Parse(time.RFC3339Nano, a)
@@ -117,7 +119,7 @@ func (s *Service) ListRoles(c context.Context) ([]Role, error) {
 func (s *Service) GetRole(c context.Context, role string) (Role, error) {
 	var r Role
 	var a, b string
-	e := s.db.QueryRowContext(c, "SELECT id,name,description,created_at,updated_at FROM roles WHERE id=?", role).Scan(&r.ID, &r.Name, &r.Description, &a, &b)
+	e := s.db.QueryRowContext(c, "SELECT id,name,description,built_in,created_at,updated_at FROM roles WHERE id=?", role).Scan(&r.ID, &r.Name, &r.Description, &r.BuiltIn, &a, &b)
 	if e != nil {
 		return r, e
 	}
@@ -151,6 +153,13 @@ func normalizeRoleName(value string) (string, error) {
 	return value, nil
 }
 func (s *Service) DeleteRole(c context.Context, role string) error {
+	var builtIn bool
+	if e := s.db.QueryRowContext(c, "SELECT built_in FROM roles WHERE id=?", role).Scan(&builtIn); e != nil {
+		return e
+	}
+	if builtIn {
+		return ErrBuiltinRoleProtected
+	}
 	r, e := s.db.ExecContext(c, "DELETE FROM roles WHERE id=?", role)
 	if e != nil {
 		return e

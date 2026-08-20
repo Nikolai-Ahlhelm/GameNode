@@ -1,0 +1,25 @@
+{
+  "schema_version": 2,
+  "id": "qanga",
+  "name": "QANGA Dedicated Server",
+  "description": "Install the QANGA dedicated server through SteamCMD and launch its native Linux server directly.",
+  "version": "1.0.0", "category": "steamcmd", "minimum_gamenode_version": "0.2.0",
+  "known_limitations": ["Advanced world and server settings remain file-managed.", "Stop uses the bounded terminate fallback."],
+  "icon": "steamcmd", "source_type": "official", "source_identifier": "pelican-eggs/qanga", "source_format_version": "2",
+  "tags": ["qanga", "steam", "steamcmd", "survival", "science-fiction"],
+  "source_metadata": {"author": "GameNode, normalized from Pelican Eggs", "tags": ["qanga", "steam", "steamcmd", "survival", "science-fiction"]},
+  "installer": {"type": "steamcmd", "steamcmd": {"app_id": 1652070, "validate": true, "login_mode": "anonymous", "platform": "native", "install_target": "server_root"}},
+  "platform_launches": {"linux": {"executable": "Qanga/Binaries/Linux/QangaServer-Linux-Shipping", "arguments": ["Qanga", "/Game/Maps/Universe/{{MAP}}?", "-server", "-log", "-port={{SERVER_PORT}}", "-map={{MAP}}", "-sessionName={{SESSION_NAME}}", "-QueryPort={{QUERY_PORT}}"], "working_root": "server_root", "stop_method": "terminate", "stop_timeout_seconds": 60}},
+  "variables": [
+    {"name": "Game port", "key": "SERVER_PORT", "default_value": "7777", "user_viewable": true, "user_editable": true, "type": "integer", "sensitive": false, "required": true, "nullable": false, "validation": {"min": 1024, "max": 65535}, "group": "Network"},
+    {"name": "Query port", "key": "QUERY_PORT", "default_value": "27016", "user_viewable": true, "user_editable": true, "type": "integer", "sensitive": false, "required": true, "nullable": false, "validation": {"min": 1024, "max": 65535}, "group": "Network"},
+    {"name": "Map", "key": "MAP", "default_value": "L_Persistent_Universe", "user_viewable": true, "user_editable": true, "type": "enum", "sensitive": false, "required": true, "nullable": false, "validation": {"allowed": ["L_Persistent_Universe"]}, "group": "World"},
+    {"name": "Session name", "key": "SESSION_NAME", "default_value": "Survival", "user_viewable": true, "user_editable": true, "type": "string", "sensitive": false, "required": true, "nullable": false, "validation": {"min_length": 1, "max_length": 64}, "group": "Server"}
+  ],
+  "ports": [{"name": "Game", "protocol": "udp", "variable": "SERVER_PORT", "required": true}, {"name": "Query", "protocol": "udp", "variable": "QUERY_PORT", "required": true}],
+  "expected_files": [{"path": "Qanga/Binaries/Linux/QangaServer-Linux-Shipping", "type": "file", "required": true, "executable": true, "platform": "linux"}],
+  "requirements": [{"type": "os", "level": "hard", "value": "linux", "description": "The reviewed Pelican launch targets Linux."}, {"type": "steamcmd", "level": "hard", "value": "anonymous", "description": "Managed anonymous SteamCMD is required."}],
+  "help": {"summary": "GameNode installs Steam App 1652070 anonymously and starts the QANGA Linux server without a shell."},
+  "compatibility": {"status": "compatible", "findings": [{"severity": "info", "component": "configuration", "code": "QANGA_FILE_CONFIGURATION", "summary": "Only reviewed startup settings are exposed."}]},
+  "read_only": true, "platforms": ["linux"], "prerequisites": ["64-bit Linux host", "Network access to Steam content servers"]
+}

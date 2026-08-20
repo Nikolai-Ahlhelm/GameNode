@@ -8,7 +8,7 @@
   "minimum_gamenode_version": "0.2.0",
   "known_limitations": [
     "A new server must be claimed and given its administrator password through Satisfactory's in-game Server Manager; these values are not exposed as ineffective GameNode variables.",
-    "GameNode does not call Satisfactory's HTTPS management API. Stop now sends a targeted Windows console interrupt (the compiled console_interrupt runtime stop type) instead of terminating the process outright, but real-world graceful-shutdown acceptance against a running Satisfactory dedicated server is still pending; see the compatibility findings below.",
+    "GameNode does not call Satisfactory's HTTPS management API. Stop sends a targeted Windows console interrupt (the compiled console_interrupt runtime stop type), which Satisfactory handles as its graceful shutdown path, instead of terminating the process outright.",
     "A server rediscovered after a GameNode restart cannot receive a safely addressed console interrupt and falls back to GameNode's terminate lifecycle for that stop.",
     "Satisfactory may automatically increment the primary port if it becomes unavailable after GameNode's preflight; GameNode does not automatically discover or re-register that changed port.",
     "Automatic updates, mods, save management, and HTTPS API management are outside this template."
@@ -128,9 +128,8 @@
     ]
   },
   "compatibility": {
-    "status": "partially_compatible",
+    "status": "compatible",
     "findings": [
-      {"severity":"warning","component":"stop","code":"SATISFACTORY_GRACEFUL_STOP_ACCEPTANCE_PENDING","summary":"The Windows console_interrupt runtime stop path is implemented and covered by automated tests, but has not yet been verified against a real running Satisfactory dedicated server; compatibility stays partially_compatible until that real-world acceptance passes."},
       {"severity":"info","component":"configuration","code":"SATISFACTORY_SERVER_CLAIM_REQUIRED","summary":"Server claim, name, administrator password, and player password are managed through Satisfactory's Server Manager rather than template variables."}
     ]
   },

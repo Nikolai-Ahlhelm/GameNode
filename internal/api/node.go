@@ -7,6 +7,7 @@ import (
 
 	"gamenode/internal/audit"
 	"gamenode/internal/nodes"
+	"gamenode/internal/remote"
 )
 
 // requireMachineAuth authenticates a Node-facing API request against this
@@ -67,6 +68,50 @@ func (s *Server) nodeHealthHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOut(w, http.StatusOK, map[string]string{"status": "healthy"})
+}
+
+// nodeStatusHandler exposes a bounded summary of the workloads managed by
+// this node to an enrolled controller. Resource values deliberately sum only
+// GameNode-managed processes; they are not host-wide utilisation.
+func (s *Server) nodeStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w)
+		return
+	}
+	if !s.requireMachineAuth(w, r) {
+		return
+	}
+	records, err := s.servers.List(r.Context())
+	if err != nil {
+		internal(w)
+		return
+	}
+	if len(records) > maxNodeServerListSize {
+		records = records[:maxNodeServerListSize]
+	}
+	status := remote.NodeStatus{}
+	for _, record := range records {
+		status.Servers.Total++
+		switch record.Runtime.CurrentState {
+		case "running":
+			status.Servers.Running++
+		case "stopped":
+			status.Servers.Stopped++
+		case "crashed":
+			status.Servers.Crashed++
+		}
+		if record.Runtime.ConsoleDetached {
+			status.Servers.Detached++
+		}
+		snapshot, snapshotErr := s.servers.MonitoringSnapshot(r.Context(), record.Server.ID)
+		if snapshotErr != nil || record.Runtime.CurrentState != "running" || record.Runtime.ConsoleDetached {
+			continue
+		}
+		status.Workload.CPUPercent += snapshot.CPUPercent
+		status.Workload.MemoryBytes += snapshot.MemoryBytes
+		status.Workload.SampledServers++
+	}
+	jsonOut(w, http.StatusOK, status)
 }
 
 func (s *Server) nodeCapabilitiesHandler(w http.ResponseWriter, r *http.Request) {

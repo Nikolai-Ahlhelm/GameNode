@@ -7,7 +7,7 @@ import { runtimeStateLabel, serverStateTone } from './server-status';
 import { TenantAccess } from './identity';
 import './tenants.css';
 
-export type Tenant = { id: string; name: string; slug: string; created_at: string; updated_at: string };
+export type Tenant = { id: string; name: string; slug: string; status_page_enabled: boolean; status_page_public: boolean; created_at: string; updated_at: string };
 type TenantUser = { id: string; username: string; enabled: boolean };
 type Member = { tenant_id: string; user_id: string; username: string; created_at: string };
 type ServerListItem = { server: { id: string; name: string; tenant_id: string; working_directory: string }; runtime: { current_state: string; console_detached?: boolean } };
@@ -123,17 +123,17 @@ function TenantDetail({ initial, token, capabilities, onBack, onDeleted, onOpenS
 }
 
 function TenantOverview({ tenant, token, manage, onSaved, onDeleted, onError }: { tenant: Tenant; token: string; manage: boolean; onSaved: (tenant: Tenant) => void; onDeleted: () => void; onError: (message: string) => void }) {
-  const [form, setForm] = useState({ name: tenant.name, slug: tenant.slug }); const [editSlug, setEditSlug] = useState(false); const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({ name: tenant.name, slug: tenant.slug, status_page_enabled: tenant.status_page_enabled, status_page_public: tenant.status_page_public }); const [editSlug, setEditSlug] = useState(false); const [saving, setSaving] = useState(false);
   const [counts, setCounts] = useState<{ servers: number; members: number }>();
-  useEffect(() => { setForm({ name: tenant.name, slug: tenant.slug }); setEditSlug(false); }, [tenant.id, tenant.name, tenant.slug]);
+  useEffect(() => { setForm({ name: tenant.name, slug: tenant.slug, status_page_enabled: tenant.status_page_enabled, status_page_public: tenant.status_page_public }); setEditSlug(false); }, [tenant.id, tenant.name, tenant.slug, tenant.status_page_enabled, tenant.status_page_public]);
   useEffect(() => { let cancelled = false; void Promise.all([api<{ servers: unknown[] | null }>(`/tenants/${tenant.id}/servers`), api<{ members: unknown[] | null }>(`/tenants/${tenant.id}/members`)]).then(([s, m]) => { if (!cancelled) setCounts({ servers: listOrEmpty(s.servers).length, members: listOrEmpty(m.members).length }); }).catch(() => { if (!cancelled) setCounts(undefined); }); return () => { cancelled = true; }; }, [tenant.id]);
-  const dirty = form.name !== tenant.name || form.slug !== tenant.slug;
+  const dirty = form.name !== tenant.name || form.slug !== tenant.slug || form.status_page_enabled !== tenant.status_page_enabled || form.status_page_public !== tenant.status_page_public;
   async function save(event: FormEvent) {
     event.preventDefault();
     const errors = [...validateTenantName(form.name), ...validateTenantSlug(form.slug)];
     if (errors.length) { onError(errors.join(' ')); return; }
     setSaving(true); onError('');
-    try { onSaved((await api<{ tenant: Tenant }>(`/tenants/${tenant.id}`, { method: 'PATCH', headers: csrf(token), body: JSON.stringify({ name: form.name, slug: form.slug }) })).tenant); }
+    try { onSaved((await api<{ tenant: Tenant }>(`/tenants/${tenant.id}`, { method: 'PATCH', headers: csrf(token), body: JSON.stringify(form) })).tenant); }
     catch (e) { onError(errorMessage(e)); } finally { setSaving(false); }
   }
   async function remove() {
@@ -149,8 +149,12 @@ function TenantOverview({ tenant, token, manage, onSaved, onDeleted, onError }: 
         <label>Created<input value={new Date(tenant.created_at).toLocaleString()} readOnly /></label>
         <label>Name<input disabled={!manage} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>
         <label>Slug{manage && !editSlug && <button type="button" className="quiet field-inline-action" onClick={() => setEditSlug(true)}>Edit</button>}<input disabled={!manage || !editSlug} value={form.slug} onChange={e => setForm({ ...form, slug: e.target.value })} /></label>
+        <label><input type="checkbox" disabled={!manage} checked={form.status_page_enabled} onChange={e => setForm({ ...form, status_page_enabled: e.target.checked })} /> Enable status dashboard</label>
+        <label><input type="checkbox" disabled={!manage || !form.status_page_enabled} checked={form.status_page_public} onChange={e => setForm({ ...form, status_page_public: e.target.checked })} /> Public without authentication</label>
       </div>
-      {manage && <div className="actions"><button disabled={!dirty || saving}>{saving ? 'Saving…' : 'Save changes'}</button><button type="button" className="quiet" disabled={!dirty || saving} onClick={() => { setForm({ name: tenant.name, slug: tenant.slug }); setEditSlug(false); }}>Cancel changes</button></div>}
+      <p className="field-help">Private status dashboards require tenant-scoped Monitoring.View. The dashboard exposes service names and operational state, but no process IDs, paths, metrics, or errors.</p>
+      {tenant.status_page_enabled && <p><a href={`/status/${tenant.slug}`} target="_blank" rel="noreferrer">Open status dashboard</a></p>}
+      {manage && <div className="actions"><button disabled={!dirty || saving}>{saving ? 'Saving…' : 'Save changes'}</button><button type="button" className="quiet" disabled={!dirty || saving} onClick={() => { setForm({ name: tenant.name, slug: tenant.slug, status_page_enabled: tenant.status_page_enabled, status_page_public: tenant.status_page_public }); setEditSlug(false); }}>Cancel changes</button></div>}
     </form>
     <section className="detail-card"><SectionHeader title="Summary" /><div className="definition-list"><div className="definition-row"><span>Servers</span><strong>{counts ? counts.servers : '—'}</strong></div><div className="definition-row"><span>Members</span><strong>{counts ? counts.members : '—'}</strong></div></div></section>
     {manage && <section className="detail-card danger-zone"><SectionHeader title="Danger zone" description="Deletion only succeeds while the tenant owns no servers. GameNode never deletes server files, and never recursively removes assignments or memberships as a side effect." /><div className="danger-actions"><div><strong>Delete this tenant</strong><p>{counts === undefined ? 'Loading current server ownership…' : hasServers ? `Remove or reassign all ${counts!.servers} server${counts!.servers === 1 ? '' : 's'} first.` : 'This tenant currently owns no servers.'}</p></div><button className="danger" disabled={hasServers || counts === undefined} onClick={() => void remove()}>Delete tenant</button></div></section>}

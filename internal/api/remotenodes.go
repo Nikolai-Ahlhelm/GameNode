@@ -9,6 +9,7 @@ import (
 	"gamenode/internal/audit"
 	"gamenode/internal/auth"
 	"gamenode/internal/nodes"
+	"gamenode/internal/rbac"
 	"gamenode/internal/remote"
 )
 
@@ -221,6 +222,10 @@ func (s *Server) remoteNodeHandler(w http.ResponseWriter, r *http.Request) {
 		s.remoteServersRouter(w, r, id, parts[2:])
 		return
 	}
+	if len(parts) == 2 && parts[1] == "status" {
+		s.remoteNodeStatusHandler(w, r, id)
+		return
+	}
 	if len(parts) >= 2 && parts[1] == "provisioning" {
 		s.remoteNodeProvisioningHandler(w, r, id, parts[2:])
 		return
@@ -269,6 +274,41 @@ func (s *Server) remoteNodeHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		method(w)
 	}
+}
+
+// remoteNodeStatusHandler exposes a remote node's aggregate to browser
+// users. Global remote-server and monitoring rights are mandatory because a
+// tenant-scoped grant must never learn another tenant's node-wide totals.
+func (s *Server) remoteNodeStatusHandler(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		method(w)
+		return
+	}
+	u, _, ok := s.requireGlobalPermission(w, r, "Node.View", false)
+	if !ok {
+		return
+	}
+	for _, permission := range []string{"RemoteServer.View", "RemoteMonitoring.View"} {
+		allowed, err := s.allowed(r.Context(), u, permission, rbac.Scope{Type: "global"})
+		if err != nil {
+			internal(w)
+			return
+		}
+		if !allowed {
+			forbidden(w, "permission denied")
+			return
+		}
+	}
+	n, ok := s.requireEnabledRemoteNode(w, r, id, "remote_server_management")
+	if !ok {
+		return
+	}
+	status, err := s.remoteClient.GetNodeStatus(r.Context(), n.Endpoint, n.Credential)
+	if err != nil {
+		remoteNodeError(w, err)
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"remote_node_status": status})
 }
 
 type updateRemoteNodeRequest struct {

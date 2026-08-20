@@ -108,13 +108,15 @@ func normalizeIdentifier(value string, min, max int, label string) (string, erro
 	}
 	return value, nil
 }
-func normalizeEmail(value string) (string, error) {
+func NormalizeEmail(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if !strings.Contains(value, "@") || len(value) > 254 {
 		return "", errors.New("a valid email is required")
 	}
 	return value, nil
 }
+
+func normalizeEmail(value string) (string, error) { return NormalizeEmail(value) }
 func normalizeDisplayName(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if len(value) > 128 {
@@ -175,6 +177,61 @@ func (s *Service) GetUser(ctx context.Context, id string) (User, error) {
 	return u, err
 }
 func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (User, error) {
+	return s.createUser(ctx, s.db, in)
+}
+
+// CreateUserTx creates a user in a caller-owned transaction, allowing
+// invitation consumption and tenant membership to commit atomically.
+func (s *Service) CreateUserTx(ctx context.Context, tx *sql.Tx, in CreateUserInput) (User, error) {
+	return s.createUser(ctx, tx, in)
+}
+
+// EnsureDevelopmentAdmin creates or refreshes the deliberately weak local
+// development account. It is intended only for the explicit -dev startup
+// path; production startup never calls it. The password policy is not applied
+// here because the fixed dev/dev credentials are intentionally shorter than
+// the normal policy.
+func (s *Service) EnsureDevelopmentAdmin(ctx context.Context, username, password, email string) (User, error) {
+	username, err := auth.NormalizeUsername(username)
+	if err != nil {
+		return User{}, err
+	}
+	if strings.TrimSpace(email) == "" {
+		return User{}, errors.New("development admin email is required")
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return User{}, err
+	}
+	now := s.now().UTC()
+	var u User
+	err = scanUser(s.db.QueryRowContext(ctx, userSelect+" WHERE username=?", username), &u)
+	if errors.Is(err, sql.ErrNoRows) {
+		u = User{ID: newID(), Username: username, Email: strings.TrimSpace(email), Enabled: true, IsAdmin: true, CreatedAt: now, UpdatedAt: now}
+		_, err = s.db.ExecContext(ctx, `INSERT INTO users(id,username,email,password_hash,is_admin,disabled,display_name,created_at,updated_at) VALUES(?,?,?,?,1,0,'',?,?)`, u.ID, u.Username, u.Email, hash, stamp(now), stamp(now))
+		if err != nil {
+			return User{}, classifyConstraint(err)
+		}
+		return u, nil
+	}
+	if err != nil {
+		return User{}, err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE users SET password_hash=?,is_admin=1,disabled=0,updated_at=? WHERE id=?`, hash, stamp(now), u.ID)
+	if err != nil {
+		return User{}, err
+	}
+	if _, err = s.db.ExecContext(ctx, "DELETE FROM sessions WHERE user_id=?", u.ID); err != nil {
+		return User{}, err
+	}
+	return s.GetUser(ctx, u.ID)
+}
+
+type execer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func (s *Service) createUser(ctx context.Context, exec execer, in CreateUserInput) (User, error) {
 	username, err := NormalizeUsername(in.Username)
 	if err != nil {
 		return User{}, err
@@ -196,7 +253,7 @@ func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (User, err
 	}
 	now := s.now().UTC()
 	u := User{ID: newID(), Username: username, DisplayName: displayName, Email: email, Enabled: true, IsAdmin: in.IsAdmin, CreatedAt: now, UpdatedAt: now}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO users(id,username,email,password_hash,is_admin,disabled,display_name,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, u.ID, u.Username, u.Email, hash, u.IsAdmin, 0, u.DisplayName, stamp(now), stamp(now))
+	_, err = exec.ExecContext(ctx, `INSERT INTO users(id,username,email,password_hash,is_admin,disabled,display_name,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, u.ID, u.Username, u.Email, hash, u.IsAdmin, 0, u.DisplayName, stamp(now), stamp(now))
 	err = classifyConstraint(err)
 	return u, err
 }
@@ -244,6 +301,14 @@ func (s *Service) UpdateUser(ctx context.Context, actorID, id string, in UpdateU
 	return s.GetUser(ctx, id)
 }
 func (s *Service) ResetPassword(ctx context.Context, id, password string) error {
+	return s.resetPassword(ctx, s.db, id, password)
+}
+
+func (s *Service) ResetPasswordTx(ctx context.Context, tx *sql.Tx, id, password string) error {
+	return s.resetPassword(ctx, tx, id, password)
+}
+
+func (s *Service) resetPassword(ctx context.Context, exec execer, id, password string) error {
 	if err := s.validatePassword(ctx, password); err != nil {
 		return err
 	}
@@ -252,7 +317,7 @@ func (s *Service) ResetPassword(ctx context.Context, id, password string) error 
 		return err
 	}
 	now := stamp(s.now().UTC())
-	result, err := s.db.ExecContext(ctx, "UPDATE users SET password_hash=?,updated_at=? WHERE id=?", hash, now, id)
+	result, err := exec.ExecContext(ctx, "UPDATE users SET password_hash=?,updated_at=? WHERE id=?", hash, now, id)
 	if err != nil {
 		return err
 	}
@@ -263,7 +328,7 @@ func (s *Service) ResetPassword(ctx context.Context, id, password string) error 
 	if n == 0 {
 		return sql.ErrNoRows
 	}
-	_, err = s.db.ExecContext(ctx, "DELETE FROM sessions WHERE user_id=?", id)
+	_, err = exec.ExecContext(ctx, "DELETE FROM sessions WHERE user_id=?", id)
 	return err
 }
 func (s *Service) DeleteUser(ctx context.Context, actorID, id string) error {

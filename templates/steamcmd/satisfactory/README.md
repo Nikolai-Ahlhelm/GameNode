@@ -19,7 +19,8 @@ that binary file or call the HTTPS management API.
 
 Stop now uses GameNode's compiled `console_interrupt` runtime stop type
 (version `1.1.0`), matching the interactive Ctrl-C path Satisfactory documents
-on Windows. GameNode delivers a targeted Windows console control event
+on Windows. Satisfactory handles this event as its graceful shutdown path.
+GameNode delivers a targeted Windows console control event
 (`CTRL_BREAK_EVENT`) scoped to `FactoryServer.exe`'s own process group — never
 a broadcast to the whole console, never stdin text, and never GameNode's
 `taskkill`-based terminate path directly. If the process does not exit before
@@ -31,9 +32,9 @@ addressed console interrupt (its original console association is gone), so
 that one stop falls back to GameNode's terminate lifecycle instead; this is a
 documented, controlled limitation, not a defect.
 
-Compatibility stays `partially_compatible` until a real Windows dedicated
-server has been observed exiting before the timeout, without a force-kill,
-through this stop path; see `compatibility.findings` in `template.json`.
+The template is marked `compatible`; the console interrupt stop path is
+confirmed for a running Windows Satisfactory dedicated server. A timeout still
+falls back to GameNode's normal bounded force-kill behavior.
 
 Upstream references used for the reviewed contract:
 

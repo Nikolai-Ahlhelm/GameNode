@@ -203,8 +203,8 @@ func ValidateDefinition(definition templates.ConfigAdapterDefinition) error {
 			return ErrUnsafeTarget
 		}
 	} else {
-		standardFormat := definition.Format == templates.FormatXMLProperties || definition.Format == templates.FormatINIKeyValues
-		if !safeDefinitionTarget(definition.Format, definition.Target) || (!standardFormat && !tupleFormat) || (definition.PostStartOnly && definition.Format != templates.FormatINIKeyValues) {
+		standardFormat := definition.Format == templates.FormatXMLProperties || definition.Format == templates.FormatINIKeyValues || definition.Format == templates.FormatJSONKeyValues || definition.Format == templates.FormatINISectionKeyValues
+		if !safeDefinitionTarget(definition.Format, definition.Target) || (!standardFormat && !tupleFormat) || (definition.PostStartOnly && definition.Format != templates.FormatINIKeyValues && definition.Format != templates.FormatJSONKeyValues && definition.Format != templates.FormatINISectionKeyValues) {
 			return ErrUnsafeTarget
 		}
 		if definition.Initialization != nil {
@@ -215,6 +215,10 @@ func ValidateDefinition(definition templates.ConfigAdapterDefinition) error {
 	}
 	if tupleFormat {
 		if !sectionName.MatchString(definition.Section) || !propertyName.MatchString(definition.ContainerProperty) {
+			return ErrInvalidValue
+		}
+	} else if definition.Format == templates.FormatINISectionKeyValues {
+		if !sectionName.MatchString(definition.Section) || definition.ContainerProperty != "" {
 			return ErrInvalidValue
 		}
 	} else if definition.Section != "" || definition.ContainerProperty != "" {
@@ -255,7 +259,7 @@ func ManagedLaunch(definition templates.ConfigAdapterDefinition) bool {
 
 func safeDefinitionTarget(format, target string) bool {
 	extension := strings.ToLower(filepath.Ext(target))
-	if (format != "xml-properties" && format != "ini-key-values" && format != sectionTupleFormat) || (format == "xml-properties" && extension != ".xml") || ((format == "ini-key-values" || format == sectionTupleFormat) && extension != ".ini") || !safeDefinitionPath(target) {
+	if (format != "xml-properties" && format != "ini-key-values" && format != templates.FormatJSONKeyValues && format != templates.FormatINISectionKeyValues && format != sectionTupleFormat) || (format == "xml-properties" && extension != ".xml") || ((format == "ini-key-values" || format == templates.FormatINISectionKeyValues || format == sectionTupleFormat) && extension != ".ini") || (format == templates.FormatJSONKeyValues && extension != ".json") || !safeDefinitionPath(target) {
 		return false
 	}
 	return true
@@ -307,7 +311,7 @@ func applyWithWriters(root string, definition templates.ConfigAdapterDefinition,
 		if err := validateValue(field, value); err != nil {
 			return err
 		}
-		if (definition.Format == "ini-key-values" || definition.Format == sectionTupleFormat) && strings.ContainsAny(value, "\r\n") {
+		if (definition.Format == "ini-key-values" || definition.Format == templates.FormatINISectionKeyValues || definition.Format == sectionTupleFormat || definition.Format == templates.FormatJSONKeyValues) && strings.ContainsAny(value, "\r\n") {
 			return ErrInvalidValue
 		}
 		replacements[field.Property] = value
@@ -407,6 +411,10 @@ func transformForDefinition(definition templates.ConfigAdapterDefinition, data [
 		return transformXML(data, replacements, wanted)
 	case "ini-key-values":
 		return transformINI(data, replacements, wanted)
+	case templates.FormatJSONKeyValues:
+		return transformJSON(data, replacements, wanted)
+	case templates.FormatINISectionKeyValues:
+		return transformINISection(data, replacements, wanted, definition.Section)
 	case sectionTupleFormat:
 		return transformSectionTuple(data, replacements, definition.Fields, definition.Section, definition.ContainerProperty)
 	default:
@@ -497,6 +505,171 @@ func transformXML(data []byte, replacements map[string]string, wanted map[string
 // transformINI handles the flat key=value format used by Project Zomboid.
 // It preserves comments, ordering, unknown keys, and the source line endings;
 // sections and malformed lines fail closed instead of being guessed.
+// transformJSON edits only declared top-level scalar properties. It deliberately
+// does not implement JSONPath, nested traversal, array editing, or arbitrary
+// expressions. Re-encoding the bounded document keeps unknown properties while
+// normalizing whitespace; callers still commit through the normal atomic writer.
+func transformJSON(data []byte, replacements map[string]string, wanted map[string]bool) ([]byte, map[string]string, error) {
+	if len(data) > MaxConfigBytes || !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
+		return nil, nil, errors.New("configuration JSON is invalid")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var document map[string]json.RawMessage
+	if err := decoder.Decode(&document); err != nil || document == nil {
+		return nil, nil, errors.New("configuration JSON must be an object")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, nil, errors.New("configuration JSON has trailing data")
+	}
+	found := map[string]string{}
+	for key := range wanted {
+		raw, ok := document[key]
+		if !ok {
+			return nil, nil, errors.New("configuration JSON property is missing")
+		}
+		trimmed := bytes.TrimSpace(raw)
+		if len(trimmed) == 0 || trimmed[0] == '{' || trimmed[0] == '[' {
+			return nil, nil, errors.New("configuration JSON managed properties must be scalar")
+		}
+		var value any
+		valueDecoder := json.NewDecoder(bytes.NewReader(trimmed))
+		valueDecoder.UseNumber()
+		if err := valueDecoder.Decode(&value); err != nil {
+			return nil, nil, errors.New("configuration JSON property is invalid")
+		}
+		if err := valueDecoder.Decode(&extra); err != io.EOF {
+			return nil, nil, errors.New("configuration JSON property is invalid")
+		}
+		switch typed := value.(type) {
+		case string:
+			found[key] = typed
+		case json.Number:
+			found[key] = typed.String()
+		case bool:
+			found[key] = strconv.FormatBool(typed)
+		case nil:
+			found[key] = ""
+		default:
+			return nil, nil, errors.New("configuration JSON managed property is not scalar")
+		}
+		if replacement, ok := replacements[key]; ok {
+			var encoded []byte
+			switch value.(type) {
+			case string, nil:
+				encoded, _ = json.Marshal(replacement)
+			case json.Number:
+				if _, err := strconv.ParseFloat(replacement, 64); err != nil || !json.Valid([]byte(replacement)) {
+					return nil, nil, ErrInvalidValue
+				}
+				encoded = []byte(replacement)
+			case bool:
+				if replacement != "true" && replacement != "false" && replacement != "1" && replacement != "0" {
+					return nil, nil, ErrInvalidValue
+				}
+				if replacement == "1" {
+					replacement = "true"
+				}
+				if replacement == "0" {
+					replacement = "false"
+				}
+				encoded = []byte(replacement)
+			default:
+				return nil, nil, ErrInvalidValue
+			}
+			document[key] = encoded
+			found[key] = replacement
+		}
+	}
+	updated, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return nil, nil, errors.New("configuration JSON could not be encoded")
+	}
+	updated = append(updated, '\n')
+	return updated, found, nil
+}
+
+// transformINISection edits declared scalar key/value properties in exactly
+// one INI section. Other sections and unknown keys are preserved verbatim.
+func transformINISection(data []byte, replacements map[string]string, wanted map[string]bool, section string) ([]byte, map[string]string, error) {
+	if len(data) > MaxConfigBytes || !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
+		return nil, nil, errors.New("configuration INI is not valid UTF-8")
+	}
+	text := string(data)
+	hasBOM := strings.HasPrefix(text, "\ufeff")
+	if hasBOM {
+		text = strings.TrimPrefix(text, "\ufeff")
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > 100000 {
+		return nil, nil, errors.New("configuration INI is too complex")
+	}
+	found := map[string]string{}
+	current := ""
+	foundSection := false
+	for index, line := range lines {
+		hasCR := strings.HasSuffix(line, "\r")
+		raw := strings.TrimSuffix(line, "\r")
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") {
+			if len(trimmed) < 3 || !strings.HasSuffix(trimmed, "]") {
+				return nil, nil, errors.New("configuration INI section is invalid")
+			}
+			current = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+			if !sectionName.MatchString(current) {
+				return nil, nil, errors.New("configuration INI section is invalid")
+			}
+			if current == section {
+				foundSection = true
+			}
+			continue
+		}
+		if current != section {
+			continue
+		}
+		equals := strings.IndexByte(raw, '=')
+		if equals <= 0 {
+			return nil, nil, errors.New("configuration INI line is invalid")
+		}
+		key := strings.TrimSpace(raw[:equals])
+		if !propertyName.MatchString(key) {
+			return nil, nil, errors.New("configuration INI key is invalid")
+		}
+		if !wanted[key] {
+			continue
+		}
+		if _, duplicate := found[key]; duplicate {
+			return nil, nil, errors.New("configuration property is duplicated")
+		}
+		found[key] = raw[equals+1:]
+		if replacement, ok := replacements[key]; ok {
+			line = raw[:equals+1] + replacement
+			if hasCR {
+				line += "\r"
+			}
+			lines[index] = line
+			found[key] = replacement
+		}
+	}
+	if !foundSection {
+		return nil, nil, errors.New("configuration INI section is missing")
+	}
+	for name := range wanted {
+		if _, ok := found[name]; !ok {
+			return nil, nil, errors.New("configuration property is missing")
+		}
+	}
+	result := strings.Join(lines, "\n")
+	if hasBOM {
+		result = "\ufeff" + result
+	}
+	return []byte(result), found, nil
+}
+
 func transformINI(data []byte, replacements map[string]string, wanted map[string]bool) ([]byte, map[string]string, error) {
 	if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
 		return nil, nil, errors.New("configuration INI is not valid UTF-8")

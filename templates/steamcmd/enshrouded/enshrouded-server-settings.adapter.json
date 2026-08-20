@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "enshrouded-server-settings",
+  "version": "1.0.0",
+  "format": "json-key-values",
+  "target": "enshrouded_server.json",
+  "restart_required": true,
+  "post_start_only": true,
+  "fields": [
+    {"key":"SERVER_NAME","label":"Server name","type":"string","property":"name","required":false,"nullable":false,"sensitive":false,"validation":{"min_length":1,"max_length":64}},
+    {"key":"QUERY_PORT","label":"Query port","type":"integer","property":"queryPort","required":false,"nullable":false,"sensitive":false,"validation":{"min":1024,"max":65535}},
+    {"key":"PLAYER_SLOTS","label":"Player slots","type":"integer","property":"slotCount","required":false,"nullable":false,"sensitive":false,"validation":{"min":1,"max":16}},
+    {"key":"VOICE_CHAT_MODE","label":"Voice chat mode","type":"enum","property":"voiceChatMode","required":false,"nullable":false,"sensitive":false,"validation":{"allowed":["Proximity","Global"]}},
+    {"key":"VOICE_CHAT_ENABLED","label":"Voice chat enabled","type":"boolean","property":"enableVoiceChat","required":false,"nullable":false,"sensitive":false,"validation":{}},
+    {"key":"TEXT_CHAT_ENABLED","label":"Text chat enabled","type":"boolean","property":"enableTextChat","required":false,"nullable":false,"sensitive":false,"validation":{}},
+    {"key":"GAMEPLAY_PRESET","label":"Gameplay preset","type":"enum","property":"gameSettingsPreset","required":false,"nullable":false,"sensitive":false,"validation":{"allowed":["Default","Relaxed","Hard","Survival","Custom"]}}
+  ]
+}

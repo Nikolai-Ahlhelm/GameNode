@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "windrose-server-description",
+  "version": "1.0.0",
+  "format": "json-key-values",
+  "target": "R5/ServerDescription.json",
+  "restart_required": true,
+  "post_start_only": true,
+  "fields": [
+    {"key":"SERVER_NAME","label":"Server name","type":"string","property":"ServerName","required":false,"nullable":false,"sensitive":false,"validation":{"min_length":1,"max_length":64}},
+    {"key":"SERVER_PASSWORD","label":"Server password","type":"secret","property":"Password","required":false,"nullable":true,"sensitive":true,"validation":{"max_length":128}},
+    {"key":"PASSWORD_PROTECTED","label":"Password protection","type":"boolean","property":"IsPasswordProtected","required":false,"nullable":false,"sensitive":false,"validation":{}},
+    {"key":"MAX_PLAYERS","label":"Maximum players","type":"integer","property":"MaxPlayerCount","required":false,"nullable":false,"sensitive":false,"validation":{"min":1,"max":32}},
+    {"key":"DIRECT_CONNECTION","label":"Direct connection","type":"boolean","property":"UseDirectConnection","required":false,"nullable":false,"sensitive":false,"validation":{}},
+    {"key":"DIRECT_CONNECTION_PORT","label":"Direct connection port","type":"integer","property":"DirectConnectionServerPort","required":false,"nullable":false,"sensitive":false,"validation":{"min":1024,"max":65535}}
+  ]
+}

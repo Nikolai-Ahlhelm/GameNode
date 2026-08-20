@@ -122,6 +122,52 @@ func TestHTTPAccessLogEntriesVisibleAtDebugLevel(t *testing.T) {
 	}
 }
 
+func TestHTTPAccessLogUsesForwardedSourceOnlyForTrustedLocalProxy(t *testing.T) {
+	newHandler := func(t *testing.T, trustLocalProxy bool) (http.Handler, *logging.Manager) {
+		t.Helper()
+		db, err := database.Open(":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { db.Close() })
+		if err = database.Migrate(db, gamenode.MigrationFiles); err != nil {
+			t.Fatal(err)
+		}
+		manager, log, err := logging.New(t.TempDir(), "debug")
+		if err != nil {
+			t.Fatal(err)
+		}
+		handler := api.New(auth.New(db), servers.NewService(servers.NewStore(db), runtime.NewNative()), log, false, api.Options{Logs: manager, TrustLocalProxy: trustLocalProxy}).Handler(http.NotFoundHandler())
+		return handler, manager
+	}
+	request := func(remote, forwarded string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/unknown", nil)
+		r.RemoteAddr = remote
+		r.Header.Set("X-Forwarded-For", forwarded)
+		return r
+	}
+	cases := []struct {
+		name                    string
+		trust                   bool
+		remote, forwarded, want string
+	}{
+		{name: "trusted local proxy", trust: true, remote: "127.0.0.1:55000", forwarded: "198.51.100.44", want: "198.51.100.44"},
+		{name: "untrusted peer", trust: true, remote: "192.0.2.24:55000", forwarded: "198.51.100.44", want: "192.0.2.24"},
+		{name: "proxy trust disabled", trust: false, remote: "127.0.0.1:55000", forwarded: "198.51.100.44", want: "127.0.0.1"},
+		{name: "chained value rejected", trust: true, remote: "127.0.0.1:55000", forwarded: "198.51.100.44, 127.0.0.1", want: "127.0.0.1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, manager := newHandler(t, tc.trust)
+			h.ServeHTTP(httptest.NewRecorder(), request(tc.remote, tc.forwarded))
+			entries := allEntryLines(manager)
+			if !strings.Contains(entries, `source_ip=`+tc.want) {
+				t.Fatalf("source IP missing or wrong: %s", entries)
+			}
+		})
+	}
+}
+
 // TestDisabledLogCategorySuppressesItsEntries and its enabled counterpart
 // cover the category toggle end to end, through the settings API.
 func TestDisabledLogCategorySuppressesItsEntries(t *testing.T) {

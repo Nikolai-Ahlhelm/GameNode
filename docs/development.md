@@ -9,7 +9,9 @@
 
 Copy `config.example.yaml` to `config.yaml`. Start the backend with `go run ./cmd/gamenode -config config.yaml`. In another shell, run `npm ci` and `npm run dev` in `web`. Vite proxies `/api` to the Go server.
 
-On Windows, `./start-dev.ps1` starts both development processes in separate terminals. It uses `npm.cmd`, so restrictive PowerShell execution policies do not block the Node commands, and starts terminals without a PowerShell profile. It uses `config.yaml` beside the script by default; pass `-Config C:\path\to\config.yaml` to select another configuration file.
+On Windows, `./start-dev.ps1` starts both development processes in separate terminals. It uses `npm.cmd`, so restrictive PowerShell execution policies do not block the Node commands, and starts terminals without a PowerShell profile. It uses `config.yaml` beside the script by default; pass `-Config C:\path\to\config.yaml` to select another configuration file. The helper passes the explicit backend flag `-dev`, which creates or refreshes the local administrator `dev` with password `dev` on every development start. These credentials are intentionally weak and are never enabled by normal or release startup.
+
+The same behavior can be used manually with `go run ./cmd/gamenode -config config.yaml -dev`. Do not use `-dev` for a shared, reachable, staging, or production instance.
 
 ## Verification
 
@@ -157,7 +159,7 @@ $env:GAMENODE_SATISFACTORY_FULL_ACCEPTANCE_DATA='C:\temp\gamenode-satisfactory-f
 go test ./internal/provisioning -run '^TestSatisfactoryFullDeploymentIntegration$' -count=1 -v -timeout 75m
 ```
 
-The acceptance provisions App ID `1690800`, verifies `FactoryServer.exe`, structured port/player arguments, three registered port rows, start stability, terminate behavior, and restart. It does not claim or configure the server through the game API and does not characterize Windows terminate as graceful.
+The acceptance provisions App ID `1690800`, verifies `FactoryServer.exe`, structured port/player arguments, three registered port rows, start stability, Windows `console_interrupt` stop behavior, and restart. It does not claim or configure the server through the game API.
 # Container development
 
 Normal unit tests use a fake Engine and fake Container installer and do not require

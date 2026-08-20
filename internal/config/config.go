@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -67,6 +69,16 @@ type Config struct {
 	Filesystem struct {
 		MaxUploadBytes int64 `yaml:"max_upload_bytes"`
 	} `yaml:"filesystem"`
+	FTP struct {
+		Enabled          bool   `yaml:"enabled"`
+		Listen           string `yaml:"listen"`
+		PublicHost       string `yaml:"public_host"`
+		PassivePortStart int    `yaml:"passive_port_start"`
+		PassivePortEnd   int    `yaml:"passive_port_end"`
+		TLSCert          string `yaml:"tls_cert"`
+		TLSKey           string `yaml:"tls_key"`
+		RequireTLS       bool   `yaml:"require_tls"`
+	} `yaml:"ftp"`
 	Monitoring struct {
 		SampleIntervalSeconds int `yaml:"sample_interval_seconds"`
 		HistoryLimit          int `yaml:"history_limit"`
@@ -80,6 +92,10 @@ func Default() Config {
 	c.Database.Path = "./data/gamenode.db"
 	c.Logging.Level = "info"
 	c.Filesystem.MaxUploadBytes = 64 << 20
+	c.FTP.Listen = "127.0.0.1:2121"
+	c.FTP.PassivePortStart = 50000
+	c.FTP.PassivePortEnd = 50100
+	c.FTP.RequireTLS = true
 	c.Monitoring.SampleIntervalSeconds = 5
 	c.Monitoring.HistoryLimit = 300
 	return c
@@ -120,6 +136,28 @@ func Load(path string) (Config, error) {
 	}
 	if c.Filesystem.MaxUploadBytes < 1<<20 {
 		return c, fmt.Errorf("filesystem.max_upload_bytes must be at least 1 MiB")
+	}
+	if c.FTP.Enabled {
+		host, portText, splitErr := net.SplitHostPort(c.FTP.Listen)
+		port, portErr := strconv.Atoi(portText)
+		if splitErr != nil || host == "" || portErr != nil || port < 1 || port > 65535 {
+			return c, fmt.Errorf("ftp.listen must be a host:port address")
+		}
+		if c.FTP.PublicHost != "" {
+			ip := net.ParseIP(c.FTP.PublicHost)
+			if ip == nil || ip.To4() == nil {
+				return c, fmt.Errorf("ftp.public_host must be an IPv4 address")
+			}
+		}
+		if c.FTP.PassivePortStart < 1 || c.FTP.PassivePortEnd > 65535 || c.FTP.PassivePortStart > c.FTP.PassivePortEnd || c.FTP.PassivePortEnd-c.FTP.PassivePortStart > 1000 {
+			return c, fmt.Errorf("ftp passive port range must contain at most 1001 valid ports")
+		}
+		if (c.FTP.TLSCert == "") != (c.FTP.TLSKey == "") {
+			return c, fmt.Errorf("ftp.tls_cert and ftp.tls_key must be configured together")
+		}
+		if c.FTP.RequireTLS && c.FTP.TLSCert == "" {
+			return c, fmt.Errorf("ftp TLS certificate and key are required when ftp.require_tls is true")
+		}
 	}
 	if c.Monitoring.SampleIntervalSeconds < 1 || c.Monitoring.SampleIntervalSeconds > 300 {
 		return c, fmt.Errorf("monitoring.sample_interval_seconds must be between 1 and 300")

@@ -69,11 +69,15 @@ var slugPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 // Tenant is a logically separate customer/organization boundary. ID is
 // immutable once created.
 type Tenant struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Slug      string    `json:"slug"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	Slug              string    `json:"slug"`
+	StatusPageEnabled bool      `json:"status_page_enabled"`
+	StatusPagePublic  bool      `json:"status_page_public"`
+	OwnerUserID       *string   `json:"owner_user_id,omitempty"`
+	UserQuota         int       `json:"user_quota"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // Membership records that a user belongs to a tenant. It carries no
@@ -92,8 +96,12 @@ type CreateInput struct {
 }
 
 type UpdateInput struct {
-	Name *string `json:"name"`
-	Slug *string `json:"slug"`
+	Name              *string `json:"name"`
+	Slug              *string `json:"slug"`
+	StatusPageEnabled *bool   `json:"status_page_enabled"`
+	StatusPagePublic  *bool   `json:"status_page_public"`
+	OwnerUserID       *string `json:"owner_user_id"`
+	UserQuota         *int    `json:"user_quota"`
 }
 
 type Service struct {
@@ -171,7 +179,28 @@ func (s *Service) Get(ctx context.Context, id string) (Tenant, error) {
 	return t, err
 }
 
+func (s *Service) GetBySlug(ctx context.Context, slug string) (Tenant, error) {
+	slug, err := NormalizeSlug(slug)
+	if err != nil {
+		return Tenant{}, ErrTenantNotFound
+	}
+	var t Tenant
+	err = scanTenant(s.db.QueryRowContext(ctx, tenantSelect+" WHERE slug=?", slug), &t)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Tenant{}, ErrTenantNotFound
+	}
+	return t, err
+}
+
 func (s *Service) Create(ctx context.Context, in CreateInput) (Tenant, error) {
+	return s.create(ctx, in, nil)
+}
+
+func (s *Service) CreateForOwner(ctx context.Context, in CreateInput, ownerUserID string) (Tenant, error) {
+	return s.create(ctx, in, &ownerUserID)
+}
+
+func (s *Service) create(ctx context.Context, in CreateInput, owner *string) (Tenant, error) {
 	name, err := NormalizeName(in.Name)
 	if err != nil {
 		return Tenant{}, err
@@ -186,9 +215,15 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Tenant, error) {
 	}
 	now := s.now().UTC()
 	t := Tenant{ID: newID(), Name: name, Slug: slug, CreatedAt: now, UpdatedAt: now}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO tenants(id,name,slug,created_at,updated_at) VALUES(?,?,?,?,?)`, t.ID, t.Name, t.Slug, stamp(now), stamp(now))
+	t.OwnerUserID = owner
+	_, err = s.db.ExecContext(ctx, `INSERT INTO tenants(id,name,slug,status_page_enabled,status_page_public,owner_user_id,user_quota,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, t.ID, t.Name, t.Slug, false, false, owner, 0, stamp(now), stamp(now))
 	if err = classifyConstraint(err); err != nil {
 		return Tenant{}, err
+	}
+	if owner != nil {
+		if _, err = s.db.ExecContext(ctx, `INSERT INTO tenant_memberships(tenant_id,user_id,created_at) VALUES(?,?,?)`, t.ID, *owner, stamp(now)); err != nil {
+			return Tenant{}, err
+		}
 	}
 	return t, nil
 }
@@ -208,8 +243,23 @@ func (s *Service) Update(ctx context.Context, id string, in UpdateInput) (Tenant
 			return Tenant{}, err
 		}
 	}
+	if in.StatusPageEnabled != nil {
+		t.StatusPageEnabled = *in.StatusPageEnabled
+	}
+	if in.StatusPagePublic != nil {
+		t.StatusPagePublic = *in.StatusPagePublic
+	}
+	if in.OwnerUserID != nil {
+		t.OwnerUserID = in.OwnerUserID
+	}
+	if in.UserQuota != nil {
+		if *in.UserQuota < 0 || *in.UserQuota > 100000 {
+			return Tenant{}, errors.New("user quota must be between 0 and 100000")
+		}
+		t.UserQuota = *in.UserQuota
+	}
 	t.UpdatedAt = s.now().UTC()
-	_, err = s.db.ExecContext(ctx, `UPDATE tenants SET name=?,slug=?,updated_at=? WHERE id=?`, t.Name, t.Slug, stamp(t.UpdatedAt), id)
+	_, err = s.db.ExecContext(ctx, `UPDATE tenants SET name=?,slug=?,status_page_enabled=?,status_page_public=?,owner_user_id=?,user_quota=?,updated_at=? WHERE id=?`, t.Name, t.Slug, t.StatusPageEnabled, t.StatusPagePublic, t.OwnerUserID, t.UserQuota, stamp(t.UpdatedAt), id)
 	if err = classifyConstraint(err); err != nil {
 		return Tenant{}, err
 	}
@@ -312,13 +362,13 @@ func (s *Service) RemoveMember(ctx context.Context, tenantID, userID string) err
 	return nil
 }
 
-const tenantSelect = "SELECT id,name,slug,created_at,updated_at FROM tenants"
+const tenantSelect = "SELECT id,name,slug,status_page_enabled,status_page_public,owner_user_id,user_quota,created_at,updated_at FROM tenants"
 
 type scanner interface{ Scan(...any) error }
 
 func scanTenant(row scanner, t *Tenant) error {
 	var created, updated string
-	if err := row.Scan(&t.ID, &t.Name, &t.Slug, &created, &updated); err != nil {
+	if err := row.Scan(&t.ID, &t.Name, &t.Slug, &t.StatusPageEnabled, &t.StatusPagePublic, &t.OwnerUserID, &t.UserQuota, &created, &updated); err != nil {
 		return err
 	}
 	var err error

@@ -1,0 +1,1 @@
+.ftp-panel{display:grid;gap:14px}.ftp-credential{border-color:var(--warning)}.ftp-credential>div{display:flex;align-items:center;gap:10px}.ftp-credential code{flex:1;overflow-wrap:anywhere;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--input)}

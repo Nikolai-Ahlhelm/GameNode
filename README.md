@@ -63,7 +63,7 @@ npm ci
 npm run dev
 ```
 
-Open the Vite URL, complete the one-time administrator setup, then use the local interface. Vite proxies `/api` to `http://127.0.0.1:8443`.
+Open the Vite URL and use the local development account `dev` / `dev`. The Windows helper starts the backend with the explicit `-dev` flag and creates or refreshes this administrator automatically. This shortcut is available only through the development start path; normal and release starts still require the one-time administrator setup. Vite proxies `/api` to `http://127.0.0.1:8443`.
 
 Without a configuration file, GameNode listens on `127.0.0.1:8443` and stores SQLite data under `./data`. The example configuration contains the listener, data/database locations, logging level, maximum multipart upload size, and monitoring defaults. Server definitions belong in SQLite, not in YAML.
 
@@ -229,12 +229,90 @@ The template does not download Minecraft or NeoForge, write `eula.txt`, overwrit
 
 ## Version history
 
+### v1.0.0
+
+GameNode v1.0.0 expands the platform from a server-management foundation into
+an operational multi-tenant release with external access, status publishing,
+notifications, and a broader template catalog.
+
+#### Added
+
+##### Tenants, users, and access
+
+- Tenant owners, administrators, invitations, registration, and quotas.
+- Safe migration of existing servers between tenants.
+- Built-in Tenant, Server, and GameNode roles for common operator profiles.
+- Password-reset and email-verification building blocks.
+- Stricter tenant-boundary and server-ownership validation throughout the API.
+
+##### FTP and FTPS
+
+- Embedded per-server FTP/FTPS service with configurable TLS and passive mode.
+- Revocable, rotatable credentials managed from each server's FTP tab.
+- Every session is confined to the server's configured working directory.
+- No operating-system user provisioning, shell execution, or Docker dependency.
+
+##### Status pages and notifications
+
+- Opt-in public or permission-protected status pages per tenant.
+- Persisted server status history with availability and health visualization.
+- Bounded background sampling and retention of status history.
+- Asynchronous lifecycle email alerts with SMTP and Microsoft Graph providers.
+- Configurable recipients and event types without exposing secrets in audit data.
+
+##### Templates and Game Library
+
+- Restricted Pelican/Pterodactyl source analysis for approved GitHub Egg files.
+- Pelican SteamCMD catalog import with bounded, normalized template data.
+- Eleven additional SteamCMD templates, including Astro Colony, DDNet,
+  Colony Survival, Post Scriptum, Qanga, Quake Live, and The Bus.
+- Existing native and Container safety boundaries remain enforced for imports.
+
+##### Settings and navigation
+
+- Tabbed Settings sections for Appearance, instance settings, email alerts,
+  logs, and diagnostics/support.
+- Sidebar links to the GameNode GitHub repository and the in-app Patch notes.
+- README-backed Patch notes with filtering for the installed GameNode version.
+
+#### Changed
+
+##### Web interface and API
+
+- Browser-history navigation with deep links to servers, tenants, status pages,
+  and Patch notes.
+- New FTP, tenant registration, password-reset, status, and tenant-migration
+  API surfaces.
+- Expanded tenant, server, settings, dashboard, and audit workflows.
+- Updated API, architecture, and security documentation.
+
+##### Reliability and security
+
+- Improved lifecycle, tenant-isolation, and audit validation.
+- SPA handling now accepts only GET and HEAD requests.
+
+#### Fixed
+
+##### Platform and runtime
+
+- Windows path canonicalization and reparse-point test handling.
+- CRLF-sensitive template documentation parsing.
+- A Container runtime test race that caused Linux race-detector failures.
+
+##### User interface
+
+- Hover animations no longer create unwanted list scrollbars.
+- Sidebar text no longer clips descenders such as the “g” in navigation labels.
+- Sidebar GitHub and Patch notes actions use consistent rounded button styling.
+
 ### v0.9.0
 
 GameNode v0.9.0 brings together the current server-management, provisioning,
 remote-node, and cluster-placement capabilities in one release.
 
-#### Server management
+#### Added
+
+##### Server management
 
 - Native server registration and adoption of existing installations.
 - Linux-first Docker Container runtime with explicit image pulls and typed
@@ -245,7 +323,7 @@ remote-node, and cluster-placement capabilities in one release.
 - Server-root file management with strict path and filesystem sandboxing.
 - Port registration, collision checks, process health, and resource monitoring.
 
-#### Console and operations
+##### Console and operations
 
 - Authenticated live stdout/stderr console over WebSocket.
 - Separate Console View and Console Send permissions.
@@ -253,7 +331,7 @@ remote-node, and cluster-placement capabilities in one release.
 - Monitoring history with CPU, memory, thread, handle, and health data.
 - Typed settings, structured logs, diagnostics, and sanitized support bundles.
 
-#### Templates and provisioning
+##### Templates and provisioning
 
 - Official Game Library with validated, versioned templates and last-good
   caching.
@@ -263,7 +341,7 @@ remote-node, and cluster-placement capabilities in one release.
 - Manual SteamCMD updates for eligible, already-provisioned servers.
 - Declarative, format-aware game configuration adapters.
 
-#### Scheduled restarts
+##### Scheduled restarts
 
 - Persistent daily and weekly restart schedules.
 - Explicit IANA timezone support and deterministic DST handling.
@@ -271,25 +349,18 @@ remote-node, and cluster-placement capabilities in one release.
 - Missed occurrences are skipped after a GameNode restart.
 - Scheduled restarts use the same normal server lifecycle as manual restarts.
 
-#### Remote Nodes
+##### Remote Nodes and cluster placement
 
 - Secure pairing-token enrollment and machine-authenticated Node API.
-- Remote Node identity, health, and capability reporting.
-- Remote server creation, editing, deletion, start, stop, restart, and kill.
-- Remote Native and Container provisioning.
+- Remote Node identity, health, capability reporting, and remote server
+  lifecycle/provisioning operations.
 - Remote console, sandboxed file operations, and monitoring snapshots.
-- Tenant validation remains authoritative on the target Node.
-
-#### Cluster placement
-
 - Deterministic, tenant-isolated placement decisions across local and Remote
-  Nodes.
-- Capability, health, and capacity-aware node selection.
-- Local and remote provisioning execution through the existing typed
-  provisioning path.
+  Nodes with capability, health, and capacity-aware selection.
+- Local and remote provisioning execution through the existing typed path.
 - No direct Docker or runtime control from the placement layer.
 
-#### Authentication, RBAC, and audit
+##### Authentication, RBAC, and audit
 
 - Opaque HttpOnly sessions and Argon2id password hashing.
 - CSRF and same-origin protection for browser mutations.
@@ -298,12 +369,23 @@ remote-node, and cluster-placement capabilities in one release.
 - Semantic audit events for lifecycle, provisioning, remote, and scheduled
   operations.
 
-#### Web interface
+#### Changed
+
+##### Web interface
 
 - Server dashboard with lifecycle, console, files, monitoring, ports, and
   configuration views.
-- Scheduled Restart management.
-- Remote Node and Remote Server management.
-- Official Game Library and provisioning workflows.
+- Scheduled Restart, Remote Node, Remote Server, Game Library, and provisioning
+  workflows.
+
+#### Fixed
+
+##### Security and lifecycle
+
+- Lifecycle actions consistently verify PID plus OS start identity.
+- Filesystem operations reject traversal, absolute paths, and escapes from the
+  authoritative server root.
+- Console access keeps view and send permissions separate and rechecks them
+  during live sessions.
 - Tenant, user, group, role, audit, settings, logs, and diagnostics screens.
 - Dark, light, and system themes with browser-local appearance preferences.

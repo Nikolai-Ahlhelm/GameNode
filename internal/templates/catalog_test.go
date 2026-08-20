@@ -461,7 +461,7 @@ func TestRepositoryOfficialCatalog(t *testing.T) {
 		installer string
 		platforms int
 		resolver  string
-	}{"7-days-to-die": {InstallerSteamCMD, 2, ""}, "project-zomboid": {InstallerSteamCMD, 1, ""}, "minecraft-neoforge": {InstallerExistingFiles, 2, "neoforge"}, "palworld": {InstallerSteamCMD, 1, ""}, "satisfactory": {InstallerSteamCMD, 1, ""}, "eco": {InstallerSteamCMD, 2, ""}, "valheim": {InstallerSteamCMD, 1, ""}, "vein": {InstallerSteamCMD, 1, ""}}
+	}{"7-days-to-die": {InstallerSteamCMD, 2, ""}, "project-zomboid": {InstallerSteamCMD, 1, ""}, "minecraft-neoforge": {InstallerExistingFiles, 2, "neoforge"}, "palworld": {InstallerSteamCMD, 1, ""}, "satisfactory": {InstallerSteamCMD, 1, ""}, "eco": {InstallerSteamCMD, 2, ""}, "valheim": {InstallerSteamCMD, 2, ""}, "vein": {InstallerSteamCMD, 1, ""}}
 	for _, entry := range manifest.Templates {
 		expected, ok := wanted[entry.ID]
 		if !ok || entry.Installer != expected.installer || len(entry.Platforms) != expected.platforms {
@@ -557,7 +557,7 @@ func TestSatisfactoryRepositoryGolden(t *testing.T) {
 	}
 	windows, windowsOK := template.PlatformLaunches["windows"]
 	_, linuxOK := template.PlatformLaunches["linux"]
-	if template.Installer.SteamCMD == nil || template.Installer.SteamCMD.AppID != 1690800 || template.Installer.SteamCMD.BetaBranchVariable != "RELEASE_BRANCH" || !windowsOK || linuxOK || windows.Executable != "FactoryServer.exe" || windows.StopMethod != "console_interrupt" || windows.StopCommand != "" || len(template.Ports) != 3 || len(template.ExpectedFiles) != 3 || template.Configuration != nil || template.Compatibility.Status != PartiallyCompatible || len(template.Platforms) != 1 || template.Platforms[0] != "windows" {
+	if template.Installer.SteamCMD == nil || template.Installer.SteamCMD.AppID != 1690800 || template.Installer.SteamCMD.BetaBranchVariable != "RELEASE_BRANCH" || !windowsOK || linuxOK || windows.Executable != "FactoryServer.exe" || windows.StopMethod != "console_interrupt" || windows.StopCommand != "" || len(template.Ports) != 3 || len(template.ExpectedFiles) != 3 || template.Configuration != nil || template.Compatibility.Status != Compatible || len(template.Platforms) != 1 || template.Platforms[0] != "windows" {
 		t.Fatalf("unexpected Satisfactory template: %#v", template)
 	}
 	for _, variable := range template.Variables {
@@ -573,7 +573,8 @@ func TestDocumentationExampleAndJSONSchemas(t *testing.T) {
 		t.Fatal(err)
 	}
 	marker := "## Complete SteamCMD example"
-	section := strings.SplitN(string(documentation), marker, 2)
+	normalizedDocumentation := strings.ReplaceAll(string(documentation), "\r\n", "\n")
+	section := strings.SplitN(normalizedDocumentation, marker, 2)
 	if len(section) != 2 {
 		t.Fatal("documentation example section is missing")
 	}

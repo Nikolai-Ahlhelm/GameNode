@@ -21,16 +21,21 @@ import (
 	"gamenode/internal/console"
 	"gamenode/internal/database"
 	"gamenode/internal/diagnostics"
+	"gamenode/internal/emailverification"
 	"gamenode/internal/filesystem"
+	ftpservice "gamenode/internal/ftp"
 	"gamenode/internal/gameconfig"
+	"gamenode/internal/identity"
 	"gamenode/internal/logging"
 	"gamenode/internal/monitoring"
+	"gamenode/internal/notifications"
 	"gamenode/internal/provisioning"
 	"gamenode/internal/runtime"
 	"gamenode/internal/scheduler"
 	"gamenode/internal/servers"
 	"gamenode/internal/serverupdates"
 	"gamenode/internal/settings"
+	"gamenode/internal/statushistory"
 	"gamenode/internal/steamcmd"
 	"gamenode/internal/templates"
 )
@@ -47,6 +52,7 @@ func main() {
 		os.Exit(code)
 	}
 	configPath := flag.String("config", "", "Path to YAML configuration (defaults to config.yaml beside the executable)")
+	devMode := flag.Bool("dev", false, "Enable local development conveniences, including the fixed dev/dev administrator")
 	flag.Parse()
 	path := *configPath
 	if path == "" {
@@ -101,6 +107,14 @@ func main() {
 		log.Error("load persisted settings failed", "error", err.Error())
 		os.Exit(1)
 	}
+	if *devMode {
+		devAdmin, devErr := identity.New(db).EnsureDevelopmentAdmin(context.Background(), "dev", "dev", "dev@example.test")
+		if devErr != nil {
+			log.Error("development administrator setup failed", "error", devErr.Error())
+			os.Exit(1)
+		}
+		log.Warn("development mode enabled; fixed dev/dev administrator is active", "user_id", devAdmin.ID)
+	}
 	log.Info("persisted settings loaded", "module", "Settings", "monitoring_interval_seconds", currentSettings.Monitoring.SampleIntervalSeconds, "monitoring_history_limit", currentSettings.Monitoring.HistoryLimit, "logging_level", currentSettings.Logging.Level, "logging_detailed_errors", currentSettings.Logging.DetailedErrors)
 	if err = logManager.SetLevel(currentSettings.Logging.Level); err != nil {
 		log.Error("invalid persisted logging level", "module", "Settings.Logging", "error", err.Error())
@@ -141,10 +155,65 @@ func main() {
 	dockerEngine := runtime.NewDockerEngine()
 	serverService := servers.NewServiceWithMonitoring(servers.NewStore(db), runtime.NewHybridWithEngine(dockerEngine), console.NewManager(), monitoring.Options{Interval: time.Duration(currentSettings.Monitoring.SampleIntervalSeconds) * time.Second, HistoryLimit: currentSettings.Monitoring.HistoryLimit})
 	serverService.SetLogger(logging.WithCategory(log, logging.CategoryRuntime))
+	emailAlerts := notifications.New(db, logging.WithCategory(log, logging.CategoryGeneral))
+	defer emailAlerts.Close()
+	emailVerification := emailverification.New(db, emailAlerts)
+	serverService.SetLifecycleObserver(func(event servers.LifecycleEvent) {
+		emailAlerts.Enqueue(notifications.Event{Type: event.Type, ServerID: event.ServerID, ServerName: event.ServerName, TenantID: event.TenantID, ExitCode: event.ExitCode, OccurredAt: event.OccurredAt})
+	})
 	if err = serverService.Rediscover(context.Background()); err != nil {
 		log.Error("server rediscovery failed", "error", err.Error())
 	}
+	statusHistory := statushistory.New(db)
+	statusHistoryContext, stopStatusHistory := context.WithCancel(context.Background())
+	defer stopStatusHistory()
+	recordStatusHistory := func(ctx context.Context) {
+		now := time.Now().UTC().Truncate(statushistory.Interval)
+		records, listErr := serverService.List(ctx)
+		if listErr != nil {
+			log.Error("status history server listing failed", "module", "StatusHistory", "error", listErr.Error())
+			return
+		}
+		checks := make([]statushistory.Check, 0, len(records))
+		for _, record := range records {
+			snapshot, snapshotErr := serverService.MonitoringSnapshot(ctx, record.Server.ID)
+			health := monitoring.HealthUnknown
+			if snapshotErr == nil {
+				health = snapshot.Health
+			}
+			checks = append(checks, statushistory.Check{ServerID: record.Server.ID, CheckedAt: now, Status: statushistory.StatusFromHealth(health), State: record.Runtime.CurrentState})
+		}
+		if err := statusHistory.RecordBatch(ctx, checks); err != nil {
+			log.Error("status history write failed", "module", "StatusHistory", "error", err.Error())
+		}
+		if err := statusHistory.PruneBefore(ctx, now.Add(-statushistory.Retention)); err != nil {
+			log.Error("status history cleanup failed", "module", "StatusHistory", "error", err.Error())
+		}
+	}
+	go func() {
+		recordStatusHistory(statusHistoryContext)
+		ticker := time.NewTicker(statushistory.Interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				recordStatusHistory(statusHistoryContext)
+			case <-statusHistoryContext.Done():
+				return
+			}
+		}
+	}()
 	files := filesystem.New(filesystem.Options{MaxUploadBytes: cfg.Filesystem.MaxUploadBytes})
+	ftpService, err := ftpservice.New(db, files, ftpservice.Options{Enabled: cfg.FTP.Enabled, ListenAddr: cfg.FTP.Listen, PublicHost: cfg.FTP.PublicHost, PassivePortStart: cfg.FTP.PassivePortStart, PassivePortEnd: cfg.FTP.PassivePortEnd, TLSCert: cfg.FTP.TLSCert, TLSKey: cfg.FTP.TLSKey, RequireTLS: cfg.FTP.RequireTLS}, logging.WithCategory(log, logging.CategoryFilesystem))
+	if err != nil {
+		log.Error("FTP service initialization failed", "module", "FTP", "error", err.Error())
+		os.Exit(1)
+	}
+	if err = ftpService.Start(); err != nil {
+		log.Error("FTP service start failed", "module", "FTP", "error", err.Error())
+		os.Exit(1)
+	}
+	defer ftpService.Close()
 	diagnosticService := diagnostics.New(db, settingService, diagnostics.MonitoringEffective{SampleIntervalSeconds: currentSettings.Monitoring.SampleIntervalSeconds, HistoryLimit: currentSettings.Monitoring.HistoryLimit}, time.Now().UTC())
 	catalog := templates.NewCatalogManager(templates.NewOfficialHTTPSource(), cfg.Data.Directory, diagnostics.Version)
 	catalog.SetLogger(logging.WithCategory(log, logging.CategoryTemplates))
@@ -184,7 +253,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer restartScheduler.Stop()
-	apiServer := api.New(auth.New(db), serverService, log, secureCookie, api.Options{TrustLocalProxy: cfg.Server.TrustLocalProxy, Filesystem: files, Settings: settingService, Diagnostics: diagnosticService, Templates: templateService, Provisioning: provisioner, ServerUpdates: serverUpdater, GameConfig: gameConfigService, Logs: logManager, SetupConfig: configFile, SteamCMD: steamManager, RestartSchedules: restartScheduleStore, RestartScheduler: restartScheduler})
+	apiServer := api.New(auth.New(db), serverService, log, secureCookie, api.Options{TrustLocalProxy: cfg.Server.TrustLocalProxy, Filesystem: files, DataDirectory: cfg.Data.Directory, FTP: ftpService, Settings: settingService, Diagnostics: diagnosticService, Templates: templateService, Provisioning: provisioner, ServerUpdates: serverUpdater, StatusHistory: statusHistory, GameConfig: gameConfigService, Logs: logManager, SetupConfig: configFile, SteamCMD: steamManager, RestartSchedules: restartScheduleStore, RestartScheduler: restartScheduler, EmailAlerts: emailAlerts, EmailVerification: emailVerification})
 	// Remote Node Foundation (v0.5A): a bounded, periodic status refresh for
 	// this installation's own remote node registry. It never blocks startup
 	// and is stopped cleanly on shutdown; see internal/api/node_refresh.go.
@@ -205,6 +274,10 @@ func main() {
 }
 func spaHandler(assets fs.FS) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.NotFound(w, r)
+			return
+		}
 		name := strings.TrimPrefix(r.URL.Path, "/")
 		if name != "" {
 			if _, err := fs.Stat(assets, name); err == nil {

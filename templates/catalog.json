@@ -1,6 +1,37 @@
 {
   "schema_version": 1,
   "templates": [
+    {"id":"windrose","name":"Windrose Dedicated Server","description":"Install the Windrose dedicated server through SteamCMD and launch its native Windows server executable directly.","category":"steamcmd","version":"1.0.0","template_schema_version":2,"platforms":["windows"],"installer":"steamcmd","file":"steamcmd/windrose/template.json","tags":["windrose","steam","steamcmd","survival"],"icon":"steamcmd","minimum_gamenode_version":"0.2.0"},
+    {"id":"enshrouded","name":"Enshrouded Dedicated Server","description":"Install the Enshrouded dedicated server through SteamCMD and launch enshrouded_server.exe directly without a shell.","category":"steamcmd","version":"1.0.0","template_schema_version":2,"platforms":["windows"],"installer":"steamcmd","file":"steamcmd/enshrouded/template.json","tags":["enshrouded","steam","steamcmd","survival"],"icon":"steamcmd","minimum_gamenode_version":"0.2.0"},
+    {"id":"runescape-dragonwilds","name":"RuneScape: Dragonwilds Dedicated Server","description":"Install the RuneScape: Dragonwilds dedicated server through SteamCMD and launch its native server binary directly.","category":"steamcmd","version":"1.0.0","template_schema_version":2,"platforms":["windows","linux"],"installer":"steamcmd","file":"steamcmd/runescape-dragonwilds/template.json","tags":["runescape","dragonwilds","steam","steamcmd","survival"],"icon":"steamcmd","minimum_gamenode_version":"0.2.0"},
+    {
+      "id": "ark-survival-evolved",
+      "name": "ARK: Survival Evolved Dedicated Server",
+      "description": "Install the ARK: Survival Evolved dedicated server through SteamCMD and launch its native server binary directly without a shell.",
+      "category": "steamcmd",
+      "version": "1.0.0",
+      "template_schema_version": 2,
+      "platforms": ["windows", "linux"],
+      "installer": "steamcmd",
+      "file": "steamcmd/ark-survival-evolved/template.json",
+      "tags": ["ark", "ark-survival-evolved", "steam", "steamcmd", "survival"],
+      "icon": "steamcmd",
+      "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "ark-survival-ascended",
+      "name": "ARK: Survival Ascended Dedicated Server",
+      "description": "Install the ARK: Survival Ascended dedicated server through SteamCMD and launch its native Windows server binary directly without a shell.",
+      "category": "steamcmd",
+      "version": "1.0.0",
+      "template_schema_version": 2,
+      "platforms": ["windows"],
+      "installer": "steamcmd",
+      "file": "steamcmd/ark-survival-ascended/template.json",
+      "tags": ["ark", "ark-survival-ascended", "asa", "steam", "steamcmd", "survival"],
+      "icon": "steamcmd",
+      "minimum_gamenode_version": "0.2.0"
+    },
     {
       "id": "minecraft-neoforge",
       "name": "Minecraft NeoForge",
@@ -48,7 +79,7 @@
       "name": "Palworld Dedicated Server",
       "description": "Install the official Palworld dedicated server through SteamCMD and run the Windows native server binary directly.",
       "category": "steamcmd",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "template_schema_version": 2,
       "platforms": ["windows"],
       "installer": "steamcmd",
@@ -88,13 +119,11 @@
     {
       "id": "valheim",
       "name": "Valheim Dedicated Server",
-      "description": "Install the official Valheim dedicated server through SteamCMD and run the native Windows server executable directly. Server name, world, password, visibility, crossplay, and save interval are managed GameNode configuration settings.",
+      "description": "Install the official Valheim dedicated server through SteamCMD and run its native Windows or Linux server executable directly. Server name, world, password, visibility, crossplay, and save interval are managed GameNode configuration settings.",
       "category": "steamcmd",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "template_schema_version": 2,
-      "platforms": [
-        "windows"
-      ],
+      "platforms": ["windows", "linux"],
       "installer": "steamcmd",
       "file": "steamcmd/valheim/template.json",
       "tags": [
@@ -120,6 +149,94 @@
       "tags": ["vein", "steam", "steamcmd", "survival"],
       "icon": "steamcmd",
       "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "ddnet",
+      "name": "DDNet Dedicated Server",
+      "description": "Install the DDNet dedicated server through SteamCMD and launch its native Linux server binary directly.",
+      "category": "steamcmd", "version": "1.0.0", "template_schema_version": 2,
+      "platforms": ["linux"], "installer": "steamcmd", "file": "steamcmd/ddnet/template.json",
+      "tags": ["ddnet", "steam", "steamcmd", "platformer"], "icon": "steamcmd", "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "onset",
+      "name": "Onset Dedicated Server",
+      "description": "Install the Onset dedicated server through SteamCMD and launch its native Linux server directly.",
+      "category": "steamcmd", "version": "1.0.0", "template_schema_version": 2,
+      "platforms": ["linux"], "installer": "steamcmd", "file": "steamcmd/onset/template.json",
+      "tags": ["onset", "steam", "steamcmd", "sandbox"], "icon": "steamcmd", "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "puck",
+      "name": "Puck Dedicated Server",
+      "description": "Install the Puck dedicated server through SteamCMD and launch its native Linux server binary directly.",
+      "category": "steamcmd", "version": "1.0.0", "template_schema_version": 2,
+      "platforms": ["linux"], "installer": "steamcmd", "file": "steamcmd/puck/template.json",
+      "tags": ["puck", "steam", "steamcmd", "sports", "hockey"], "icon": "steamcmd", "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "nova-life-amboise",
+      "name": "Nova-Life: Amboise Dedicated Server",
+      "description": "Install the Nova-Life: Amboise dedicated server through SteamCMD and launch its native Linux server directly.",
+      "category": "steamcmd", "version": "1.0.0", "template_schema_version": 2,
+      "platforms": ["linux"], "installer": "steamcmd", "file": "steamcmd/nova-life-amboise/template.json",
+      "tags": ["nova-life", "amboise", "steam", "steamcmd", "roleplay"], "icon": "steamcmd", "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "quake-live",
+      "name": "Quake Live Dedicated Server",
+      "description": "Install the Quake Live dedicated server through SteamCMD and launch its native Linux server directly.",
+      "category": "steamcmd", "version": "1.0.0", "template_schema_version": 2,
+      "platforms": ["linux"], "installer": "steamcmd", "file": "steamcmd/quake-live/template.json",
+      "tags": ["quake-live", "steam", "steamcmd", "fps"], "icon": "steamcmd", "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "qanga",
+      "name": "QANGA Dedicated Server",
+      "description": "Install the QANGA dedicated server through SteamCMD and launch its native Linux server directly.",
+      "category": "steamcmd", "version": "1.0.0", "template_schema_version": 2,
+      "platforms": ["linux"], "installer": "steamcmd", "file": "steamcmd/qanga/template.json",
+      "tags": ["qanga", "steam", "steamcmd", "survival", "science-fiction"], "icon": "steamcmd", "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "the-bus",
+      "name": "The Bus Dedicated Server",
+      "description": "Install The Bus dedicated server through SteamCMD and launch its native Linux server directly.",
+      "category": "steamcmd", "version": "1.0.0", "template_schema_version": 2,
+      "platforms": ["linux"], "installer": "steamcmd", "file": "steamcmd/the-bus/template.json",
+      "tags": ["the-bus", "steam", "steamcmd", "simulation"], "icon": "steamcmd", "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "battalion-legacy",
+      "name": "BATTALION: Legacy Dedicated Server",
+      "description": "Install the BATTALION: Legacy dedicated server through SteamCMD and launch its native Linux server directly.",
+      "category": "steamcmd", "version": "1.0.0", "template_schema_version": 2,
+      "platforms": ["linux"], "installer": "steamcmd", "file": "steamcmd/battalion-legacy/template.json",
+      "tags": ["battalion-legacy", "steam", "steamcmd", "fps"], "icon": "steamcmd", "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "post-scriptum",
+      "name": "Post Scriptum Dedicated Server",
+      "description": "Install the Post Scriptum dedicated server through SteamCMD and launch its native Linux server directly.",
+      "category": "steamcmd", "version": "1.0.0", "template_schema_version": 2,
+      "platforms": ["linux"], "installer": "steamcmd", "file": "steamcmd/post-scriptum/template.json",
+      "tags": ["post-scriptum", "steam", "steamcmd", "fps", "military"], "icon": "steamcmd", "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "astro-colony",
+      "name": "Astro Colony Dedicated Server",
+      "description": "Install the Astro Colony dedicated server through SteamCMD and launch its native Linux server directly.",
+      "category": "steamcmd", "version": "1.0.0", "template_schema_version": 2,
+      "platforms": ["linux"], "installer": "steamcmd", "file": "steamcmd/astro-colony/template.json",
+      "tags": ["astro-colony", "steam", "steamcmd", "simulation", "space"], "icon": "steamcmd", "minimum_gamenode_version": "0.2.0"
+    },
+    {
+      "id": "colony-survival",
+      "name": "Colony Survival Dedicated Server",
+      "description": "Install the Colony Survival dedicated server through SteamCMD and launch its native Linux server directly.",
+      "category": "steamcmd", "version": "1.0.0", "template_schema_version": 2,
+      "platforms": ["linux"], "installer": "steamcmd", "file": "steamcmd/colony-survival/template.json",
+      "tags": ["colony-survival", "steam", "steamcmd", "survival", "strategy"], "icon": "steamcmd", "minimum_gamenode_version": "0.2.0"
     }
   ]
 }

@@ -7,8 +7,9 @@ schema-v2 `managed-launch` configuration adapter that owns its runtime settings.
 
 - Dedicated server Steam App ID: `896660`.
 - Installation is available through Steam/SteamCMD and anonymous SteamCMD access is supported.
-- Windows uses the native `valheim_server.exe` launcher; GameNode launches it directly and never
-  executes `start_headless_server.bat`.
+- Windows uses the native `valheim_server.exe` launcher and Linux uses
+  `valheim_server.x86_64`; GameNode launches both directly and never executes the shipped
+  wrapper scripts.
 - Documented server options used by this template: `-name`, `-port`, `-world`, `-password`,
   `-savedir`, `-public` (`0` or `1`), `-crossplay` (presence-only), and `-saveinterval`
   (seconds, upstream default `1800`).
@@ -65,8 +66,9 @@ only for a private server that players join directly.
 
 ## Other deliberate constraints
 
-- Windows only. Upstream also supports Linux, but GameNode requires each platform launch to be
-  independently verified and direct. Do not execute `start_server.sh`.
+- Linux requires the native runtime libraries documented by Iron Gate, including `libatomic1`,
+  `libpulse-dev`, and `libpulse0`. GameNode sets `LD_LIBRARY_PATH=linux64` and does not execute
+  `start_server.sh`.
 - `terminate` is only a bounded fallback. It is not claimed to be equivalent to Valheim's
   documented CTRL+C shutdown path.
 - `-savedir data` keeps world and permission files under the GameNode server root.
@@ -82,6 +84,5 @@ only for a private server that players join directly.
 4. Verify the resolved argument list without executing the batch wrapper.
 5. Verify ports `SERVER_PORT/udp` and `SERVER_PORT+1/udp`.
 6. Verify start, console output, player join, world persistence, and shutdown behavior.
-7. Independently verify Linux executable/environment/stop behavior before adding Linux to
-   `platforms`.
+7. Verify the Linux executable/environment/stop behavior on a native Linux host.
 8. Run the frontend helper/build checks.

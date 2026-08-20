@@ -1,0 +1,41 @@
+{
+  "schema_version": 2,
+  "id": "windrose",
+  "name": "Windrose Dedicated Server",
+  "description": "Install the Windrose dedicated server through SteamCMD and launch its native Windows server executable directly.",
+  "version": "1.0.0",
+  "category": "steamcmd",
+  "minimum_gamenode_version": "0.2.0",
+  "known_limitations": [
+    "Windrose currently has no reviewed GameNode configuration adapter: the game owns JSON files whose world path and generated identifiers must remain consistent.",
+    "The server primarily uses Steam networking/NAT traversal. Direct-IP mode and its port are configured manually in ServerDescription.json.",
+    "WorldDescription.json is generated below a versioned world directory and must not be edited through a generic file adapter.",
+    "Automatic updates, backups, world migration, and the R5 world updater are outside this template."
+  ],
+  "icon": "steamcmd",
+  "source_type": "official",
+  "source_identifier": "windrose",
+  "source_format_version": "2",
+  "tags": ["windrose", "steam", "steamcmd", "survival", "pirate"],
+  "source_metadata": {"author":"GameNode", "tags":["windrose","steam","steamcmd","survival","pirate"]},
+  "installer": {"type":"steamcmd", "steamcmd":{"app_id":4129620,"validate":true,"login_mode":"anonymous","platform":"native","install_target":"server_root"}},
+  "platform_launches": {"windows":{"executable":"WindroseServer.exe","arguments":["-log"],"working_root":"server_root","stop_method":"terminate","stop_timeout_seconds":90}},
+  "variables":[
+    {"name":"Server name","description":"Name shown for the Windrose server.","key":"SERVER_NAME","default_value":"GameNode Windrose","user_viewable":true,"user_editable":true,"type":"string","sensitive":false,"required":false,"nullable":false,"validation":{"min_length":1,"max_length":64},"group":"Server"},
+    {"name":"Server password","description":"Optional password from ServerDescription.json.","key":"SERVER_PASSWORD","default_value":"","user_viewable":true,"user_editable":true,"type":"secret","sensitive":true,"required":false,"nullable":true,"validation":{"max_length":128},"group":"Security"},
+    {"name":"Password protection","description":"Whether Windrose requires the configured password.","key":"PASSWORD_PROTECTED","default_value":"false","user_viewable":true,"user_editable":true,"type":"boolean","sensitive":false,"required":false,"nullable":false,"validation":{},"group":"Security"},
+    {"name":"Maximum players","description":"Maximum players in the server.","key":"MAX_PLAYERS","default_value":"8","user_viewable":true,"user_editable":true,"type":"integer","sensitive":false,"required":false,"nullable":false,"validation":{"min":1,"max":32},"group":"Server"},
+    {"name":"Direct connection","description":"Enable Windrose direct-IP mode instead of relying on Steam networking.","key":"DIRECT_CONNECTION","default_value":"false","user_viewable":true,"user_editable":true,"type":"boolean","sensitive":false,"required":false,"nullable":false,"validation":{},"group":"Network"},
+    {"name":"Direct connection port","description":"TCP and UDP port used when direct-IP mode is enabled.","key":"DIRECT_CONNECTION_PORT","default_value":"7777","user_viewable":true,"user_editable":true,"type":"integer","sensitive":false,"required":false,"nullable":false,"validation":{"min":1024,"max":65535},"group":"Network"}
+  ],
+  "ports": [],
+  "expected_files":[{"path":"WindroseServer.exe","type":"file","required":true,"executable":true,"platform":"windows"},{"path":"R5","type":"directory","required":true}],
+  "config_files":[{"path":"R5/ServerDescription.json","format":"json","description":"Generated server identity, invite/password, selected world, player cap, and optional direct-connection settings."},{"path":"R5/Saved/Config/WindowsServer/Game.ini","format":"ini","description":"Generated advanced Unreal network overrides."}],
+  "configuration":{"adapters":[{"id":"windrose-server-description","schema_version":1,"file":"windrose-server-description.adapter.json"}]},
+  "requirements":[{"type":"os","level":"hard","value":"windows","description":"The current Steam dedicated-server manifest advertises Windows only."},{"type":"steamcmd","level":"hard","value":"anonymous","description":"Managed anonymous SteamCMD installation is required."},{"type":"architecture","level":"hard","value":"amd64","description":"The dedicated server is a 64-bit Windows executable."}],
+  "help":{"summary":"GameNode installs SteamCMD App ID 4129620 and launches WindroseServer.exe with -log.","notes":["Run the server once before configuring its generated R5 JSON files.","Direct-IP mode and its TCP/UDP port are optional Windrose settings and are not registered until a reviewed adapter exists."]},
+  "compatibility":{"status":"partially_compatible","findings":[{"severity":"warning","component":"configuration","code":"WINDROSE_JSON_ADAPTER_UNAVAILABLE","summary":"Windrose configuration is JSON with generated world identifiers; no safe compiled JSON adapter exists in the current GameNode adapter set."},{"severity":"warning","component":"networking","code":"WINDROSE_PORTS_RUNTIME_CONFIGURED","summary":"The default server uses Steam networking/NAT traversal; direct-IP ports are configured in ServerDescription.json and are not declared as fixed GameNode ports."}]},
+  "read_only":true,
+  "platforms":["windows"],
+  "prerequisites":["Network access to Steam content servers during installation","An amd64 Windows host","The Windrose client and dedicated server versions must stay matched"]
+}

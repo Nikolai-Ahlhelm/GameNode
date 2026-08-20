@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -172,14 +173,29 @@ func resolveExistingPath(root, relative string, directory bool) (string, error) 
 }
 
 func withinRoot(root, candidate string) bool {
-	absoluteRoot, err := filepath.Abs(filepath.Clean(root))
+	absoluteRoot, err := canonicalPath(root)
 	if err != nil {
 		return false
 	}
-	absoluteCandidate, err := filepath.Abs(filepath.Clean(candidate))
+	absoluteCandidate, err := canonicalPath(candidate)
 	if err != nil {
 		return false
+	}
+	if runtime.GOOS == "windows" {
+		absoluteRoot = strings.ToLower(absoluteRoot)
+		absoluteCandidate = strings.ToLower(absoluteCandidate)
 	}
 	relative, err := filepath.Rel(absoluteRoot, absoluteCandidate)
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
+}
+
+func canonicalPath(path string) (string, error) {
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
+		return filepath.Clean(resolved), nil
+	}
+	return abs, nil
 }

@@ -86,6 +86,30 @@ func TestCreateGetListUpdateTenant(t *testing.T) {
 	}
 }
 
+func TestStatusPageSettingsAndSlugLookup(t *testing.T) {
+	svc, _ := testService(t)
+	ctx := context.Background()
+	created, err := svc.Create(ctx, tenants.CreateInput{Name: "Status Tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.StatusPageEnabled || created.StatusPagePublic {
+		t.Fatal("new tenant status page must be disabled and private")
+	}
+	yes := true
+	updated, err := svc.Update(ctx, created.ID, tenants.UpdateInput{StatusPageEnabled: &yes, StatusPagePublic: &yes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bySlug, err := svc.GetBySlug(ctx, "status-tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.StatusPageEnabled || !updated.StatusPagePublic || bySlug.ID != created.ID {
+		t.Fatalf("unexpected status settings: updated=%#v bySlug=%#v", updated, bySlug)
+	}
+}
+
 func TestCreateExplicitSlugAndDuplicateRejection(t *testing.T) {
 	svc, _ := testService(t)
 	ctx := context.Background()

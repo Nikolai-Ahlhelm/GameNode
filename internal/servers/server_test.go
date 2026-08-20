@@ -17,6 +17,7 @@ import (
 	"gamenode"
 	"gamenode/internal/console"
 	"gamenode/internal/database"
+	"gamenode/internal/filesystem"
 	"gamenode/internal/ports"
 	"gamenode/internal/runtime"
 	"gamenode/internal/tenants"
@@ -142,6 +143,90 @@ func testServer(t *testing.T) Server {
 		t.Fatal(err)
 	}
 	return Server{TenantID: tenants.DefaultTenantID, Name: "test", CreationMode: CreationCustom, WorkingDirectory: filepath.Dir(exe), Executable: exe, Arguments: []string{}, EnvironmentVariables: map[string]string{"GAME_NODE_TEST": "1"}, StopTimeoutSeconds: 1}
+}
+
+func TestMigrateTenantMovesProvisionedManagedRoot(t *testing.T) {
+	service, _, _, db := testService(t)
+	defer db.Close()
+	ctx := context.Background()
+	target, err := tenants.New(db).Create(ctx, tenants.CreateInput{Name: "Destination"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataRoot := t.TempDir()
+	sourceRoot, err := tenants.TenantServerRoot(dataRoot, tenants.DefaultTenantID, "migratable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	destinationRoot, err := tenants.TenantServerRoot(dataRoot, target.ID, "migratable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(sourceRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(sourceRoot, "server.exe")
+	if err = os.WriteFile(executable, []byte("executable"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(sourceRoot, "world.dat"), []byte("world"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.CreateProvisioned(ctx, Server{TenantID: tenants.DefaultTenantID, CreationMode: CreationTemplate, Name: "Migratable", WorkingDirectory: sourceRoot, Executable: executable, Arguments: []string{}, EnvironmentVariables: map[string]string{}, StopTimeoutSeconds: 1}, "test-template", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetTenantMigrationStorage(dataRoot, filesystem.New())
+	migrated, err := service.MigrateTenant(ctx, created.Server.ID, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated.Server.TenantID != target.ID || migrated.Server.WorkingDirectory != destinationRoot || migrated.Server.Executable != filepath.Join(destinationRoot, "server.exe") {
+		t.Fatalf("migrated server = %#v", migrated.Server)
+	}
+	if _, err = os.Stat(filepath.Join(destinationRoot, "world.dat")); err != nil {
+		t.Fatalf("migrated data missing: %v", err)
+	}
+	if _, err = os.Stat(sourceRoot); !os.IsNotExist(err) {
+		t.Fatalf("source root still exists: %v", err)
+	}
+}
+
+func TestLifecycleObserverReportsDurableOutcomesWithoutRestartStopDuplicate(t *testing.T) {
+	service, fake, _, db := testService(t)
+	defer db.Close()
+	record, err := service.Create(context.Background(), testServer(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan LifecycleEvent, 8)
+	service.SetLifecycleObserver(func(event LifecycleEvent) { events <- event })
+	if _, err = service.Start(context.Background(), record.Server.ID); err != nil {
+		t.Fatal(err)
+	}
+	if event := <-events; event.Type != EventStarted || event.ServerName != record.Server.Name {
+		t.Fatalf("unexpected start event: %+v", event)
+	}
+	if _, err = service.Restart(context.Background(), record.Server.ID); err != nil {
+		t.Fatal(err)
+	}
+	if event := <-events; event.Type != EventRestarted {
+		t.Fatalf("unexpected restart event: %+v", event)
+	}
+	select {
+	case extra := <-events:
+		t.Fatalf("restart emitted a duplicate event: %+v", extra)
+	default:
+	}
+	fake.exit(runtime.ExitResult{ExitCode: 17})
+	select {
+	case event := <-events:
+		if event.Type != EventCrashed || event.ExitCode == nil || *event.ExitCode != 17 {
+			t.Fatalf("unexpected crash event: %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("crash event was not emitted")
+	}
 }
 
 func TestCreateRejectsDuplicateNameCaseInsensitively(t *testing.T) {
