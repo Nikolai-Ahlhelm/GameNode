@@ -78,6 +78,12 @@ func (s *Server) remoteServersRouter(w http.ResponseWriter, r *http.Request, nod
 		s.remoteServerMonitoringHandler(w, r, nodeID, serverID)
 	case "files":
 		s.remoteServerFilesHandler(w, r, nodeID, serverID, rest[2:])
+	case "configuration":
+		if len(rest) != 2 {
+			notFound(w)
+			return
+		}
+		s.remoteServerConfigurationHandler(w, r, nodeID, serverID)
 	default:
 		notFound(w)
 	}
@@ -541,6 +547,58 @@ func (s *Server) remoteServerMonitoringHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 	jsonOut(w, http.StatusOK, snapshot)
+}
+
+// remoteServerConfigurationHandler implements GET (read) and PUT (update)
+// under .../configuration, forwarding to the remote node's own managed
+// game-configuration surface (see internal/api/node_servers.go's
+// nodeServerConfigurationHandler and internal/gameconfig.Service). Reads are
+// never audited (matches remoteServerMonitoringHandler's precedent); a
+// successful or failed update is audited exactly once, with only bounded
+// metadata - the adapter id and field count, never actual values - matching
+// the local server.config_update audit contract (internal/api/gameconfig.go).
+func (s *Server) remoteServerConfigurationHandler(w http.ResponseWriter, r *http.Request, nodeID, serverID string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPut {
+		method(w)
+		return
+	}
+	n, ok := s.requireEnabledRemoteNode(w, r, nodeID, "remote_gameconfig")
+	if !ok {
+		return
+	}
+	if r.Method == http.MethodGet {
+		_, _, ok := s.authorizeRemoteServer(w, r, n, serverID, "RemoteConfig.View", false)
+		if !ok {
+			return
+		}
+		result, err := s.remoteClient.GetConfiguration(r.Context(), n.Endpoint, n.Credential, serverID)
+		if err != nil {
+			remoteServerError(w, err)
+			return
+		}
+		jsonOut(w, http.StatusOK, result)
+		return
+	}
+	actor, summary, ok := s.authorizeRemoteServer(w, r, n, serverID, "RemoteConfig.Edit", true)
+	if !ok {
+		return
+	}
+	var input gameConfigurationInput
+	if !decode(w, r, &input) {
+		return
+	}
+	if input.AdapterID == "" || len(input.Values) == 0 || len(input.Values) > 128 {
+		bad(w, "invalid configuration update")
+		return
+	}
+	result, err := s.remoteClient.UpdateConfiguration(r.Context(), n.Endpoint, n.Credential, serverID, input.AdapterID, input.Values)
+	if err != nil {
+		s.recordRemoteServerAudit(r, actor, audit.RemoteConfigUpdate, audit.Failure, nodeID, serverID, summary.Name, nil, err)
+		remoteServerError(w, err)
+		return
+	}
+	s.recordRemoteServerAudit(r, actor, audit.RemoteConfigUpdate, audit.Success, nodeID, serverID, summary.Name, map[string]any{"adapter_id": input.AdapterID, "field_count": len(input.Values), "restart_required": true}, nil)
+	jsonOut(w, http.StatusOK, result)
 }
 
 // remoteServerFilesHandler implements the bounded remote files surface

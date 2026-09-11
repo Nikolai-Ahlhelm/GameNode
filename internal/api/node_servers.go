@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"gamenode/internal/console"
+	"gamenode/internal/gameconfig"
 	"gamenode/internal/servers"
 )
 
@@ -152,6 +153,11 @@ func (s *Server) nodeServerHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.nodeServerFilesHandler(w, r, id, parts[2:])
+	case "configuration":
+		if !s.requireMachineAuth(w, r) {
+			return
+		}
+		s.nodeServerConfigurationHandler(w, r, id)
 	default:
 		notFound(w)
 	}
@@ -392,6 +398,51 @@ func (s *Server) nodeServerMonitoringHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	jsonOut(w, http.StatusOK, snapshot)
+}
+
+// nodeServerConfigurationHandler implements GET (read) and PUT (update) at
+// /api/v1/node/servers/{id}/configuration, forwarding unchanged to this
+// node's own internal/gameconfig.Service - the exact same service the local
+// browser-facing gameConfigurationHandler uses (internal/api/gameconfig.go).
+// There is no remote-specific config logic here: sensitive field values are
+// already excluded by internal/gameconfig.Get, and every value is already
+// validated/sandboxed by internal/gameconfig.Update before this ever runs.
+// Unlike the local handler, this never audits locally - the machine
+// credential carries no human actor; only the controller side audits (see
+// remoteServerConfigurationHandler), tagged with the node id, matching every
+// other node-facing lifecycle/files handler in this file.
+func (s *Server) nodeServerConfigurationHandler(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPut {
+		method(w)
+		return
+	}
+	if s.gameConfig == nil {
+		jsonOut(w, http.StatusOK, gameconfig.Result{Available: false, Adapters: []gameconfig.AdapterView{}})
+		return
+	}
+	if r.Method == http.MethodGet {
+		result, err := s.gameConfig.Get(r.Context(), id)
+		if err != nil {
+			gameConfigurationError(w, err)
+			return
+		}
+		jsonOut(w, http.StatusOK, result)
+		return
+	}
+	var input gameConfigurationInput
+	if !decode(w, r, &input) {
+		return
+	}
+	if input.AdapterID == "" || len(input.Values) == 0 || len(input.Values) > 128 {
+		bad(w, "invalid configuration update")
+		return
+	}
+	result, err := s.gameConfig.Update(r.Context(), id, input.AdapterID, input.Values)
+	if err != nil {
+		gameConfigurationError(w, err)
+		return
+	}
+	jsonOut(w, http.StatusOK, result)
 }
 
 // nodeServerFilesHandler implements the bounded remote filesystem surface

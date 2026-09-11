@@ -355,6 +355,8 @@ The controller-side counterpart of the machine-authenticated Node route below. O
 | `GET` | `/api/v1/remote-nodes/{id}/provisioning/{jobID}?tenant_id=…` | same permission as above, no CSRF; forwards to the target's job status. Trusts only the target's own `tenant_id` on the returned job - a caller naming a different tenant than the job actually belongs to gets `404`, not the job. |
 | `POST` | `/api/v1/remote-nodes/{id}/provisioning/{jobID}/cancel?tenant_id=…` | same permission as above + CSRF; forwards to the target's job cancel, same tenant check as the status route. |
 
+Both this proxy and `/api/v1/cluster/placement/execute` above are exposed in the Nodes UI: `RemoteTemplateDeploy` (`web/src/remote-provisioning.tsx`) lets an operator deploy a Game Library template either to one explicitly chosen enrolled node (this proxy) or let cluster placement choose (`web/src/nodes.tsx`'s `ClusterPlacementPanel`), with job status polled from whichever endpoint the request was actually dispatched through.
+
 ## Node provisioning API (v0.6, machine-authenticated)
 
 `/api/v1/node/provisioning...` joins `/api/v1/node/info|health|capabilities|enroll|pairing-tokens` in the machine-authenticated trust domain (`Authorization: Bearer <credential>`, never a cookie/CSRF check - see the "Remote Node API" section above). It forwards straight into this node's own, unmodified `provisioning.Service` - the sole authority for template/Egg validation, the image allowlist, resource limits, the tenant/filesystem sandbox, the container installer, job persistence, and final registration through `servers.Service`.
@@ -380,3 +382,15 @@ Remote-node errors are translated to stable codes, never raw transport/TLS error
 ### Remote Server Management and Operational Hardening (v0.5B/v0.5C)
 
 The controller-facing `/api/v1/remote-nodes/{id}/servers[...]` routes and the machine-authenticated `/api/v1/node/servers[...]` routes provide typed remote server create/edit/delete/start/stop/restart/kill, bounded console polling/relay, sandboxed text/binary files, and monitoring. Every operation is forwarded to the target node's own `servers.Service`, console, and filesystem services; the controller never accesses the target database, process table, or Docker runtime directly. Browser mutations require authentication, RBAC, CSRF, and tenant checks; machine-to-machine calls use the enrolled node credential.
+
+### Remote Game Configuration
+
+Adds a bounded remote surface for the same declarative, versioned per-game configuration adapters local servers already expose (`internal/gameconfig`), following the exact pattern above - forwarded unchanged to the target node's own `internal/gameconfig.Service`, no remote-specific logic, sensitive field values never returned.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/v1/remote-nodes/{nodeID}/servers/{serverID}/configuration` | `RemoteConfig.View` (`global`/`tenant`, scoped against the server's authoritative tenant reported by the node); requires the node to advertise the `remote_gameconfig` capability (`501 node_capability_unsupported` otherwise); not audited (read-only, matches Remote Monitoring). |
+| `PUT` | `/api/v1/remote-nodes/{nodeID}/servers/{serverID}/configuration` | `RemoteConfig.Edit` + CSRF; body `{"adapter_id":"...","values":{...}}`; forwards to the node's `internal/gameconfig.Service.Update`; audited once as `remote_config.update` with bounded metadata (`node_id`, `adapter_id`, `field_count`, `restart_required`) - never the actual values. |
+| `GET`/`PUT` | `/api/v1/node/servers/{id}/configuration` | machine-authenticated Node-facing counterpart; forwards straight into this node's own `internal/gameconfig.Service`, identical to the local browser-facing `/api/v1/servers/{id}/configuration` route; never audited locally (the machine credential carries no human actor - only the controller side audits, tagged with the node id). |
+
+The Nodes UI reuses the existing `GameConfiguration` component (`web/src/game-configuration.tsx`, parameterized with a `basePath` prop) as a `Configuration` tab on a remote server's detail view, identical in appearance to a local server's Configuration tab.

@@ -490,6 +490,66 @@ func (c *Client) GetMonitoringSnapshot(ctx context.Context, endpoint, credential
 	return result, err
 }
 
+// RemoteConfigValidation/RemoteConfigField/RemoteConfigAdapter/
+// RemoteConfiguration mirror internal/gameconfig's bounded, typed
+// projections (templates.Validation/gameconfig.FieldView/AdapterView/
+// Result) for the remote managed-configuration surface. Sensitive field
+// values are never populated by the node - see internal/gameconfig.Get's
+// doc comment - so this client never receives them either.
+type RemoteConfigValidation struct {
+	Min       *float64 `json:"min,omitempty"`
+	Max       *float64 `json:"max,omitempty"`
+	MinLength *int     `json:"min_length,omitempty"`
+	MaxLength *int     `json:"max_length,omitempty"`
+	Allowed   []string `json:"allowed,omitempty"`
+}
+
+type RemoteConfigField struct {
+	Key         string                 `json:"key"`
+	Label       string                 `json:"label"`
+	Description string                 `json:"description,omitempty"`
+	Section     string                 `json:"section,omitempty"`
+	Type        string                 `json:"type"`
+	Value       string                 `json:"value,omitempty"`
+	Configured  bool                   `json:"configured"`
+	Required    bool                   `json:"required"`
+	Nullable    bool                   `json:"nullable"`
+	Sensitive   bool                   `json:"sensitive"`
+	Validation  RemoteConfigValidation `json:"validation"`
+}
+
+type RemoteConfigAdapter struct {
+	ID              string              `json:"id"`
+	Version         string              `json:"version"`
+	Format          string              `json:"format"`
+	Target          string              `json:"target"`
+	RestartRequired bool                `json:"restart_required"`
+	Ready           bool                `json:"ready"`
+	StatusMessage   string              `json:"status_message,omitempty"`
+	Fields          []RemoteConfigField `json:"fields"`
+}
+
+type RemoteConfiguration struct {
+	Available bool                  `json:"available"`
+	Adapters  []RemoteConfigAdapter `json:"adapters"`
+}
+
+func (c *Client) GetConfiguration(ctx context.Context, endpoint, credential, serverID string) (RemoteConfiguration, error) {
+	var result RemoteConfiguration
+	err := c.do(ctx, http.MethodGet, endpoint, "/api/v1/node/servers/"+url.PathEscape(serverID)+"/configuration", credential, nil, &result)
+	return result, err
+}
+
+func (c *Client) UpdateConfiguration(ctx context.Context, endpoint, credential, serverID, adapterID string, values map[string]string) (RemoteConfiguration, error) {
+	body, err := json.Marshal(map[string]any{"adapter_id": adapterID, "values": values})
+	if err != nil {
+		return RemoteConfiguration{}, &Error{Kind: KindMalformedResponse, Detail: "encode configuration update"}
+	}
+	var result RemoteConfiguration
+	err = c.do(ctx, http.MethodPut, endpoint, "/api/v1/node/servers/"+url.PathEscape(serverID)+"/configuration", credential, bytes.NewReader(body), &result)
+	return result, err
+}
+
 // FileEntry/FileContent mirror internal/filesystem's bounded, typed
 // projections for the remote files surface.
 type FileEntry struct {

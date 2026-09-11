@@ -67,6 +67,10 @@ unmanaged; remote template data must never introduce a generic parser or
 executable configuration language. Valheim includes a schema-v2 `managed-launch`
 adapter because the game reads its settings only from process arguments.
 
+The existing-files Farming Simulator 25 template is kept at
+`steamcmd/farming-simulator-25/` because it belongs to the game catalog but does
+not use GameNode's anonymous SteamCMD installer.
+
 ## Per-game configuration adapters
 
 All remote product data for one game stays together:

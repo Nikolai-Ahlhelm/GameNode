@@ -13,6 +13,7 @@ import (
 	"gamenode/internal/audit"
 	"gamenode/internal/auth"
 	"gamenode/internal/logging"
+	"gamenode/internal/ports"
 	"gamenode/internal/rbac"
 	"gamenode/internal/servers"
 	"gamenode/internal/templates"
@@ -39,6 +40,22 @@ type neoForgeInput struct {
 	MaximumMemoryMB int    `json:"maximum_memory_mb"`
 	NoGUI           *bool  `json:"nogui,omitempty"`
 }
+
+type farmingSimulatorInput struct {
+	ServerName string `json:"server_name"`
+	ServerRoot string `json:"server_root"`
+}
+
+type farmingSimulatorResolution struct {
+	Executable       string   `json:"executable"`
+	Arguments        []string `json:"arguments"`
+	WorkingDirectory string   `json:"working_directory"`
+	Platform         string   `json:"platform"`
+	StopMethod       string   `json:"stop_method"`
+	StopTimeout      int      `json:"stop_timeout_seconds"`
+}
+
+const farmingSimulator25TemplateID = "farming-simulator-25"
 
 func (s *Server) neoForgeTemplateAction(w http.ResponseWriter, r *http.Request, templateID, action string) {
 	if r.Method != http.MethodPost {
@@ -92,6 +109,59 @@ func (s *Server) neoForgeTemplateAction(w http.ResponseWriter, r *http.Request, 
 	server := servers.Server{CreationMode: servers.CreationTemplate, Name: strings.TrimSpace(input.ServerName), Description: template.Description, WorkingDirectory: resolved.WorkingDirectory, Executable: resolved.Executable, Arguments: resolved.Arguments, EnvironmentVariables: map[string]string{}, RuntimeType: "native", RestartPolicy: "never", StopMethod: resolved.StopMethod, StopCommand: resolved.StopCommand, StopTimeoutSeconds: resolved.StopTimeout, AutoRestartMaxAttempts: 3, AutoRestartWindowSeconds: 300, AutoRestartDelaySeconds: 5}
 	metadata := []servers.ProvisionedVariable{{Key: "MIN_MEMORY_MB", Source: template.SourceType, Version: template.Version}, {Key: "MAX_MEMORY_MB", Source: template.SourceType, Version: template.Version}, {Key: "NOGUI", Source: template.SourceType, Version: template.Version}}
 	record, err := s.servers.CreateProvisioned(r.Context(), server, template.ID, metadata, nil, nil, nil)
+	if err != nil {
+		s.recordServerAudit(r, actor, audit.ServerCreate, audit.Failure, "", server.Name, err)
+		serverError(w, err, false)
+		return
+	}
+	s.recordServerAudit(r, actor, audit.ServerCreate, audit.Success, record.Server.ID, record.Server.Name, nil)
+	jsonOut(w, http.StatusCreated, record)
+}
+
+// farmingSimulatorTemplateAction adopts the reviewed direct launcher from an
+// existing FS25 installation. The supplied root is intentionally treated like
+// the Custom/Adopt Existing path: it is an administrator-only host path and
+// therefore requires global Server.Create rather than a tenant-scoped grant.
+func (s *Server) farmingSimulatorTemplateAction(w http.ResponseWriter, r *http.Request, templateID, action string) {
+	if r.Method != http.MethodPost {
+		method(w)
+		return
+	}
+	if _, _, ok := s.requireGlobalPermission(w, r, "Templates.View", action == "adopt"); !ok {
+		return
+	}
+	actor, _, ok := s.requirePermission(w, r, "Server.Create", rbac.Scope{Type: "global"}, action == "adopt")
+	if !ok {
+		return
+	}
+	template, err := s.templates.Get(r.Context(), templateID)
+	if err != nil || template.ID != farmingSimulator25TemplateID || template.SourceType != templates.SourceOfficial || template.Installer.Type != templates.InstallerExistingFiles {
+		notFound(w)
+		return
+	}
+	var input farmingSimulatorInput
+	if !decode(w, r, &input) {
+		return
+	}
+	resolved, err := templates.ResolveLaunch(template, runtime.GOOS, map[string]string{}, input.ServerRoot)
+	if err != nil {
+		errorOut(w, http.StatusUnprocessableEntity, "farming_simulator_resolution_failed", "The Farming Simulator 25 installation could not be validated safely")
+		return
+	}
+	if action == "resolve" {
+		jsonOut(w, http.StatusOK, farmingSimulatorResolution{Executable: resolved.Executable, Arguments: resolved.Arguments, WorkingDirectory: resolved.WorkingDirectory, Platform: runtime.GOOS, StopMethod: resolved.StopMethod, StopTimeout: resolved.StopTimeout})
+		return
+	}
+	serverPorts := make([]ports.Port, 0, len(template.Ports))
+	for _, declared := range template.Ports {
+		if declared.Variable != "" || declared.Port == 0 {
+			errorOut(w, http.StatusUnprocessableEntity, "farming_simulator_ports_invalid", "The Farming Simulator 25 template declares unsupported dynamic ports")
+			return
+		}
+		serverPorts = append(serverPorts, ports.Port{Name: declared.Name, Protocol: declared.Protocol, Port: declared.Port})
+	}
+	server := servers.Server{CreationMode: servers.CreationTemplate, Name: strings.TrimSpace(input.ServerName), Description: template.Description, WorkingDirectory: resolved.WorkingDirectory, Executable: resolved.Executable, Arguments: resolved.Arguments, EnvironmentVariables: resolved.Environment, RuntimeType: "native", RestartPolicy: "never", StopMethod: resolved.StopMethod, StopCommand: resolved.StopCommand, StopTimeoutSeconds: resolved.StopTimeout, AutoRestartMaxAttempts: 3, AutoRestartWindowSeconds: 300, AutoRestartDelaySeconds: 5}
+	record, err := s.servers.CreateProvisioned(r.Context(), server, template.ID, nil, serverPorts, nil, nil)
 	if err != nil {
 		s.recordServerAudit(r, actor, audit.ServerCreate, audit.Failure, "", server.Name, err)
 		serverError(w, err, false)
@@ -300,6 +370,10 @@ func (s *Server) templatesHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) templateHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/templates/")
 	if parts := strings.Split(path, "/"); len(parts) == 2 && parts[0] != "" && (parts[1] == "resolve" || parts[1] == "adopt") {
+		if parts[0] == farmingSimulator25TemplateID {
+			s.farmingSimulatorTemplateAction(w, r, parts[0], parts[1])
+			return
+		}
 		s.neoForgeTemplateAction(w, r, parts[0], parts[1])
 		return
 	}

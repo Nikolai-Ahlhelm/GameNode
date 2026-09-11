@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "id": "farming-simulator-25",
+  "name": "Farming Simulator 25 Dedicated Server",
+  "description": "Adopt an existing Farming Simulator 25 installation and manage its Windows dedicated-server launcher directly.",
+  "version": "1.0.0",
+  "category": "simulation",
+  "minimum_gamenode_version": "0.2.0",
+  "known_limitations": [
+    "Farming Simulator 25 must already be installed and activated; GameNode does not download, update, or activate the game.",
+    "The dedicatedServer.exe launcher owns Farming Simulator's web administration and game-server process. GameNode manages the launcher process and does not provide a web-panel or child-process integration.",
+    "dedicatedServer.xml and the generated save/mod data remain managed by Farming Simulator; GameNode does not rewrite this XML through a generic adapter.",
+    "The documented default multiplayer ports are registered as fixed UDP ports. If dedicatedServer.xml uses different ports, update the server's port registrations manually.",
+    "A separate Farming Simulator license/account is required for a dedicated server; the Steam version may also require steam_appid.txt containing 2300320."
+  ],
+  "icon": "steamcmd",
+  "source_type": "official",
+  "source_identifier": "farming-simulator-25",
+  "source_format_version": "2",
+  "tags": ["farming-simulator-25", "fs25", "ls25", "farming", "simulation", "dedicated-server"],
+  "source_metadata": {"author": "GameNode", "tags": ["farming-simulator-25", "fs25", "ls25", "farming", "simulation", "dedicated-server"]},
+  "installer": {"type": "existing-files"},
+  "platform_launches": {
+    "windows": {
+      "executable": "dedicatedServer.exe",
+      "arguments": [],
+      "working_root": "server_root",
+      "stop_method": "terminate",
+      "stop_timeout_seconds": 60
+    }
+  },
+  "variables": [],
+  "ports": [
+    {"name": "Game 1", "protocol": "udp", "port": 10823, "required": true, "purpose": "Default Farming Simulator multiplayer traffic"},
+    {"name": "Game 2", "protocol": "udp", "port": 10824, "required": true, "purpose": "Default Farming Simulator multiplayer traffic"},
+    {"name": "Game 3", "protocol": "udp", "port": 10825, "required": true, "purpose": "Default Farming Simulator multiplayer traffic"}
+  ],
+  "expected_files": [
+    {"path": "dedicatedServer.exe", "type": "file", "required": true, "executable": true, "platform": "windows"}
+  ],
+  "config_files": [
+    {"path": "dedicatedServer.xml", "format": "xml", "description": "Farming Simulator dedicated-server and web-administration settings; managed by the game."}
+  ],
+  "requirements": [
+    {"type": "os", "level": "hard", "value": "windows", "description": "The reviewed dedicated-server workflow targets Windows."},
+    {"type": "architecture", "level": "hard", "value": "amd64", "description": "The reviewed dedicated-server executable is a 64-bit Windows application."},
+    {"type": "note", "level": "informational", "description": "A separate Farming Simulator 25 license/account is required for the dedicated server."}
+  ],
+  "help": {
+    "summary": "GameNode verifies an existing Farming Simulator 25 installation and launches dedicatedServer.exe directly without a shell.",
+    "notes": [
+      "Select the Farming Simulator 25 installation directory, not the parent Steam or GIANTS directory.",
+      "Configure the initial admin account and server settings in dedicatedServer.xml or Farming Simulator's dedicated-server web administration before starting the game server.",
+      "The default multiplayer ports are UDP 10823, 10824, and 10825. The web-administration ports are configured separately by Farming Simulator and are not exposed as GameNode ports."
+    ]
+  },
+  "compatibility": {
+    "status": "partially_compatible",
+    "findings": [
+      {"severity": "warning", "component": "lifecycle", "code": "FS25_LAUNCHER_CHILD_PROCESS", "summary": "Farming Simulator's dedicatedServer.exe controls the web administration and game-server process; GameNode manages the launcher process only."},
+      {"severity": "warning", "component": "configuration", "code": "FS25_XML_CONFIGURATION_UNMANAGED", "summary": "dedicatedServer.xml and generated game data remain managed by Farming Simulator rather than a GameNode configuration adapter."}
+    ]
+  },
+  "read_only": true,
+  "platforms": ["windows"],
+  "prerequisites": ["Existing Farming Simulator 25 installation", "A dedicated Farming Simulator 25 license/account", "An amd64 Windows host"]
+}

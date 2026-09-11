@@ -234,12 +234,6 @@
   ],
   "requirements": [
     {
-      "type": "os",
-      "level": "hard",
-      "value": "windows",
-      "description": "The native Windows and Linux launchers are supported directly; the shipped wrapper scripts are not executed."
-    },
-    {
       "type": "steamcmd",
       "level": "hard",
       "value": "anonymous",

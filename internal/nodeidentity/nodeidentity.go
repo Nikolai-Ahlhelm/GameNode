@@ -65,6 +65,11 @@ const (
 	// CapabilityRemoteMonitoring means this node exposes bounded remote
 	// monitoring/health snapshot endpoints for its local servers.
 	CapabilityRemoteMonitoring Capability = "remote_monitoring"
+	// CapabilityRemoteGameConfig means this node exposes remote managed
+	// game-configuration read/update endpoints for its local servers,
+	// forwarding every call to this node's own internal/gameconfig.Service
+	// unchanged.
+	CapabilityRemoteGameConfig Capability = "remote_gameconfig"
 )
 
 // Capabilities lists every capability this build of GameNode actually
@@ -90,6 +95,7 @@ func Capabilities() []Capability {
 		CapabilityRemoteConsole,
 		CapabilityRemoteFiles,
 		CapabilityRemoteMonitoring,
+		CapabilityRemoteGameConfig,
 	}
 }
 

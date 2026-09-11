@@ -25,6 +25,7 @@ var Catalog = []Permission{
 	{"RemoteConsole.View", "RemoteConsole", "View a remote server's console output"}, {"RemoteConsole.Send", "RemoteConsole", "Send input to a remote server's console"},
 	{"RemoteFiles.View", "RemoteFiles", "View files on a remote server"}, {"RemoteFiles.Edit", "RemoteFiles", "Edit and create files on a remote server"}, {"RemoteFiles.Upload", "RemoteFiles", "Upload files to a remote server"}, {"RemoteFiles.Download", "RemoteFiles", "Download files from a remote server"}, {"RemoteFiles.Delete", "RemoteFiles", "Delete files on a remote server"}, {"RemoteFiles.Rename", "RemoteFiles", "Move and rename files on a remote server"},
 	{"RemoteMonitoring.View", "RemoteMonitoring", "View monitoring data for a remote server"},
+	{"RemoteConfig.View", "RemoteConfig", "View a remote server's managed game configuration"}, {"RemoteConfig.Edit", "RemoteConfig", "Edit a remote server's managed game configuration"},
 }
 
 func Known(key string) bool {
@@ -101,7 +102,8 @@ func AllowedScopes(key string) []string {
 func isRemoteServerPermission(key string) bool {
 	switch key {
 	case "RemoteServer.View", "RemoteServer.Manage", "RemoteConsole.View", "RemoteConsole.Send",
-		"RemoteFiles.View", "RemoteFiles.Edit", "RemoteFiles.Upload", "RemoteFiles.Download", "RemoteFiles.Delete", "RemoteFiles.Rename", "RemoteMonitoring.View":
+		"RemoteFiles.View", "RemoteFiles.Edit", "RemoteFiles.Upload", "RemoteFiles.Download", "RemoteFiles.Delete", "RemoteFiles.Rename", "RemoteMonitoring.View",
+		"RemoteConfig.View", "RemoteConfig.Edit":
 		return true
 	default:
 		return false
