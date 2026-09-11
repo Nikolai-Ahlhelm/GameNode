@@ -42,6 +42,7 @@ const (
 	RemoteServer  = "remote_server"
 	RemoteConsole = "remote_console"
 	RemoteFile    = "remote_file"
+	RemoteConfig  = "remote_config"
 )
 const (
 	Login                        = "auth.login"
@@ -163,6 +164,7 @@ const (
 	RemoteFileDelete    = "remote_file.delete"
 	RemoteFileUpload    = "remote_file.upload"
 	RemoteFileDownload  = "remote_file.download"
+	RemoteConfigUpdate  = "remote_config.update"
 )
 
 type Event struct {

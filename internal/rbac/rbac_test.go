@@ -115,8 +115,9 @@ func TestPermissionScopeMatrix(t *testing.T) {
 		"RemoteConsole.View": true, "RemoteConsole.Send": true,
 		"RemoteFiles.View": true, "RemoteFiles.Edit": true, "RemoteFiles.Upload": true, "RemoteFiles.Download": true, "RemoteFiles.Delete": true, "RemoteFiles.Rename": true,
 		"RemoteMonitoring.View": true,
+		"RemoteConfig.View":     true, "RemoteConfig.Edit": true,
 	}
-	if len(Catalog) != 55 {
+	if len(Catalog) != 57 {
 		t.Fatalf("catalog contains %d permissions; update the explicit scope matrix test", len(Catalog))
 	}
 	for _, permission := range Catalog {

@@ -270,6 +270,36 @@ func TestListFilesEscapesQueryPath(t *testing.T) {
 	}
 }
 
+func TestGetAndUpdateConfiguration(t *testing.T) {
+	var gotMethod, gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		if r.Method == http.MethodPut {
+			b, _ := io.ReadAll(r.Body)
+			gotBody = string(b)
+		}
+		json.NewEncoder(w).Encode(remote.RemoteConfiguration{Available: true, Adapters: []remote.RemoteConfigAdapter{{ID: "server-properties", Version: "1", Format: "ini-key-values", Fields: []remote.RemoteConfigField{{Key: "difficulty", Type: "string", Value: "normal"}}}}})
+	}))
+	defer srv.Close()
+	c := remote.New()
+	result, err := c.GetConfiguration(context.Background(), srv.URL, "cred", "s1")
+	if err != nil || gotMethod != http.MethodGet || gotPath != "/api/v1/node/servers/s1/configuration" {
+		t.Fatalf("GetConfiguration: %v, method=%s path=%s", err, gotMethod, gotPath)
+	}
+	if !result.Available || len(result.Adapters) != 1 || result.Adapters[0].Fields[0].Value != "normal" {
+		t.Fatalf("unexpected configuration result: %+v", result)
+	}
+	if _, err := c.UpdateConfiguration(context.Background(), srv.URL, "cred", "s1", "server-properties", map[string]string{"difficulty": "hard"}); err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodPut || gotPath != "/api/v1/node/servers/s1/configuration" {
+		t.Fatalf("unexpected update request: method=%s path=%s", gotMethod, gotPath)
+	}
+	if !strings.Contains(gotBody, `"adapter_id":"server-properties"`) || !strings.Contains(gotBody, `"difficulty":"hard"`) {
+		t.Fatalf("unexpected update body: %s", gotBody)
+	}
+}
+
 func asRemoteError(err error, target **remote.Error) bool {
 	if e, ok := err.(*remote.Error); ok {
 		*target = e

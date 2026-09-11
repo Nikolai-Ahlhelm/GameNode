@@ -116,6 +116,8 @@ type remoteNodeClient interface {
 	CreateDirectory(ctx context.Context, endpoint, credential, serverID, path string) error
 	MoveFile(ctx context.Context, endpoint, credential, serverID, source, destination string) error
 	DeleteFile(ctx context.Context, endpoint, credential, serverID, path string, recursive bool) error
+	GetConfiguration(ctx context.Context, endpoint, credential, serverID string) (remote.RemoteConfiguration, error)
+	UpdateConfiguration(ctx context.Context, endpoint, credential, serverID, adapterID string, values map[string]string) (remote.RemoteConfiguration, error)
 
 	// Typed remote provisioning uses the target node's existing
 	// provisioning.Service; it is not a generic server-create payload.
@@ -766,7 +768,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, http.StatusOK, response)
 }
 
-var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Server.Update", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "FTP.View", "FTP.Manage", "TenantAccess.Manage", "ServerAccess.Manage", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View", "Tenants.View", "Tenants.Manage", "Tenants.Invite", "Node.View", "Node.Manage", "Cluster.View", "Cluster.Schedule", "RemoteServer.View", "RemoteServer.Manage", "RemoteConsole.View", "RemoteConsole.Send", "RemoteFiles.View", "RemoteFiles.Edit", "RemoteFiles.Upload", "RemoteFiles.Download", "RemoteFiles.Delete", "RemoteFiles.Rename", "RemoteMonitoring.View"}
+var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Server.Update", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "FTP.View", "FTP.Manage", "TenantAccess.Manage", "ServerAccess.Manage", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View", "Tenants.View", "Tenants.Manage", "Tenants.Invite", "Node.View", "Node.Manage", "Cluster.View", "Cluster.Schedule", "RemoteServer.View", "RemoteServer.Manage", "RemoteConsole.View", "RemoteConsole.Send", "RemoteFiles.View", "RemoteFiles.Edit", "RemoteFiles.Upload", "RemoteFiles.Download", "RemoteFiles.Delete", "RemoteFiles.Rename", "RemoteMonitoring.View", "RemoteConfig.View", "RemoteConfig.Edit"}
 
 func (s *Server) allowed(ctx context.Context, u auth.User, permission string, scope rbac.Scope) (bool, error) {
 	return s.rbac.Allowed(ctx, u.ID, permission, scope)

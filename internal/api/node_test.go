@@ -61,6 +61,11 @@ type fakeRemoteClient struct {
 	fileMkdirErr      error
 	fileMoveErr       error
 	fileDeleteErr     error
+	configuration     remote.RemoteConfiguration
+	configGetErr      error
+	configUpdateErr   error
+	lastConfigAdapter string
+	lastConfigValues  map[string]string
 	startJob          provisioning.Job
 	startErr          error
 	getJob            provisioning.Job
@@ -198,6 +203,17 @@ func (f *fakeRemoteClient) MoveFile(ctx context.Context, endpoint, credential, s
 }
 func (f *fakeRemoteClient) DeleteFile(ctx context.Context, endpoint, credential, serverID, path string, recursive bool) error {
 	return f.fileDeleteErr
+}
+func (f *fakeRemoteClient) GetConfiguration(ctx context.Context, endpoint, credential, serverID string) (remote.RemoteConfiguration, error) {
+	return f.configuration, f.configGetErr
+}
+func (f *fakeRemoteClient) UpdateConfiguration(ctx context.Context, endpoint, credential, serverID, adapterID string, values map[string]string) (remote.RemoteConfiguration, error) {
+	f.lastConfigAdapter = adapterID
+	f.lastConfigValues = values
+	if f.configUpdateErr != nil {
+		return remote.RemoteConfiguration{}, f.configUpdateErr
+	}
+	return f.configuration, nil
 }
 
 func newNodeTestServer(t *testing.T, fake *fakeRemoteClient) (http.Handler, *sql.DB) {

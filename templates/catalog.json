@@ -47,6 +47,20 @@
       "minimum_gamenode_version": "0.2.0"
     },
     {
+      "id": "farming-simulator-25",
+      "name": "Farming Simulator 25 Dedicated Server",
+      "description": "Adopt an existing Farming Simulator 25 installation and manage its Windows dedicated-server launcher directly.",
+      "category": "simulation",
+      "version": "1.0.0",
+      "template_schema_version": 2,
+      "platforms": ["windows"],
+      "installer": "existing-files",
+      "file": "steamcmd/farming-simulator-25/template.json",
+      "tags": ["farming-simulator-25", "fs25", "ls25", "farming", "simulation", "dedicated-server"],
+      "icon": "steamcmd",
+      "minimum_gamenode_version": "0.2.0"
+    },
+    {
       "id": "7-days-to-die",
       "name": "7 Days to Die",
       "description": "Install the official dedicated server through SteamCMD and run it as a native GameNode server.",

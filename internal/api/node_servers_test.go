@@ -81,6 +81,7 @@ func TestNodeCapabilitiesAdvertiseRemoteServerManagement(t *testing.T) {
 		string(nodeidentity.CapabilityRemoteConsole):          false,
 		string(nodeidentity.CapabilityRemoteFiles):            false,
 		string(nodeidentity.CapabilityRemoteMonitoring):       false,
+		string(nodeidentity.CapabilityRemoteGameConfig):       false,
 	}
 	for _, c := range body.Capabilities {
 		if _, ok := want[c]; ok {
@@ -109,6 +110,53 @@ func TestNodeServersRequiresMachineAuth(t *testing.T) {
 		if response.Code != http.StatusUnauthorized {
 			t.Fatalf("unauthenticated: %d %s", response.Code, response.Body.String())
 		}
+	}
+}
+
+// TestNodeServerConfigurationRequiresMachineAuthAndForwards confirms
+// /api/v1/node/servers/{id}/configuration is behind machine auth like every
+// other node-facing route, and that a test server built with no
+// internal/gameconfig.Service (the default in these tests, matching
+// production when a build has no gameconfig wiring) degrades to the same
+// {"available":false} response the local browser-facing route falls back to
+// (internal/api/gameconfig.go) rather than erroring.
+func TestNodeServerConfigurationRequiresMachineAuthAndForwards(t *testing.T) {
+	h, _ := newNodeTestServer(t, &fakeRemoteClient{})
+	admin := createAdminSession(t, h)
+	if response := httptest.NewRecorder(); true {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/node/servers/s1/configuration", nil)
+		h.ServeHTTP(response, req)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated: %d %s", response.Code, response.Body.String())
+		}
+	}
+	credential := nodeMachineCredential(t, h, admin)
+	get := nodeMachineRequest(h, http.MethodGet, "/api/v1/node/servers/s1/configuration", credential, nil)
+	if get.Code != http.StatusOK {
+		t.Fatalf("get: %d %s", get.Code, get.Body.String())
+	}
+	var body struct {
+		Available bool  `json:"available"`
+		Adapters  []any `json:"adapters"`
+	}
+	if err := json.Unmarshal(get.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Available || len(body.Adapters) != 0 {
+		t.Fatalf("expected unavailable empty configuration, got %+v", body)
+	}
+	// With no internal/gameconfig.Service wired, a PUT degrades to the same
+	// fallback as GET rather than validating a body it can never apply -
+	// mirrors internal/api/gameconfig.go's nil guard exactly.
+	put := nodeMachineRequest(h, http.MethodPut, "/api/v1/node/servers/s1/configuration", credential, []byte(`{}`))
+	if put.Code != http.StatusOK {
+		t.Fatalf("put: %d %s", put.Code, put.Body.String())
+	}
+	if err := json.Unmarshal(put.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Available || len(body.Adapters) != 0 {
+		t.Fatalf("expected unavailable empty configuration on put fallback, got %+v", body)
 	}
 }
 

@@ -1,4 +1,4 @@
-export type RemotePermission = 'RemoteServer.View' | 'RemoteServer.Manage' | 'RemoteConsole.View' | 'RemoteConsole.Send' | 'RemoteFiles.View' | 'RemoteFiles.Edit' | 'RemoteFiles.Upload' | 'RemoteFiles.Download' | 'RemoteFiles.Delete' | 'RemoteFiles.Rename' | 'RemoteMonitoring.View';
+export type RemotePermission = 'RemoteServer.View' | 'RemoteServer.Manage' | 'RemoteConsole.View' | 'RemoteConsole.Send' | 'RemoteFiles.View' | 'RemoteFiles.Edit' | 'RemoteFiles.Upload' | 'RemoteFiles.Download' | 'RemoteFiles.Delete' | 'RemoteFiles.Rename' | 'RemoteMonitoring.View' | 'RemoteConfig.View' | 'RemoteConfig.Edit';
 
 export function hasRemotePermission(permissions: readonly string[] | undefined, permission: RemotePermission): boolean {
   return permissions?.includes(permission) ?? false;

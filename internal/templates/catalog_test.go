@@ -461,7 +461,7 @@ func TestRepositoryOfficialCatalog(t *testing.T) {
 		installer string
 		platforms int
 		resolver  string
-	}{"windrose": {InstallerSteamCMD, 1, ""}, "enshrouded": {InstallerSteamCMD, 1, ""}, "runescape-dragonwilds": {InstallerSteamCMD, 2, ""}, "ark-survival-evolved": {InstallerSteamCMD, 2, ""}, "ark-survival-ascended": {InstallerSteamCMD, 1, ""}, "minecraft-neoforge": {InstallerExistingFiles, 2, "neoforge"}, "7-days-to-die": {InstallerSteamCMD, 2, ""}, "project-zomboid": {InstallerSteamCMD, 1, ""}, "palworld": {InstallerSteamCMD, 1, ""}, "satisfactory": {InstallerSteamCMD, 1, ""}, "eco": {InstallerSteamCMD, 2, ""}, "valheim": {InstallerSteamCMD, 2, ""}, "vein": {InstallerSteamCMD, 1, ""}, "ddnet": {InstallerSteamCMD, 1, ""}, "onset": {InstallerSteamCMD, 1, ""}, "puck": {InstallerSteamCMD, 1, ""}, "nova-life-amboise": {InstallerSteamCMD, 1, ""}, "quake-live": {InstallerSteamCMD, 1, ""}, "qanga": {InstallerSteamCMD, 1, ""}, "the-bus": {InstallerSteamCMD, 1, ""}, "battalion-legacy": {InstallerSteamCMD, 1, ""}, "post-scriptum": {InstallerSteamCMD, 1, ""}, "astro-colony": {InstallerSteamCMD, 1, ""}, "colony-survival": {InstallerSteamCMD, 1, ""}}
+	}{"windrose": {InstallerSteamCMD, 1, ""}, "enshrouded": {InstallerSteamCMD, 1, ""}, "runescape-dragonwilds": {InstallerSteamCMD, 2, ""}, "ark-survival-evolved": {InstallerSteamCMD, 2, ""}, "ark-survival-ascended": {InstallerSteamCMD, 1, ""}, "minecraft-neoforge": {InstallerExistingFiles, 2, "neoforge"}, "farming-simulator-25": {InstallerExistingFiles, 1, ""}, "7-days-to-die": {InstallerSteamCMD, 2, ""}, "project-zomboid": {InstallerSteamCMD, 1, ""}, "palworld": {InstallerSteamCMD, 1, ""}, "satisfactory": {InstallerSteamCMD, 1, ""}, "eco": {InstallerSteamCMD, 2, ""}, "valheim": {InstallerSteamCMD, 2, ""}, "vein": {InstallerSteamCMD, 1, ""}, "ddnet": {InstallerSteamCMD, 1, ""}, "onset": {InstallerSteamCMD, 1, ""}, "puck": {InstallerSteamCMD, 1, ""}, "nova-life-amboise": {InstallerSteamCMD, 1, ""}, "quake-live": {InstallerSteamCMD, 1, ""}, "qanga": {InstallerSteamCMD, 1, ""}, "the-bus": {InstallerSteamCMD, 1, ""}, "battalion-legacy": {InstallerSteamCMD, 1, ""}, "post-scriptum": {InstallerSteamCMD, 1, ""}, "astro-colony": {InstallerSteamCMD, 1, ""}, "colony-survival": {InstallerSteamCMD, 1, ""}}
 	for _, entry := range manifest.Templates {
 		expected, ok := wanted[entry.ID]
 		if !ok || entry.Installer != expected.installer || len(entry.Platforms) != expected.platforms {
@@ -491,6 +491,42 @@ func TestEcoRepositoryGolden(t *testing.T) {
 	linux := template.PlatformLaunches["linux"]
 	if template.Installer.SteamCMD == nil || template.Installer.SteamCMD.AppID != 739590 || template.Compatibility.Status != PartiallyCompatible || windows.Executable != "EcoServer.exe" || linux.Executable != "EcoServer" || len(windows.Arguments) != 2 || windows.Arguments[0] != "--nogui" || windows.Arguments[1] != "-offline" || len(template.Ports) != 2 || template.Ports[0].Port != 3000 || template.Ports[0].Protocol != "udp" || template.Ports[1].Port != 3001 || template.Ports[1].Protocol != "tcp" {
 		t.Fatalf("unexpected Eco template: %#v windows=%#v linux=%#v", template, windows, linux)
+	}
+}
+
+func TestValheimRepositorySupportsBothDeclaredPlatforms(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "templates", "steamcmd", "valheim", "template.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := CatalogEntry{ID: "valheim", Name: "Valheim Dedicated Server", Description: "Install the official Valheim dedicated server through SteamCMD and run its native Windows or Linux server executable directly. Server name, world, password, visibility, crossplay, and save interval are managed GameNode configuration settings.", Category: "steamcmd", Version: "1.2.0", TemplateSchemaVersion: 2, Platforms: []string{"windows", "linux"}, Installer: InstallerSteamCMD, File: "steamcmd/valheim/template.json", Tags: []string{"valheim", "steam", "steamcmd", "survival", "vikings"}, Icon: "steamcmd", MinimumGameNode: "0.2.0"}
+	template, err := decodeOfficial(data, entry, "0.2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if template.Installer.SteamCMD == nil || template.Installer.SteamCMD.AppID != 896660 || template.PlatformLaunches["windows"].Executable != "valheim_server.exe" || template.PlatformLaunches["linux"].Executable != "valheim_server.x86_64" {
+		t.Fatalf("unexpected Valheim template: %#v", template)
+	}
+	for _, hostOS := range []string{"windows", "linux"} {
+		if err := CheckHostRequirements(template, hostOS, "amd64"); err != nil {
+			t.Fatalf("Valheim should be provisionable on %s: %v", hostOS, err)
+		}
+	}
+}
+
+func TestFarmingSimulator25RepositoryGolden(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "templates", "steamcmd", "farming-simulator-25", "template.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := CatalogEntry{ID: "farming-simulator-25", Name: "Farming Simulator 25 Dedicated Server", Description: "Adopt an existing Farming Simulator 25 installation and manage its Windows dedicated-server launcher directly.", Category: "simulation", Version: "1.0.0", TemplateSchemaVersion: 2, Platforms: []string{"windows"}, Installer: InstallerExistingFiles, File: "steamcmd/farming-simulator-25/template.json", Tags: []string{"farming-simulator-25", "fs25", "ls25", "farming", "simulation", "dedicated-server"}, Icon: "steamcmd", MinimumGameNode: "0.2.0"}
+	template, err := decodeOfficial(data, entry, "0.2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch := template.PlatformLaunches["windows"]
+	if template.Installer.Type != InstallerExistingFiles || template.ID != entry.ID || launch.Executable != "dedicatedServer.exe" || len(template.Ports) != 3 || template.Ports[0].Port != 10823 || template.Ports[1].Port != 10824 || template.Ports[2].Port != 10825 || template.Compatibility.Status != PartiallyCompatible {
+		t.Fatalf("unexpected Farming Simulator 25 template: %#v launch=%#v", template, launch)
 	}
 }
 

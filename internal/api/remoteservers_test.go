@@ -50,7 +50,7 @@ func remoteServerCapableFake() *fakeRemoteClient {
 		enrollResult: remote.EnrollResult{
 			NodeID: "remote-node-1", DisplayName: "Remote One", Credential: "issued-credential",
 			ProtocolVersion: 1, GameNodeVersion: "0.6.0", OS: "linux", Arch: "amd64",
-			Capabilities: []string{"remote_server_management", "remote_console", "remote_files", "remote_monitoring"},
+			Capabilities: []string{"remote_server_management", "remote_console", "remote_files", "remote_monitoring", "remote_gameconfig"},
 		},
 	}
 }
@@ -383,5 +383,77 @@ func TestRemoteFilesReadOnlyWithoutMutationPermission(t *testing.T) {
 	writeBody, _ := json.Marshal(map[string]string{"path": "config.txt", "content": "changed"})
 	if response := templateRequest(h, http.MethodPut, "/api/v1/remote-nodes/"+nodeID+"/servers/srv-1/files/content", writeBody, &session, true); response.Code != http.StatusForbidden {
 		t.Fatalf("expected write to be forbidden without RemoteFiles.Edit, got %d %s", response.Code, response.Body.String())
+	}
+}
+
+// TestRemoteConfigurationCapabilityRBACAndAudit confirms the remote
+// configuration surface: rejects a node that never advertised
+// remote_gameconfig with a controlled 501 (never attempted), enforces
+// RemoteConfig.View/RemoteConfig.Edit as separate permissions with CSRF
+// required on the mutation, forwards the adapter id/values unchanged to
+// internal/remote.Client.UpdateConfiguration, and audits the update exactly
+// once with bounded metadata only (never a field value) - matching the local
+// server.config_update contract (internal/api/gameconfig.go).
+func TestRemoteConfigurationCapabilityRBACAndAudit(t *testing.T) {
+	fake := remoteServerCapableFake()
+	fake.serversByID = map[string]remote.ServerSummary{"srv-1": sampleServerSummary("srv-1", "default", "Alpha")}
+	fake.configuration = remote.RemoteConfiguration{Available: true, Adapters: []remote.RemoteConfigAdapter{{ID: "server-properties", Fields: []remote.RemoteConfigField{{Key: "difficulty", Value: "normal"}}}}}
+	h, db := newNodeTestServer(t, fake)
+	admin := createAdminSession(t, h)
+	nodeID := enrollRemoteServerTestNode(t, h, admin, "https://remote-one.internal", "Remote One")
+
+	identities := identity.New(db)
+	viewer, err := identities.CreateUser(context.Background(), identity.CreateUserInput{Username: "config-viewer", Email: "config-viewer@example.test", Password: "a password long enough"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantNodePermission(t, db, viewer.ID, "RemoteConfig.View")
+	session := loginSession(t, h, viewer.Username)
+
+	view := templateRequest(h, http.MethodGet, "/api/v1/remote-nodes/"+nodeID+"/servers/srv-1/configuration", nil, &session, false)
+	if view.Code != http.StatusOK {
+		t.Fatalf("get configuration with RemoteConfig.View: %d %s", view.Code, view.Body.String())
+	}
+	updateBody, _ := json.Marshal(map[string]any{"adapter_id": "server-properties", "values": map[string]string{"difficulty": "hard"}})
+	if response := templateRequest(h, http.MethodPut, "/api/v1/remote-nodes/"+nodeID+"/servers/srv-1/configuration", updateBody, &session, true); response.Code != http.StatusForbidden {
+		t.Fatalf("update with only RemoteConfig.View: %d %s", response.Code, response.Body.String())
+	}
+
+	grantNodePermission(t, db, viewer.ID, "RemoteConfig.Edit")
+	editorSession := loginSession(t, h, viewer.Username)
+	if response := templateRequest(h, http.MethodPut, "/api/v1/remote-nodes/"+nodeID+"/servers/srv-1/configuration", updateBody, &editorSession, false); response.Code != http.StatusForbidden {
+		t.Fatalf("update without CSRF: %d %s", response.Code, response.Body.String())
+	}
+	updated := templateRequest(h, http.MethodPut, "/api/v1/remote-nodes/"+nodeID+"/servers/srv-1/configuration", updateBody, &editorSession, true)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update: %d %s", updated.Code, updated.Body.String())
+	}
+	if fake.lastConfigAdapter != "server-properties" || fake.lastConfigValues["difficulty"] != "hard" {
+		t.Fatalf("expected adapter id/values forwarded unchanged, got adapter=%q values=%v", fake.lastConfigAdapter, fake.lastConfigValues)
+	}
+
+	events, err := audit.New(db).List(context.Background(), audit.Filter{ResourceType: audit.RemoteServer, Action: audit.RemoteConfigUpdate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected exactly one remote_config.update audit event, got %#v", events)
+	}
+	if strings.Contains(string(events[0].Metadata), "hard") {
+		t.Fatalf("configuration values must never be audited: %s", events[0].Metadata)
+	}
+
+	// A node that never advertised remote_gameconfig must be rejected with a
+	// controlled 501, never attempted.
+	oldFake := &fakeRemoteClient{enrollResult: remote.EnrollResult{
+		NodeID: "old-config-node", DisplayName: "Old Node", Credential: "cred", ProtocolVersion: 1,
+		GameNodeVersion: "0.5.0", OS: "linux", Arch: "amd64",
+		Capabilities: []string{"remote_server_management", "remote_console", "remote_files", "remote_monitoring"},
+	}}
+	oldH, _ := newNodeTestServer(t, oldFake)
+	oldAdmin := createAdminSession(t, oldH)
+	oldNodeID := enrollRemoteServerTestNode(t, oldH, oldAdmin, "https://old-config.internal", "Old Node")
+	if response := templateRequest(oldH, http.MethodGet, "/api/v1/remote-nodes/"+oldNodeID+"/servers/srv-1/configuration", nil, &oldAdmin, false); response.Code != http.StatusNotImplemented {
+		t.Fatalf("expected 501 for missing remote_gameconfig capability, got %d %s", response.Code, response.Body.String())
 	}
 }
