@@ -92,6 +92,8 @@ preserves unknown properties and is not a generic Unreal configuration parser.
 An optional reviewed `initialization` with mode `seed-from-file` may initialize
 a missing target from another bounded, validated server-root-relative file;
 existing targets are never seed-overwritten.
+An optional `platforms` array (`"windows"`, `"linux"`) on an adapter registers it
+only on matching hosts, for games whose config path differs per OS.
 The INI implementation accepts a flat, sectionless `key=value` document, rejects
 malformed/duplicate/missing managed keys, and preserves comments, ordering, line
 endings, and all unknown keys. `post_start_only` adapters may expose validated

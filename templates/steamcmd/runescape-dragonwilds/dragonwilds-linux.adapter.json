@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "id": "dragonwilds-dedicated-server-linux",
+  "version": "1.0.0",
+  "format": "ini-section-key-values",
+  "target": "RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini",
+  "section": "/Script/Dominion.DedicatedServerSettings",
+  "platforms": [
+    "linux"
+  ],
+  "restart_required": true,
+  "post_start_only": true,
+  "fields": [
+    {
+      "key": "OWNER_ID",
+      "label": "Owner ID",
+      "description": "Your in-game Player ID (bottom of the Settings menu). The server exits without it.",
+      "type": "string",
+      "property": "OwnerId",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min_length": 1,
+        "max_length": 64
+      }
+    },
+    {
+      "key": "SERVER_NAME",
+      "label": "Server name",
+      "description": "Name shown for this server.",
+      "type": "string",
+      "property": "ServerName",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min_length": 1,
+        "max_length": 64
+      }
+    },
+    {
+      "key": "DEFAULT_WORLD_NAME",
+      "label": "Default world name",
+      "description": "Name of the world created on startup when no save exists.",
+      "type": "string",
+      "property": "DefaultWorldName",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min_length": 1,
+        "max_length": 64
+      }
+    },
+    {
+      "key": "ADMIN_PASSWORD",
+      "label": "Admin password",
+      "description": "Anyone with this password can use the in-game Server Management tab.",
+      "type": "secret",
+      "property": "AdminPassword",
+      "required": true,
+      "nullable": false,
+      "sensitive": true,
+      "validation": {
+        "min_length": 1,
+        "max_length": 128
+      }
+    },
+    {
+      "key": "WORLD_PASSWORD",
+      "label": "World password",
+      "description": "Optional join password; leave empty for an open world. Supersedes a password stored in the world.",
+      "type": "secret",
+      "property": "WorldPassword",
+      "required": false,
+      "nullable": true,
+      "sensitive": true,
+      "validation": {
+        "max_length": 128
+      }
+    }
+  ]
+}
