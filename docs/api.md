@@ -394,3 +394,62 @@ Adds a bounded remote surface for the same declarative, versioned per-game confi
 | `GET`/`PUT` | `/api/v1/node/servers/{id}/configuration` | machine-authenticated Node-facing counterpart; forwards straight into this node's own `internal/gameconfig.Service`, identical to the local browser-facing `/api/v1/servers/{id}/configuration` route; never audited locally (the machine credential carries no human actor - only the controller side audits, tagged with the node id). |
 
 The Nodes UI reuses the existing `GameConfiguration` component (`web/src/game-configuration.tsx`, parameterized with a `basePath` prop) as a `Configuration` tab on a remote server's detail view, identical in appearance to a local server's Configuration tab.
+
+# Self-update API (ADR 0013)
+
+GameNode can update its own binary from this project's official GitHub
+releases. The source is fixed in code; no request carries a URL, binary,
+checksum, or path. See `docs/adr/0013-self-update.md`.
+
+## This installation (human-authenticated)
+
+Reading needs global `Update.View`; everything else needs global
+`Update.Manage` (neither implies the other). Every `POST` requires CSRF.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/v1/system/update` | `Update.View`. Returns the update status: `current_version`, `os`, `arch`, `updatable`, `state` (`idle`, `checking`, `downloading`, `ready`, `applying`, `restarting`, `failed`), `progress`, `update_available`, `available` (release tag/version/notes/URL), `last_checked_at`, `last_check_error`, `staged`, `error`, `checks[]` (each `{id,label,status:pass|warn|block,message}`), `can_prepare`, `can_apply`, `requires_acknowledgement`, `restart_mode`, `last_outcome`. Never contains a host path. `?summary=1` omits the safety checks (cheap form for pollers). |
+| `POST` | `/api/v1/system/update/check` | `Update.View` + CSRF. Asks GitHub for the latest published release. Repeated calls inside 15 seconds return the cached result. A source failure is reported inside the status (`last_check_error`), not as an HTTP error. |
+| `POST` | `/api/v1/system/update/prepare` | `Update.Manage` + CSRF; body `{"version":"1.2.3"}`. Must equal the release the last check found. Runs the safety checks, then downloads, verifies (SHA-256 against `SHA256SUMS.txt`, size, executable format, `--version` self-test), and stages in the background. `202`; poll `GET`. |
+| `POST` | `/api/v1/system/update/apply` | `Update.Manage` + CSRF; body `{"version":"1.2.3","acknowledge_warnings":false}`. Re-runs every safety check, re-hashes the staged file, backs up the database, swaps the executable, and schedules a graceful restart. `202` with `state:"restarting"`. Audited (`system.update_apply`). |
+| `POST` | `/api/v1/system/update/cancel` | `Update.Manage` + CSRF. Cancels a running download or discards a staged binary; refused once installing has begun. |
+
+Error responses use the standard `{"error":{"code","message"}}` envelope and,
+when safety checks are the reason, add a `checks` array. Codes: `update_busy`,
+`release_unknown`, `update_not_ready`, `preflight_blocked`,
+`acknowledgement_required` (all `409`), `database_backup_failed`,
+`install_failed`, `rollback_marker_failed`, `staged_binary_changed` (`500`),
+and `update_unavailable` (`503`, no updater in this build). A `block` check
+can never be overridden; a `warn` needs `acknowledge_warnings:true`.
+
+`PATCH /api/v1/settings` accepts `{"updates":{"auto_check":true|false}}`
+(`Settings.Manage`) to enable or disable the periodic release check.
+
+## Node-facing update API (machine-authenticated)
+
+Same trust domain as `/api/v1/node/info` (`Authorization: Bearer <credential>`,
+no cookie, no CSRF, no RBAC). Advertised by the `self_update` capability; a
+controller must not call it when the capability is absent. Unknown request
+fields are rejected.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/v1/node/update` | The node's own update status (same document as above). |
+| `POST` | `/api/v1/node/update/check` | The node checks GitHub itself. |
+| `POST` | `/api/v1/node/update/prepare` | Body `{"version"}`. The node downloads and verifies the release itself. |
+| `POST` | `/api/v1/node/update/apply` | Body `{"version","acknowledge_warnings"}`. The node runs its own safety checks; audited on the node as `system.update_apply` with `initiator:"controller"`. |
+| `POST` | `/api/v1/node/update/cancel` | Cancels or discards. |
+
+## Controller-facing remote update (human-authenticated)
+
+`/api/v1/remote-nodes/{id}/update` and `.../update/{check|prepare|apply|cancel}`
+proxy the calls above through the typed `remote.Client`. Reading and `check`
+need **both** `Node.View` and `Update.View`; `prepare`, `apply`, and `cancel`
+need **both** `Node.Manage` and `Update.Manage`; every `POST` requires CSRF.
+Responses are `{"supported":true,"update":{...status...}}`; a node without the
+capability answers `{"supported":false}` to `GET` and `409
+remote_update_unsupported` to a mutation, and is never contacted. A disabled
+node answers `409 remote_node_disabled`. `apply` is audited as
+`node.software_update`. A node's error text is never echoed: only whitelisted
+codes are relayed, with this controller's own wording, and relayed checks are
+bounded and normalized.

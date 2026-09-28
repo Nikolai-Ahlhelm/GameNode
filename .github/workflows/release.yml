@@ -96,6 +96,14 @@ jobs:
           $ldflags = "-s -w -X gamenode/internal/diagnostics.Version=${{ github.ref_name }} -X gamenode/internal/diagnostics.Commit=${{ github.sha }} -X gamenode/internal/diagnostics.BuildTime=$buildTime"
           New-Item -ItemType Directory -Force dist | Out-Null
           go build -trimpath -ldflags $ldflags -o dist/gamenode-windows-amd64.exe ./cmd/gamenode
+      # Installed nodes self-test a downloaded release with --version before
+      # installing it (internal/selfupdate), so a release that cannot report its
+      # own tag must never be published.
+      - name: Verify the binary reports its release version
+        shell: pwsh
+        run: |
+          $reported = (& ./dist/gamenode-windows-amd64.exe --version | Out-String).Trim()
+          if ($reported -ne "gamenode ${{ github.ref_name }}") { throw "binary reports '$reported', expected 'gamenode ${{ github.ref_name }}'" }
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows-amd64
@@ -129,6 +137,13 @@ jobs:
           ldflags="-s -w -X gamenode/internal/diagnostics.Version=${GITHUB_REF_NAME} -X gamenode/internal/diagnostics.Commit=${GITHUB_SHA} -X gamenode/internal/diagnostics.BuildTime=${build_time}"
           mkdir -p dist
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o dist/gamenode-linux-amd64 ./cmd/gamenode
+      # Installed nodes self-test a downloaded release with --version before
+      # installing it (internal/selfupdate), so a release that cannot report its
+      # own tag must never be published.
+      - name: Verify the binary reports its release version
+        run: |
+          reported="$(./dist/gamenode-linux-amd64 --version)"
+          test "$reported" = "gamenode ${GITHUB_REF_NAME}" || { echo "binary reports '$reported', expected 'gamenode ${GITHUB_REF_NAME}'"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux-amd64
@@ -146,6 +161,8 @@ jobs:
           pattern: release-*
           path: release
           merge-multiple: true
+      # SHA256SUMS.txt and the two asset names are read by installed nodes'
+      # self-update (internal/selfupdate); keep them stable.
       - name: Create checksums
         working-directory: release
         run: sha256sum gamenode-windows-amd64.exe gamenode-linux-amd64 > SHA256SUMS.txt

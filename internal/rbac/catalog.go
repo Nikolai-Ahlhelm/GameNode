@@ -16,6 +16,12 @@ var Catalog = []Permission{
 	{"Tenants.View", "Tenants", "View tenant entities"}, {"Tenants.Manage", "Tenants", "Create, update, and delete tenant entities"}, {"Tenants.Invite", "Tenants", "Invite users to a tenant"},
 	{"Node.View", "Node", "View this node's remote node registry and pairing status"}, {"Node.Manage", "Node", "Enroll, rename, enable/disable, and remove remote nodes; generate pairing tokens for this node"},
 	{"Cluster.View", "Cluster", "View cluster placement candidates and capacity for a tenant"}, {"Cluster.Schedule", "Cluster", "Compute a cluster placement decision for a tenant"},
+	// Update.View/Update.Manage govern GameNode self-update (docs/adr/0013-self-update.md):
+	// viewing version/update status, and downloading + installing a release on
+	// this node or - together with Node.Manage - on an enrolled remote node.
+	// Deliberately separate from Settings.*: installing an update replaces the
+	// running binary, which is a stronger power than editing settings.
+	{"Update.View", "Update", "View the installed GameNode version and available updates"}, {"Update.Manage", "Update", "Check for, download, and install GameNode updates on this node and on enrolled remote nodes"},
 	// RemoteServer/RemoteConsole/RemoteFiles/RemoteMonitoring (v0.5B/v0.5C)
 	// govern the controller-side forwarding surface against an enrolled
 	// remote node's own servers - never local servers, which stay governed
@@ -51,7 +57,7 @@ func Known(key string) bool {
 // tenant, per GameNode_Tenant_Foundation_Prompt.md section 3.3.
 func GlobalOnly(key string) bool {
 	switch key {
-	case "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Audit.View", "Tenants.View", "Tenants.Manage", "Node.View", "Node.Manage":
+	case "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Audit.View", "Tenants.View", "Tenants.Manage", "Node.View", "Node.Manage", "Update.View", "Update.Manage":
 		return true
 	// Cluster.View/Cluster.Schedule are deliberately NOT global-only: a
 	// tenant-scoped operator must be able to request/inspect placement for

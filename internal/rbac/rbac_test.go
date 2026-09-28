@@ -98,7 +98,7 @@ func TestPermissionScopeMatrix(t *testing.T) {
 		"Settings.View": true, "Settings.Manage": true, "Log.Read": true, "Log.FlushDirectory": true,
 		"Templates.View": true, "Templates.Manage": true, "Audit.View": true,
 		"Tenants.View": true, "Tenants.Manage": true,
-		"Node.View": true, "Node.Manage": true,
+		"Node.View": true, "Node.Manage": true, "Update.View": true, "Update.Manage": true,
 	}
 	// Server.Create is the one deliberate exception: it supports "global"
 	// and "tenant" but never "server" (a server does not exist yet at the
@@ -117,7 +117,7 @@ func TestPermissionScopeMatrix(t *testing.T) {
 		"RemoteMonitoring.View": true,
 		"RemoteConfig.View":     true, "RemoteConfig.Edit": true,
 	}
-	if len(Catalog) != 57 {
+	if len(Catalog) != 59 {
 		t.Fatalf("catalog contains %d permissions; update the explicit scope matrix test", len(Catalog))
 	}
 	for _, permission := range Catalog {

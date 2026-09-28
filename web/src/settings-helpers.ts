@@ -12,6 +12,7 @@ export type SettingsResponse = {
   security: { password_minimum_length: number; password_maximum_length: number };
   branding: { name: string; subtitle: string; custom_favicon: boolean };
   runtime?: { container_image_allowlist: string[] };
+  updates?: { auto_check: boolean };
   restart_required: boolean;
   restart_required_fields?: string[];
 };

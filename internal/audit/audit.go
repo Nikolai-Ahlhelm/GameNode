@@ -165,6 +165,17 @@ const (
 	RemoteFileUpload    = "remote_file.upload"
 	RemoteFileDownload  = "remote_file.download"
 	RemoteConfigUpdate  = "remote_config.update"
+	// Self-update (docs/adr/0013-self-update.md). SystemUpdateApply is recorded
+	// once per install request with its synchronous outcome (accepted, or a
+	// controlled failure code); SystemUpdateComplete/SystemUpdateRollback are
+	// recorded exactly once by the process that observes the outcome after the
+	// restart. NodeSoftwareUpdate is the controller-side record of an install
+	// requested on an enrolled remote node; the node records its own
+	// SystemUpdateApply. Checking for updates is routine and not audited.
+	SystemUpdateApply    = "system.update_apply"
+	SystemUpdateComplete = "system.update_complete"
+	SystemUpdateRollback = "system.update_rollback"
+	NodeSoftwareUpdate   = "node.software_update"
 )
 
 type Event struct {

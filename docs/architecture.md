@@ -374,3 +374,36 @@ No automatic re-placement of a `local_only` or `remote_provisioning` decision be
 ## Tenant status dashboard
 
 Each tenant may opt into `/status/{slug}` and independently choose public or authenticated visibility. The browser page consumes the narrow `/api/v1/status/{slug}` projection; normal server APIs remain unchanged and authoritative. Current health comes from `servers.Service.MonitoringSnapshot`. A low-frequency status recorder writes one derived `up`/`degraded`/`down` check per server every five minutes to `server_status_history`, retains 30 days, and prunes older rows automatically. The API compresses those checks into 90 visual buckets; buckets without a check remain explicitly unknown and are never counted as uptime. The high-frequency in-memory process metrics history remains separate and is not persisted by this feature.
+
+# Self-update (ADR 0013)
+
+`internal/selfupdate` is a transport-free domain with no dependency on HTTP,
+RBAC, servers, provisioning, or the database driver. `cmd/gamenode` composes it
+with three callbacks (workload activity, database health, database backup)
+attached through `Bind` once those services exist; the updater itself is
+constructed before the database is opened so `Boot` can restore the previous
+binary when a freshly installed one keeps failing.
+
+- `version.go` semantic-version parsing and precedence (release builds inject
+  `v1.2.3`, local builds `1.2.3`); `source.go` the fixed GitHub source;
+  `checksums.go` manifest parsing; `verify.go` executable plausibility and the
+  `--version` self-test; `swap.go` same-directory rename install and restore;
+  `marker.go` the persisted rollback record (`<data>/updates/pending.json`);
+  `service.go` the state machine (idle, downloading, ready, applying,
+  restarting), the preflight checks, `Boot`, and `Confirm`; platform files for
+  free disk space and the relaunch (`syscall.Exec` on Linux, a detached
+  successor on Windows).
+- `internal/api/update.go` exposes three faces: `/api/v1/system/update*`
+  (browser, RBAC, CSRF), `/api/v1/node/update*` (machine-authenticated, for an
+  enrolled controller), and `/api/v1/remote-nodes/{id}/update*` (browser,
+  requires both `Node.*` and `Update.*`). `internal/remote.Client` gains typed
+  update calls and a separate longer-timeout HTTP client used only for them.
+- `cmd/gamenode`: `run()` returns a hand-over hook that `main()` invokes only
+  after every deferred cleanup ran, so the successor never competes with a
+  half-closed predecessor. An `update.restart_mode: exit` config option (file
+  only) exits instead, for supervised installations.
+- Frontend: `web/src/update-helpers.ts` (pure, unit-tested), `web/src/updates.tsx`
+  (one `UpdateManager` used for this instance under Settings > Updates and for a
+  node on its detail page, differing only by adapter; plus the dashboard
+  banner). No migration: settings reuse `app_settings`, and the only state that
+  must survive the restart is a file.

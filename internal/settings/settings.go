@@ -30,6 +30,7 @@ const (
 	brandingNameKey             = "branding.name"
 	brandingSubtitleKey         = "branding.subtitle"
 	containerImageAllowlistKey  = "runtime.container_image_allowlist"
+	updatesAutoCheckKey         = "updates.auto_check"
 	brandingFaviconTypeKey      = "branding.favicon_content_type"
 	brandingFaviconDataKey      = "branding.favicon_data"
 	MaxFaviconBytes             = 256 << 10
@@ -101,8 +102,16 @@ type Values struct {
 	Security              Security   `json:"security"`
 	Branding              Branding   `json:"branding"`
 	Runtime               Runtime    `json:"runtime"`
+	Updates               Updates    `json:"updates"`
 	RestartRequired       bool       `json:"restart_required"`
 	RestartRequiredFields []string   `json:"restart_required_fields"`
+}
+
+// Updates configures whether GameNode periodically asks its fixed release
+// source (GitHub) whether a newer release exists. It never installs anything by
+// itself: an administrator must download and install explicitly.
+type Updates struct {
+	AutoCheck bool `json:"auto_check"`
 }
 
 type Runtime struct {
@@ -210,6 +219,11 @@ type Patch struct {
 	Security   *SecurityPatch   `json:"security,omitempty"`
 	Branding   *BrandingPatch   `json:"branding,omitempty"`
 	Runtime    *RuntimePatch    `json:"runtime,omitempty"`
+	Updates    *UpdatesPatch    `json:"updates,omitempty"`
+}
+
+type UpdatesPatch struct {
+	AutoCheck *bool `json:"auto_check,omitempty"`
 }
 
 type RuntimePatch struct {
@@ -342,7 +356,7 @@ func (s *Service) PasswordPolicy(ctx context.Context) (int, int, error) {
 
 // Update changes only supplied typed fields and returns their stable API paths.
 func (s *Service) Update(ctx context.Context, patch Patch) (Values, []string, error) {
-	if (patch.Monitoring == nil || (patch.Monitoring.SampleIntervalSeconds == nil && patch.Monitoring.HistoryLimit == nil)) && (patch.Logging == nil || (patch.Logging.Level == nil && patch.Logging.DetailedErrors == nil && patch.Logging.Categories.isEmpty())) && (patch.Security == nil || (patch.Security.PasswordMinimumLength == nil && patch.Security.PasswordMaximumLength == nil)) && (patch.Branding == nil || (patch.Branding.Name == nil && patch.Branding.Subtitle == nil)) && (patch.Runtime == nil || patch.Runtime.ContainerImageAllowlist == nil) {
+	if (patch.Monitoring == nil || (patch.Monitoring.SampleIntervalSeconds == nil && patch.Monitoring.HistoryLimit == nil)) && (patch.Logging == nil || (patch.Logging.Level == nil && patch.Logging.DetailedErrors == nil && patch.Logging.Categories.isEmpty())) && (patch.Security == nil || (patch.Security.PasswordMinimumLength == nil && patch.Security.PasswordMaximumLength == nil)) && (patch.Branding == nil || (patch.Branding.Name == nil && patch.Branding.Subtitle == nil)) && (patch.Runtime == nil || patch.Runtime.ContainerImageAllowlist == nil) && (patch.Updates == nil || patch.Updates.AutoCheck == nil) {
 		values, err := s.Get(ctx)
 		return values, nil, err
 	}
@@ -446,6 +460,10 @@ func (s *Service) Update(ctx context.Context, patch Patch) (Values, []string, er
 			changed = append(changed, containerImageAllowlistKey)
 		}
 	}
+	if patch.Updates != nil && patch.Updates.AutoCheck != nil && *patch.Updates.AutoCheck != current.Updates.AutoCheck {
+		current.Updates.AutoCheck = *patch.Updates.AutoCheck
+		changed = append(changed, updatesAutoCheckKey)
+	}
 	for _, key := range changed {
 		var stored string
 		switch {
@@ -465,6 +483,8 @@ func (s *Service) Update(ctx context.Context, patch Patch) (Values, []string, er
 			stored = current.Branding.Name
 		case key == brandingSubtitleKey:
 			stored = current.Branding.Subtitle
+		case key == updatesAutoCheckKey:
+			stored = strconv.FormatBool(current.Updates.AutoCheck)
 		case key == containerImageAllowlistKey:
 			encoded, _ := json.Marshal(current.Runtime.ContainerImageAllowlist)
 			stored = string(encoded)
@@ -498,7 +518,7 @@ func defaultLoggingCategories() LoggingCategories {
 }
 
 func (s *Service) get(ctx context.Context, q queryer) (Values, error) {
-	values := Values{Monitoring: Monitoring{SampleIntervalSeconds: s.defaults.MonitoringSampleIntervalSeconds, HistoryLimit: s.defaults.MonitoringHistoryLimit}, Logging: Logging{Level: s.defaults.LoggingLevel, Categories: defaultLoggingCategories(), DetailedErrors: false}, Security: Security{PasswordMinimumLength: s.defaults.PasswordMinimumLength, PasswordMaximumLength: s.defaults.PasswordMaximumLength}, Branding: Branding{Name: s.defaults.BrandingName, Subtitle: s.defaults.BrandingSubtitle}, Runtime: Runtime{ContainerImageAllowlist: []string{"docker.io", "ghcr.io", "quay.io"}}, RestartRequired: true, RestartRequiredFields: []string{monitoringSampleIntervalKey, monitoringHistoryLimitKey}}
+	values := Values{Monitoring: Monitoring{SampleIntervalSeconds: s.defaults.MonitoringSampleIntervalSeconds, HistoryLimit: s.defaults.MonitoringHistoryLimit}, Logging: Logging{Level: s.defaults.LoggingLevel, Categories: defaultLoggingCategories(), DetailedErrors: false}, Security: Security{PasswordMinimumLength: s.defaults.PasswordMinimumLength, PasswordMaximumLength: s.defaults.PasswordMaximumLength}, Branding: Branding{Name: s.defaults.BrandingName, Subtitle: s.defaults.BrandingSubtitle}, Runtime: Runtime{ContainerImageAllowlist: []string{"docker.io", "ghcr.io", "quay.io"}}, Updates: Updates{AutoCheck: true}, RestartRequired: true, RestartRequiredFields: []string{monitoringSampleIntervalKey, monitoringHistoryLimitKey}}
 	if err := validateInterval(values.Monitoring.SampleIntervalSeconds); err != nil {
 		return Values{}, fmt.Errorf("invalid monitoring default: %w", err)
 	}
@@ -508,7 +528,7 @@ func (s *Service) get(ctx context.Context, q queryer) (Values, error) {
 	if err := validatePasswordLengths(values.Security.PasswordMinimumLength, values.Security.PasswordMaximumLength); err != nil {
 		return Values{}, fmt.Errorf("invalid password policy default: %w", err)
 	}
-	keys := append([]string{monitoringSampleIntervalKey, monitoringHistoryLimitKey, loggingLevelKey, loggingDetailedErrorsKey, passwordMinimumLengthKey, passwordMaximumLengthKey, brandingNameKey, brandingSubtitleKey, brandingFaviconDataKey, containerImageAllowlistKey}, allCategoryKeys()...)
+	keys := append([]string{monitoringSampleIntervalKey, monitoringHistoryLimitKey, loggingLevelKey, loggingDetailedErrorsKey, passwordMinimumLengthKey, passwordMaximumLengthKey, brandingNameKey, brandingSubtitleKey, brandingFaviconDataKey, containerImageAllowlistKey, updatesAutoCheckKey}, allCategoryKeys()...)
 	placeholders := strings.Repeat("?,", len(keys))
 	placeholders = placeholders[:len(placeholders)-1]
 	args := make([]any, len(keys))
@@ -579,6 +599,12 @@ func (s *Service) get(ctx context.Context, q queryer) (Values, error) {
 			if values.Runtime.ContainerImageAllowlist, err = validateImageAllowlist(allowlist); err != nil {
 				return Values{}, fmt.Errorf("invalid persisted setting %q: %w", key, err)
 			}
+		case updatesAutoCheckKey:
+			value, err := strconv.ParseBool(raw)
+			if err != nil {
+				return Values{}, fmt.Errorf("invalid persisted setting %q", key)
+			}
+			values.Updates.AutoCheck = value
 		case brandingFaviconDataKey:
 			values.Branding.CustomFavicon = raw != ""
 		default:

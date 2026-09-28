@@ -188,3 +188,36 @@ func TestLoggingCategoriesPatchHasNoArbitraryFields(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdatesAutoCheckDefaultsOnAndPersists(t *testing.T) {
+	s, closeDB := newService(t)
+	defer closeDB()
+	ctx := context.Background()
+	initial, err := s.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !initial.Updates.AutoCheck {
+		t.Fatal("automatic update checks should default to enabled")
+	}
+	off := false
+	updated, changed, err := s.Update(ctx, settings.Patch{Updates: &settings.UpdatesPatch{AutoCheck: &off}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Updates.AutoCheck || !reflect.DeepEqual(changed, []string{"updates.auto_check"}) {
+		t.Fatalf("update not applied: %+v %v", updated, changed)
+	}
+	reloaded, err := s.Get(ctx)
+	if err != nil || reloaded.Updates.AutoCheck {
+		t.Fatalf("setting did not persist: %+v %v", reloaded, err)
+	}
+	// Re-sending the same value is a no-op, not a change.
+	if _, changed, err = s.Update(ctx, settings.Patch{Updates: &settings.UpdatesPatch{AutoCheck: &off}}); err != nil || len(changed) != 0 {
+		t.Fatalf("unchanged value reported as changed: %v %v", changed, err)
+	}
+	on := true
+	if updated, _, err = s.Update(ctx, settings.Patch{Updates: &settings.UpdatesPatch{AutoCheck: &on}}); err != nil || !updated.Updates.AutoCheck {
+		t.Fatalf("re-enable failed: %+v %v", updated, err)
+	}
+}

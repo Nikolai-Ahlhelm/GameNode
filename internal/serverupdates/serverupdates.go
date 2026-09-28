@@ -679,3 +679,12 @@ func parseTime(value sql.NullString) *time.Time {
 	}
 	return &parsed
 }
+
+// ActiveCount reports how many manual server-update jobs are currently
+// executing in this process, for process-level operations (such as a GameNode
+// self-update restart) that must not interrupt them. It grants no control.
+func (s *Service) ActiveCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.active)
+}

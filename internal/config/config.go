@@ -79,6 +79,14 @@ type Config struct {
 		TLSKey           string `yaml:"tls_key"`
 		RequireTLS       bool   `yaml:"require_tls"`
 	} `yaml:"ftp"`
+	// Update controls how GameNode restarts itself after installing an update
+	// (docs/adr/0013-self-update.md). "self" (default) replaces or relaunches the
+	// process; "exit" exits cleanly and relies on a supervisor (systemd
+	// Restart=always, a Windows service wrapper) to start the new binary. It is a
+	// file-only operator setting: an API caller can never change it.
+	Update struct {
+		RestartMode string `yaml:"restart_mode"`
+	} `yaml:"update"`
 	Monitoring struct {
 		SampleIntervalSeconds int `yaml:"sample_interval_seconds"`
 		HistoryLimit          int `yaml:"history_limit"`
@@ -98,6 +106,7 @@ func Default() Config {
 	c.FTP.RequireTLS = true
 	c.Monitoring.SampleIntervalSeconds = 5
 	c.Monitoring.HistoryLimit = 300
+	c.Update.RestartMode = "self"
 	return c
 }
 
@@ -158,6 +167,9 @@ func Load(path string) (Config, error) {
 		if c.FTP.RequireTLS && c.FTP.TLSCert == "" {
 			return c, fmt.Errorf("ftp TLS certificate and key are required when ftp.require_tls is true")
 		}
+	}
+	if c.Update.RestartMode != "self" && c.Update.RestartMode != "exit" {
+		return c, fmt.Errorf("update.restart_mode must be \"self\" or \"exit\"")
 	}
 	if c.Monitoring.SampleIntervalSeconds < 1 || c.Monitoring.SampleIntervalSeconds > 300 {
 		return c, fmt.Errorf("monitoring.sample_interval_seconds must be between 1 and 300")

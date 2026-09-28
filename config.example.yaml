@@ -30,3 +30,9 @@ ftp:
 monitoring:
   sample_interval_seconds: 5
   history_limit: 300
+# How GameNode restarts itself after an administrator installs an update from
+# Settings > Updates. "self" (default) replaces or relaunches the process.
+# "exit" shuts down cleanly and lets a supervisor (for example systemd with
+# Restart=always) start the new binary.
+update:
+  restart_mode: "self"

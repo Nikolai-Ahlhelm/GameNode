@@ -235,3 +235,50 @@ Status pages are disabled and private by default. Public access requires both `s
 ## Administrator server tenant migration
 
 `POST /api/v1/servers/{id}/tenant` is restricted to a local GameNode administrator, requires CSRF protection, and only accepts an existing tenant ID. The server must be stopped before migration. Physical migration is limited to provisioned servers whose working directory exactly matches their managed root below `<data>/tenants/<tenant-id>/servers/<directory>`; the filesystem service validates both roots, rejects reparse points, refuses an occupied destination, and performs one same-filesystem rename. The database owner/path update follows the rename, with a best-effort rename-back if persistence fails. Adopted/custom servers are rejected because their administrator-supplied paths may contain unrelated data. The operation is recorded in the append-only audit log with source and destination tenant IDs.
+
+# Self-update threat model (ADR 0013)
+
+Installing an update replaces the executable of a process that can launch
+arbitrary configured programs, so the feature is built to be no more powerful
+than installing a release by hand.
+
+- **Source is code, not data.** One fixed repository; no configurable URL,
+  mirror, or token (the host's standard `HTTPS_PROXY` environment is honored). Download URLs are built from a strictly
+  validated tag and fixed asset names - never taken from an API response,
+  a request body, or a remote controller. Redirects are followed only over
+  HTTPS to GitHub-owned hosts.
+- **Verification precedes installation.** The checksum manifest is fetched
+  first; the binary must match its declared size and SHA-256, look like an
+  executable for this OS and CPU, and report the expected version from
+  `--version` (structured exec, no shell). The staged file is re-hashed
+  immediately before the swap.
+- **Downgrades and reinstalls are never offered**; development builds cannot
+  update themselves; drafts and prereleases are ignored.
+- **Independent, global-only permissions** (`Update.View`, `Update.Manage`),
+  not folded into `Settings.*`. Remote updates additionally require the
+  matching `Node.*` permission. Every mutation requires CSRF.
+- **The controller cannot push code.** A remote update request carries only a
+  version string; the node downloads, verifies, and safety-checks the release
+  itself. Unknown request fields are rejected. A compromised controller
+  credential can at most ask a node to install the newest official release.
+- **Nothing is echoed from a remote node**: only whitelisted error codes are
+  relayed with the controller's own text, and relayed check results are bounded
+  and normalized.
+- **Safety checks are enforced by the backend** and re-run immediately before
+  the swap; the UI only presents them. A `block` cannot be acknowledged away.
+- **Recoverable by construction.** The database is backed up first; the previous
+  binary is kept; an install that cannot write its rollback record is undone;
+  a new binary that never becomes healthy is replaced by the previous one.
+- **Audit and secrets.** `system.update_apply`, `system.update_complete`,
+  `system.update_rollback`, and `node.software_update` record version strings,
+  a boolean, and controlled failure codes only. Status responses and logs
+  contain no host paths. Machine credentials are never logged or audited.
+
+Residual risks, stated plainly: the checksum manifest lives next to the binary
+on GitHub, so it detects corruption and transport tampering but **not** a
+compromised GitHub account or release; detached signatures pinned in the
+binary would close that and are the recommended follow-up. A rollback restores
+the binary, not the database. The 60-second health confirmation is a liveness
+signal, not a functional test. A short race remains between the last safety
+check and the restart in which a newly started provisioning job would be
+interrupted (and recovered under the existing rules).

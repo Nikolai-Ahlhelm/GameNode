@@ -36,6 +36,7 @@ import (
 	"gamenode/internal/registration"
 	"gamenode/internal/remote"
 	"gamenode/internal/scheduler"
+	"gamenode/internal/selfupdate"
 	"gamenode/internal/servers"
 	"gamenode/internal/serverupdates"
 	"gamenode/internal/settings"
@@ -84,6 +85,7 @@ type Server struct {
 	emailVerification *emailverification.Service
 	registration      *registration.Service
 	passwordReset     *passwordreset.Service
+	updater           selfUpdater
 }
 
 // remoteNodeClient is the narrow set of typed Remote Node operations the API
@@ -124,6 +126,10 @@ type remoteNodeClient interface {
 	StartProvisioning(ctx context.Context, endpoint, credential string, req remote.ProvisioningRequest) (provisioning.Job, error)
 	GetProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error)
 	CancelProvisioningJob(ctx context.Context, endpoint, credential, jobID string) (provisioning.Job, error)
+
+	// Remote self-update: the node performs the release lookup, download,
+	// verification, and safety checks itself (docs/adr/0013-self-update.md).
+	remoteUpdateClient
 }
 
 type setupConfigStore interface {
@@ -174,6 +180,9 @@ type Options struct {
 	EmailVerification *emailverification.Service
 	Registration      *registration.Service
 	PasswordReset     *passwordreset.Service
+	// Updater is the GameNode self-update service (docs/adr/0013-self-update.md).
+	// When nil, the update endpoints answer 503 update_unavailable.
+	Updater *selfupdate.Service
 }
 
 // auditInput deliberately contains only values selected by the application. It
@@ -365,6 +374,9 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 		if options[0].RemoteClient != nil {
 			result.remoteClient = options[0].RemoteClient
 		}
+		if options[0].Updater != nil {
+			result.updater = options[0].Updater
+		}
 		result.emailAlerts = options[0].EmailAlerts
 		result.emailVerification = options[0].EmailVerification
 		if options[0].Registration != nil {
@@ -458,6 +470,10 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/cluster/placement/execute", s.clusterPlacementExecuteHandler)
 	mux.HandleFunc("/api/v1/node/provisioning", s.nodeProvisioningHandler)
 	mux.HandleFunc("/api/v1/node/provisioning/", s.nodeProvisioningJobHandler)
+	mux.HandleFunc("/api/v1/system/update", s.systemUpdateHandler)
+	mux.HandleFunc("/api/v1/system/update/", s.systemUpdateHandler)
+	mux.HandleFunc("/api/v1/node/update", s.nodeUpdateHandler)
+	mux.HandleFunc("/api/v1/node/update/", s.nodeUpdateHandler)
 	// API paths are never SPA routes. Keep an unknown API request from being
 	// answered with index.html by the browser-app fallback below.
 	mux.Handle("/api/", http.NotFoundHandler())
@@ -768,7 +784,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, http.StatusOK, response)
 }
 
-var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Server.Update", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "FTP.View", "FTP.Manage", "TenantAccess.Manage", "ServerAccess.Manage", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View", "Tenants.View", "Tenants.Manage", "Tenants.Invite", "Node.View", "Node.Manage", "Cluster.View", "Cluster.Schedule", "RemoteServer.View", "RemoteServer.Manage", "RemoteConsole.View", "RemoteConsole.Send", "RemoteFiles.View", "RemoteFiles.Edit", "RemoteFiles.Upload", "RemoteFiles.Download", "RemoteFiles.Delete", "RemoteFiles.Rename", "RemoteMonitoring.View", "RemoteConfig.View", "RemoteConfig.Edit"}
+var productPermissions = []string{"Server.View", "Server.Create", "Server.Edit", "Server.Delete", "Server.Start", "Server.Stop", "Server.Restart", "Server.Kill", "Server.Update", "Console.View", "Console.Send", "Files.View", "Files.Edit", "Files.Upload", "Files.Download", "Files.Delete", "Files.Rename", "FTP.View", "FTP.Manage", "TenantAccess.Manage", "ServerAccess.Manage", "Ports.View", "Ports.Manage", "Users.View", "Users.Manage", "Groups.View", "Groups.Manage", "Roles.View", "Roles.Manage", "Settings.View", "Settings.Manage", "Log.Read", "Log.FlushDirectory", "Templates.View", "Templates.Manage", "Monitoring.View", "Audit.View", "Tenants.View", "Tenants.Manage", "Tenants.Invite", "Node.View", "Node.Manage", "Update.View", "Update.Manage", "Cluster.View", "Cluster.Schedule", "RemoteServer.View", "RemoteServer.Manage", "RemoteConsole.View", "RemoteConsole.Send", "RemoteFiles.View", "RemoteFiles.Edit", "RemoteFiles.Upload", "RemoteFiles.Download", "RemoteFiles.Delete", "RemoteFiles.Rename", "RemoteMonitoring.View", "RemoteConfig.View", "RemoteConfig.Edit"}
 
 func (s *Server) allowed(ctx context.Context, u auth.User, permission string, scope rbac.Scope) (bool, error) {
 	return s.rbac.Allowed(ctx, u.ID, permission, scope)

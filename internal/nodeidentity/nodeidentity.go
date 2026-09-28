@@ -70,6 +70,13 @@ const (
 	// forwarding every call to this node's own internal/gameconfig.Service
 	// unchanged.
 	CapabilityRemoteGameConfig Capability = "remote_gameconfig"
+	// CapabilitySelfUpdate means this node exposes the machine-authenticated
+	// /api/v1/node/update* endpoints so an enrolled controller can ask it to
+	// check for, download, and install an official GameNode release. The node
+	// always fetches the release itself from the fixed GitHub source and runs
+	// its own safety checks; a controller can never supply a binary or URL.
+	// Absence means a controller must treat remote update as unsupported.
+	CapabilitySelfUpdate Capability = "self_update"
 )
 
 // Capabilities lists every capability this build of GameNode actually
@@ -96,6 +103,7 @@ func Capabilities() []Capability {
 		CapabilityRemoteFiles,
 		CapabilityRemoteMonitoring,
 		CapabilityRemoteGameConfig,
+		CapabilitySelfUpdate,
 	}
 }
 
