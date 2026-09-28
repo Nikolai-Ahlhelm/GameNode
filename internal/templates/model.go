@@ -114,7 +114,11 @@ type ConfigAdapterDefinition struct {
 	Section           string                       `json:"section,omitempty"`
 	ContainerProperty string                       `json:"container_property,omitempty"`
 	Initialization    *ConfigAdapterInitialization `json:"initialization,omitempty"`
-	RestartRequired   bool                         `json:"restart_required"`
+	// Platforms optionally restricts the adapter to specific host platforms
+	// ("windows", "linux") for games whose file layout differs per OS. An
+	// empty list applies everywhere.
+	Platforms       []string `json:"platforms,omitempty"`
+	RestartRequired bool     `json:"restart_required"`
 	PostStartOnly     bool                         `json:"post_start_only,omitempty"`
 	Fields            []ConfigAdapterField         `json:"fields"`
 }
@@ -122,6 +126,35 @@ type ConfigAdapterDefinition struct {
 type ConfigAdapterInitialization struct {
 	Mode   string `json:"mode"`
 	Source string `json:"source"`
+}
+
+// ValidAdapterPlatforms reports whether a platform restriction is a unique,
+// non-empty subset of the platforms GameNode supports.
+func ValidAdapterPlatforms(platforms []string) bool {
+	if len(platforms) > 2 {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, platform := range platforms {
+		if (platform != "windows" && platform != "linux") || seen[platform] {
+			return false
+		}
+		seen[platform] = true
+	}
+	return true
+}
+
+// AdapterAppliesTo reports whether an adapter is registered for hostOS.
+func AdapterAppliesTo(definition ConfigAdapterDefinition, hostOS string) bool {
+	if len(definition.Platforms) == 0 {
+		return true
+	}
+	for _, platform := range definition.Platforms {
+		if platform == hostOS {
+			return true
+		}
+	}
+	return false
 }
 
 // ConfigAdapterField describes one semantic game setting. Property names the

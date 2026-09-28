@@ -606,6 +606,9 @@ func decodeConfigAdapter(data []byte, reference ConfigAdapterReference, template
 	if (adapter.SchemaVersion != 1 && adapter.SchemaVersion != AdapterSchemaVersion) || adapter.SchemaVersion != reference.SchemaVersion || adapter.ID != reference.ID || !versionPattern.MatchString(adapter.Version) || len(adapter.Fields) == 0 || len(adapter.Fields) > 128 {
 		return ConfigAdapterDefinition{}, errors.New("configuration adapter metadata is invalid")
 	}
+	if !ValidAdapterPlatforms(adapter.Platforms) {
+		return ConfigAdapterDefinition{}, errors.New("configuration adapter platforms are invalid")
+	}
 	tupleFormat := adapter.Format == FormatSectionTuple
 	managedLaunch := adapter.Format == FormatManagedLaunch
 	if managedLaunch {

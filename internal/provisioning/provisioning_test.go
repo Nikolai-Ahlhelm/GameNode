@@ -1035,6 +1035,48 @@ func TestOfficialSteamProvisioningPersistsPostStartAdapterWithoutInventingConfig
 	}
 }
 
+func TestOfficialProvisioningRegistersOnlyAdaptersForHostPlatform(t *testing.T) {
+	for _, host := range []string{"windows", "linux"} {
+		t.Run(host, func(t *testing.T) {
+			db, data, template := officialSteamProvisionFixture(t, host)
+			defer db.Close()
+			maxLength := 64
+			field := templates.ConfigAdapterField{Key: "PZ_PUBLIC_NAME", Label: "Public name", Type: "string", Property: "PublicName", Required: true, Validation: templates.Validation{MaxLength: &maxLength}}
+			adapter := func(id, platform string) templates.ConfigAdapterDefinition {
+				return templates.ConfigAdapterDefinition{SchemaVersion: 1, ID: id, Version: "1.0.0", Format: "ini-key-values", Target: "Server/" + platform + ".ini", Platforms: []string{platform}, RestartRequired: true, PostStartOnly: true, Fields: []templates.ConfigAdapterField{field}}
+			}
+			template.Configuration = &templates.ConfigurationDefinition{Adapters: []templates.ConfigAdapterReference{{ID: "game-windows", SchemaVersion: 1, File: "w.json"}, {ID: "game-linux", SchemaVersion: 1, File: "l.json"}}}
+			template.ResolvedAdapters = []templates.ConfigAdapterDefinition{adapter("game-windows", "windows"), adapter("game-linux", "linux")}
+			installer := &fakeInstaller{createExecutable: true, executable: map[string]string{"windows": "Server.exe", "linux": "Server.x86_64"}[host]}
+			serverService := servers.NewService(servers.NewStore(db), gameRuntime.NewNative())
+			service := NewWithOptions(db, &templateSource{template: template}, installer, serverService, data, Options{HostOS: host})
+			defer service.Close()
+			job, err := service.Start(context.Background(), Request{TemplateID: template.ID, ServerName: "Per Platform", DirectoryName: "per-platform", Values: map[string]string{"SERVER_PORT": "26910", "SERVER_NAME": "Per Platform"}, ActorUserID: "actor"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			job = waitTerminal(t, service, job.ID)
+			if job.Status != Completed || job.ServerID == "" {
+				t.Fatalf("job=%#v", job)
+			}
+			var ids []string
+			rows, err := db.Query(`SELECT adapter_id FROM server_config_adapters WHERE server_id=?`, job.ServerID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for rows.Next() {
+				var id string
+				_ = rows.Scan(&id)
+				ids = append(ids, id)
+			}
+			_ = rows.Close()
+			if len(ids) != 1 || ids[0] != "game-"+host {
+				t.Fatalf("registered adapters for %s = %v", host, ids)
+			}
+		})
+	}
+}
+
 func TestPalworldOfficialProvisioningSeedsAndAppliesEveryManagedValue(t *testing.T) {
 	db, data, _ := provisionFixture(t)
 	defer db.Close()

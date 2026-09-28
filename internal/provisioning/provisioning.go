@@ -1136,6 +1136,9 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 	configSnapshots := make([]servers.ProvisionedConfigAdapter, 0, len(template.ResolvedAdapters))
 	managedKeys := map[string]bool{}
 	for _, adapter := range template.ResolvedAdapters {
+		if !templates.AdapterAppliesTo(adapter, s.hostOS) {
+			continue
+		}
 		adapterValues := map[string]string{}
 		for _, field := range adapter.Fields {
 			if value, ok := values[field.Key]; ok {

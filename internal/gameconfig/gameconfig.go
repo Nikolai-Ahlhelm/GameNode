@@ -195,6 +195,9 @@ func ValidateDefinition(definition templates.ConfigAdapterDefinition) error {
 	if (definition.SchemaVersion != 1 && definition.SchemaVersion != templates.AdapterSchemaVersion) || definition.ID == "" || definition.Version == "" || len(definition.Fields) == 0 || len(definition.Fields) > 128 {
 		return ErrUnsafeTarget
 	}
+	if !templates.ValidAdapterPlatforms(definition.Platforms) {
+		return ErrInvalidValue
+	}
 	tupleFormat := definition.Format == sectionTupleFormat
 	if ManagedLaunch(definition) {
 		// A managed-launch adapter stores its values in GameNode and owns no

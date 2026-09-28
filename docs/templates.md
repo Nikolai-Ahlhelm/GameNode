@@ -108,6 +108,7 @@ Adapter schema v1 covers the compiled file formats. Adapter schema v2 adds `mana
 - `json-key-values` updates only approved top-level scalar properties in a bounded JSON object; it has no JSONPath, nested traversal, array, or expression support.
 - `ini-section-key-values` updates only approved scalar properties in one declared INI section and preserves other sections and unknown keys.
 - `section-tuple-key-values` updates approved typed key/value settings stored in one parenthesized container property inside one configured section, for example `[Server]` followed by `Settings=(Name="Test",Port=1234,Enabled=True)`.
+- `platforms` (optional, any adapter) restricts an adapter to `["windows"]`, `["linux"]`, or both. Provisioning registers only the adapters whose list is empty or contains the host OS, so a game whose config path differs per OS declares one adapter per platform. Unknown, duplicate, or more than two entries are rejected. RuneScape: Dragonwilds uses this for its `WindowsServer`/`LinuxServer` `DedicatedServer.ini`.
 - `managed-launch` stores typed values in GameNode and binds each one to a reviewed launch argument or environment entry. It declares no `target`, `section`, `container_property`, `initialization`, or `post_start_only`.
 
 ### Base launch and managed configuration
