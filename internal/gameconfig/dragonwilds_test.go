@@ -58,7 +58,13 @@ func TestDragonwildsAdaptersEditOnlyManagedKeysInGeneratedFile(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			text := string(data)
+			// Normalize line endings before comparing: on a checkout where
+			// git's autocrlf converts the LF-only fixture to CRLF (for
+			// example the CI Windows runner), Apply preserves each existing
+			// line's own ending, so the written file legitimately contains
+			// CRLF there. These assertions only care about content, not the
+			// checkout line ending.
+			text := strings.ReplaceAll(string(data), "\r\n", "\n")
 			for _, want := range []string{"OwnerId=0123456789abcdef0123456789abcdef\n", "ServerName=GameNode\n", "DefaultWorldName=Rune Valley\n", "AdminPassword=s3cret\n", "WorldPassword=\n", "ServerGuid=0123456789ABCDEF0123456789ABCDEF", "[SectionsToSave]\nbCanSaveAllSections=true"} {
 				if !strings.Contains(text, want) {
 					t.Fatalf("missing %q in:\n%s", want, text)
