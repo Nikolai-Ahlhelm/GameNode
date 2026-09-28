@@ -21,6 +21,26 @@ func TestDragonwildsRepositoryGolden(t *testing.T) {
 	if template.Configuration == nil || len(template.Configuration.Adapters) != 2 {
 		t.Fatalf("unexpected configuration: %#v", template.Configuration)
 	}
+	// Regression: 1.0.0/1.1.0 guessed "RSDragonwilds.exe" and a nested
+	// "RSDragonwilds/Binaries/Linux/..." path for Linux. Neither exists in
+	// the depot; Valve's own app manifest ("launch" section of
+	// `app_info_print 4019830`) declares these two root-level executables as
+	// the only supported entry points, and a real SteamCMD install only ever
+	// produced them.
+	windows, ok := template.PlatformLaunches["windows"]
+	if !ok || windows.Executable != "RSDragonwildsServer.exe" {
+		t.Fatalf("unexpected windows launch: %#v", windows)
+	}
+	linux, ok := template.PlatformLaunches["linux"]
+	if !ok || linux.Executable != "RSDragonwildsServer.sh" {
+		t.Fatalf("unexpected linux launch: %#v", linux)
+	}
+	expectedFiles := map[string]string{"windows": "RSDragonwildsServer.exe", "linux": "RSDragonwildsServer.sh"}
+	for _, file := range template.ExpectedFiles {
+		if want, ok := expectedFiles[file.Platform]; !ok || file.Path != want || !file.Required || !file.Executable {
+			t.Fatalf("unexpected expected_files entry: %#v", file)
+		}
+	}
 	targets := map[string]string{"windows": "RSDragonwilds/Saved/Config/WindowsServer/DedicatedServer.ini", "linux": "RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini"}
 	for _, reference := range template.Configuration.Adapters {
 		data, readErr := os.ReadFile(filepath.Join(directory, reference.File))
