@@ -5,6 +5,8 @@ import { compatibilityLabel, compatibilityTone, formatCapability, healthLabel, h
 import './tenants.css';
 import './nodes.css';
 import { RemoteServersPanel } from './remote-servers';
+import { RemoteNodeUpdate } from './updates';
+import { updatePermissions } from './update-helpers';
 import { RemoteTemplateDeploy } from './remote-provisioning';
 import { useCreatableTenants } from './tenants';
 
@@ -145,6 +147,7 @@ function NodeDetail({ initial, token, permissions, manage, onBack, onRemoved }: 
       <SectionHeader title="Capabilities" description="What this remote node reported it supports. A capability not listed here is not assumed available." />
       {listOrEmpty(node.capabilities).length === 0 ? <p className="hint">No capabilities reported yet.</p> : <ul className="capability-list">{listOrEmpty(node.capabilities).map(c => <li key={c}>{formatCapability(c)}</li>)}</ul>}
     </section>
+    {updatePermissions(permissions).view && <RemoteNodeUpdate nodeID={node.id} displayName={node.display_name} token={token} manage={manage && updatePermissions(permissions).manage} onRestarted={() => void api<{ remote_node: RemoteNode }>(`/remote-nodes/${initial.id}`).then(r => setNode(r.remote_node)).catch(() => undefined)} />}
     {manage && <section className="detail-card">
       <SectionHeader title="Manage" />
       <div className="form-grid">

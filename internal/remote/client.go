@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"gamenode/internal/provisioning"
+	"gamenode/internal/selfupdate"
 	"github.com/gorilla/websocket"
 )
 
@@ -116,24 +117,32 @@ func ValidateEndpoint(raw string) (string, error) {
 // caller may substitute an arbitrary URL or body.
 type Client struct {
 	http *http.Client
+	// slow shares http's transport, TLS verification, and redirect refusal but
+	// has a longer overall timeout. Only the self-update calls use it: the node
+	// legitimately spends longer than DefaultTimeout there (release lookup on
+	// GitHub, database backup before an install).
+	slow *http.Client
 }
 
+// SlowTimeout bounds the few operations that legitimately outlast
+// DefaultTimeout (see Client.slow).
+const SlowTimeout = 90 * time.Second
+
 func New() *Client {
-	return &Client{http: &http.Client{
-		Timeout: DefaultTimeout,
-		Transport: &http.Transport{
-			TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12}, // certificate verification stays on; see docs/adr/0006 - no InsecureSkipVerify.
-			MaxIdleConnsPerHost: 2,
-			IdleConnTimeout:     30 * time.Second,
-		},
-		// A Remote Node redirecting the client to a different origin would be
-		// an SSRF/credential-leak primitive (the Authorization header would
-		// otherwise follow it via Go's default client). Stop at the first
-		// response instead of ever re-issuing the request elsewhere.
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}}
+	transport := &http.Transport{
+		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12}, // certificate verification stays on; see docs/adr/0006 - no InsecureSkipVerify.
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     30 * time.Second,
+	}
+	// A Remote Node redirecting the client to a different origin would be an
+	// SSRF/credential-leak primitive (the Authorization header would otherwise
+	// follow it via Go's default client). Stop at the first response instead
+	// of ever re-issuing the request elsewhere.
+	noRedirect := func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+	return &Client{
+		http: &http.Client{Timeout: DefaultTimeout, Transport: transport, CheckRedirect: noRedirect},
+		slow: &http.Client{Timeout: SlowTimeout, Transport: transport, CheckRedirect: noRedirect},
+	}
 }
 
 type EnrollResult struct {
@@ -816,10 +825,14 @@ func classifyHTTPStatus(status int) *Error {
 // transport/status error. Ordinary remote-management calls continue to use
 // doRaw and its stricter status classification.
 func (c *Client) roundTrip(ctx context.Context, method, endpoint, requestPath, credential string, body io.Reader) (int, []byte, error) {
+	return c.roundTripWith(c.http, DefaultTimeout, ctx, method, endpoint, requestPath, credential, body)
+}
+
+func (c *Client) roundTripWith(client *http.Client, defaultTimeout time.Duration, ctx context.Context, method, endpoint, requestPath, credential string, body io.Reader) (int, []byte, error) {
 	reqCtx := ctx
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		reqCtx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		reqCtx, cancel = context.WithTimeout(ctx, defaultTimeout)
 		defer cancel()
 	}
 	req, err := http.NewRequestWithContext(reqCtx, method, endpoint+requestPath, body)
@@ -832,7 +845,7 @@ func (c *Client) roundTrip(ctx context.Context, method, endpoint, requestPath, c
 	if credential != "" {
 		req.Header.Set("Authorization", "Bearer "+credential)
 	}
-	resp, err := c.http.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, nil, &Error{Kind: KindUnreachable, Detail: classifyTransportError(err)}
 	}
@@ -859,4 +872,96 @@ func classifyTransportError(err error) string {
 		return "tls verification failed"
 	}
 	return "connection failed"
+}
+
+// --- Remote self-update ---
+//
+// These calls ask an enrolled node to check for, download, and install an
+// official GameNode release. The node always performs the release lookup,
+// download, verification, and safety checks itself against its own fixed
+// source (internal/selfupdate); nothing here can carry a binary, a URL, or a
+// checksum. The only caller-supplied value is the version string the
+// administrator saw on that node's own status, which the node re-validates.
+
+// UpdateError is the typed application error an update endpoint returns. Code
+// is one of internal/selfupdate's stable Code* values (or a generic API code);
+// Checks carries the safety-check results when the node refused because of
+// them.
+type UpdateError struct {
+	StatusCode int
+	Code       string
+	Message    string
+	Checks     []selfupdate.Check
+}
+
+func (e *UpdateError) Error() string { return e.Code + ": " + e.Message }
+
+type updateErrorBody struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+	Checks []selfupdate.Check `json:"checks"`
+}
+
+func (c *Client) GetUpdateStatus(ctx context.Context, endpoint, credential string) (selfupdate.Status, error) {
+	var out selfupdate.Status
+	err := c.doUpdate(ctx, http.MethodGet, endpoint, "/api/v1/node/update", credential, nil, &out)
+	return out, err
+}
+
+func (c *Client) CheckUpdate(ctx context.Context, endpoint, credential string) (selfupdate.Status, error) {
+	var out selfupdate.Status
+	err := c.doUpdate(ctx, http.MethodPost, endpoint, "/api/v1/node/update/check", credential, nil, &out)
+	return out, err
+}
+
+func (c *Client) PrepareUpdate(ctx context.Context, endpoint, credential, version string) (selfupdate.Status, error) {
+	return c.updateAction(ctx, endpoint, credential, "prepare", map[string]any{"version": version})
+}
+
+func (c *Client) ApplyUpdate(ctx context.Context, endpoint, credential, version string, acknowledgeWarnings bool) (selfupdate.Status, error) {
+	return c.updateAction(ctx, endpoint, credential, "apply", map[string]any{"version": version, "acknowledge_warnings": acknowledgeWarnings})
+}
+
+func (c *Client) CancelUpdate(ctx context.Context, endpoint, credential string) (selfupdate.Status, error) {
+	return c.updateAction(ctx, endpoint, credential, "cancel", map[string]any{})
+}
+
+func (c *Client) updateAction(ctx context.Context, endpoint, credential, action string, payload map[string]any) (selfupdate.Status, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return selfupdate.Status{}, &Error{Kind: KindMalformedResponse, Detail: "encode update request"}
+	}
+	var out selfupdate.Status
+	err = c.doUpdate(ctx, http.MethodPost, endpoint, "/api/v1/node/update/"+action, credential, bytes.NewReader(body), &out)
+	return out, err
+}
+
+func (c *Client) doUpdate(ctx context.Context, method, endpoint, requestPath, credential string, body io.Reader, out any) error {
+	status, data, err := c.roundTripWith(c.slow, SlowTimeout, ctx, method, endpoint, requestPath, credential, body)
+	if err != nil {
+		return err
+	}
+	switch {
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return &Error{Kind: KindAuthenticationFailed, Detail: fmt.Sprintf("status %d", status)}
+	case status == http.StatusUpgradeRequired || status == http.StatusPreconditionFailed:
+		return &Error{Kind: KindProtocolIncompatible, Detail: fmt.Sprintf("status %d", status)}
+	case status >= 300 && status < 400:
+		return &Error{Kind: KindMalformedResponse, Detail: fmt.Sprintf("unexpected redirect status %d", status)}
+	case status == http.StatusNotFound:
+		// A node built before self-update existed has no such endpoint.
+		return &Error{Kind: KindResourceNotFound, Detail: "status 404"}
+	case status >= 400:
+		var response updateErrorBody
+		if json.Unmarshal(data, &response) == nil && response.Error.Code != "" {
+			return &UpdateError{StatusCode: status, Code: response.Error.Code, Message: response.Error.Message, Checks: response.Checks}
+		}
+		return &Error{Kind: KindMalformedResponse, Detail: fmt.Sprintf("status %d", status)}
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return &Error{Kind: KindMalformedResponse, Detail: "invalid response body"}
+	}
+	return nil
 }

@@ -1,0 +1,37 @@
+/* GameNode self-update UI. Colors come only from the shared design tokens in
+   styles.css so dark/light themes need no per-page overrides. */
+.update-panel .notice{display:flex;align-items:flex-start;gap:9px;margin:14px 0 0}
+.update-panel .notice svg{width:16px;height:16px;flex:none;margin-top:2px}
+.update-panel .definition-list{margin-top:6px}
+.update-release{margin-top:18px;padding:16px 18px;border:1px solid color-mix(in srgb,var(--accent) 40%,var(--border));border-radius:var(--radius-md);background:var(--accent-soft)}
+.update-release__head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap}
+.update-release__head h3{margin:0;font-size:18px}
+.update-release__head a{font-size:12px;color:var(--accent-bright)}
+.update-release .hint{margin:8px 0 0}
+.update-notes{margin-top:12px}
+.update-notes summary{cursor:pointer;color:var(--text-secondary);font-size:12px;font-weight:650}
+.update-notes pre{margin-top:8px;max-height:280px;white-space:pre-wrap;overflow-wrap:anywhere}
+.update-checks-title{margin:22px 0 10px}
+.update-checks{display:grid;gap:8px;margin:0;padding:0;list-style:none}
+.update-check{display:grid;grid-template-columns:96px minmax(0,1fr);gap:14px;align-items:start;padding:11px 13px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-subtle)}
+.update-check strong{color:var(--text-primary);font-size:13px}
+.update-check p{margin:3px 0 0;color:var(--text-muted);font-size:12px;line-height:1.5}
+.update-check--block{border-color:color-mix(in srgb,var(--danger) 45%,var(--border))}
+.update-check--warn{border-color:color-mix(in srgb,var(--warning) 45%,var(--border))}
+.update-progress{margin-top:16px;display:grid;gap:6px}
+.update-progress__bar{height:8px;border-radius:999px;background:var(--surface-selected);overflow:hidden}
+.update-progress__bar span{display:block;height:100%;border-radius:999px;background:var(--accent);transition:width var(--duration-normal) ease}
+.update-progress__bar span.indeterminate{animation:update-indeterminate 1.4s ease-in-out infinite}
+@keyframes update-indeterminate{0%{margin-left:-20%}100%{margin-left:105%}}
+@media(prefers-reduced-motion:reduce){.update-progress__bar span.indeterminate{animation:none;margin-left:0}}
+.update-progress small{color:var(--text-muted)}
+.update-ack{flex:1 1 100%;font-weight:550}
+.update-autocheck{margin-top:16px;align-items:flex-start!important}
+.update-autocheck>span{display:grid;gap:3px}
+.update-autocheck small{font-weight:450}
+.update-banner{display:flex;align-items:center;gap:14px;margin:0 0 20px;padding:13px 16px;border:1px solid color-mix(in srgb,var(--accent) 45%,var(--border));border-radius:var(--radius-md);background:var(--accent-soft);color:var(--text-primary)}
+.update-banner>svg{width:20px;height:20px;flex:none;color:var(--accent-bright)}
+.update-banner>div:nth-of-type(1){display:grid;gap:2px;min-width:0;flex:1}
+.update-banner span{color:var(--text-secondary);font-size:12px}
+.update-banner__actions{display:flex;gap:8px;flex-wrap:wrap}
+@media(max-width:640px){.update-check{grid-template-columns:1fr;gap:8px}.update-banner{flex-wrap:wrap}}

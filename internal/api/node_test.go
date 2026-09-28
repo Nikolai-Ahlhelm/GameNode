@@ -20,6 +20,7 @@ import (
 	"gamenode/internal/rbac"
 	"gamenode/internal/remote"
 	"gamenode/internal/runtime"
+	"gamenode/internal/selfupdate"
 	"gamenode/internal/servers"
 )
 
@@ -75,6 +76,10 @@ type fakeRemoteClient struct {
 	startCalls        int
 	getCalls          int
 	cancelCalls       int
+	selfUpdateStatus  selfupdate.Status
+	selfUpdateErr     error
+	updateCalls       []string
+	lastUpdateAck     bool
 }
 
 func (f *fakeRemoteClient) Enroll(ctx context.Context, endpoint, pairingToken string) (remote.EnrollResult, error) {
@@ -442,4 +447,28 @@ func TestRemoteNodeEnrollmentSurfacesRemoteAuthFailure(t *testing.T) {
 	if body2.Error.Code != string(remote.KindAuthenticationFailed) {
 		t.Fatalf("expected controlled error code, got %q", body2.Error.Code)
 	}
+}
+
+// Remote self-update fake. selfUpdateStatus is returned by every call; the
+// recorded fields let tests assert exactly what a controller forwarded.
+func (f *fakeRemoteClient) GetUpdateStatus(ctx context.Context, endpoint, credential string) (selfupdate.Status, error) {
+	f.updateCalls = append(f.updateCalls, "status")
+	return f.selfUpdateStatus, f.selfUpdateErr
+}
+func (f *fakeRemoteClient) CheckUpdate(ctx context.Context, endpoint, credential string) (selfupdate.Status, error) {
+	f.updateCalls = append(f.updateCalls, "check")
+	return f.selfUpdateStatus, f.selfUpdateErr
+}
+func (f *fakeRemoteClient) PrepareUpdate(ctx context.Context, endpoint, credential, version string) (selfupdate.Status, error) {
+	f.updateCalls = append(f.updateCalls, "prepare:"+version)
+	return f.selfUpdateStatus, f.selfUpdateErr
+}
+func (f *fakeRemoteClient) ApplyUpdate(ctx context.Context, endpoint, credential, version string, acknowledgeWarnings bool) (selfupdate.Status, error) {
+	f.updateCalls = append(f.updateCalls, "apply:"+version)
+	f.lastUpdateAck = acknowledgeWarnings
+	return f.selfUpdateStatus, f.selfUpdateErr
+}
+func (f *fakeRemoteClient) CancelUpdate(ctx context.Context, endpoint, credential string) (selfupdate.Status, error) {
+	f.updateCalls = append(f.updateCalls, "cancel")
+	return f.selfUpdateStatus, f.selfUpdateErr
 }

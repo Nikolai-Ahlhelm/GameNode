@@ -32,6 +32,7 @@ import (
 	"gamenode/internal/provisioning"
 	"gamenode/internal/runtime"
 	"gamenode/internal/scheduler"
+	"gamenode/internal/selfupdate"
 	"gamenode/internal/servers"
 	"gamenode/internal/serverupdates"
 	"gamenode/internal/settings"
@@ -51,9 +52,33 @@ func main() {
 	if code, ok := runtime.RunConsoleSignalHelper(); ok {
 		os.Exit(code)
 	}
+	// run returns only after every deferred cleanup (database, FTP, scheduler,
+	// jobs) has completed. A self-update restart is handed over here, never
+	// from inside run, so the new process never competes for the database or
+	// listeners with a process that is still shutting down.
+	if relaunch := run(); relaunch != nil {
+		if err := relaunch(); err != nil {
+			fmt.Fprintln(os.Stderr, "restart after update failed:", err)
+			os.Exit(1)
+		}
+	}
+}
+
+// run starts GameNode and blocks until it stops. It returns a non-nil hook only
+// when the process must hand over to another binary (a completed self-update,
+// or a rollback to the previous binary); main invokes it after run's deferred
+// cleanup has completed.
+func run() func() error {
 	configPath := flag.String("config", "", "Path to YAML configuration (defaults to config.yaml beside the executable)")
 	devMode := flag.Bool("dev", false, "Enable local development conveniences, including the fixed dev/dev administrator")
+	showVersion := flag.Bool("version", false, "Print the GameNode version and exit")
 	flag.Parse()
+	if *showVersion {
+		// The exact "gamenode <version>" line is the contract internal/selfupdate
+		// uses to self-test a downloaded binary before installing it.
+		fmt.Printf("gamenode %s\n", diagnostics.Version)
+		return nil
+	}
 	path := *configPath
 	if path == "" {
 		executable, pathErr := os.Executable()
@@ -79,6 +104,26 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("application initialization started", "module", "Application", "version", diagnostics.Version, "platform", goRuntime.GOOS)
+	// Self-update (docs/adr/0013-self-update.md). The updater exists before the
+	// database is opened so Boot can restore the previous binary when a freshly
+	// installed one has repeatedly failed to become healthy. Callbacks that need
+	// later services are attached with Bind once those exist.
+	updater, err := selfupdate.New(selfupdate.Options{
+		DataDirectory:  cfg.Data.Directory,
+		DatabasePath:   cfg.Database.Path,
+		CurrentVersion: diagnostics.Version,
+		Source:         selfupdate.NewGitHubSource(diagnostics.Version),
+		RestartMode:    cfg.Update.RestartMode,
+		Args:           os.Args[1:],
+		Log:            logging.WithCategory(log, logging.CategoryGeneral),
+	})
+	if err != nil {
+		log.Error("self-update initialization failed", "module", "SelfUpdate", "error", err.Error())
+		os.Exit(1)
+	}
+	if boot := updater.Boot(); boot.Relaunch {
+		return updater.Relaunch
+	}
 	log.Info("opening database", "module", "Database", "category", logging.CategoryDatabase)
 	db, err := database.Open(cfg.Database.Path)
 	if err != nil {
@@ -246,6 +291,36 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("server update recovery completed", "module", "ServerUpdates.Recovery", "category", logging.CategoryProvisioning)
+	updater.Bind(func(ctx context.Context) (selfupdate.Activity, error) {
+		records, listErr := serverService.List(ctx)
+		if listErr != nil {
+			return selfupdate.Activity{}, listErr
+		}
+		activity := selfupdate.Activity{ProvisioningJobs: provisioner.ActiveCount(), ServerUpdateJobs: serverUpdater.ActiveCount()}
+		for _, record := range records {
+			switch record.Runtime.CurrentState {
+			case servers.StateRunning:
+				activity.RunningServers++
+			case servers.StateStarting, servers.StateStopping:
+				activity.TransitionalServers++
+			}
+		}
+		return activity, nil
+	}, func(ctx context.Context) error {
+		var result string
+		if checkErr := db.QueryRowContext(ctx, "PRAGMA quick_check(1)").Scan(&result); checkErr != nil {
+			return checkErr
+		}
+		if result != "ok" {
+			return fmt.Errorf("database quick check failed")
+		}
+		return nil
+	}, func(ctx context.Context, target string) error {
+		// VACUUM INTO writes a consistent copy of the live database and refuses
+		// to overwrite an existing file.
+		_, backupErr := db.ExecContext(ctx, "VACUUM INTO ?", target)
+		return backupErr
+	})
 	restartScheduleStore := scheduler.NewStore(db)
 	restartScheduler := scheduler.New(restartScheduleStore, serverService, scheduler.Options{Audit: audit.New(db), Log: logging.WithCategory(log, logging.CategoryGeneral)})
 	if err = restartScheduler.Start(context.Background()); err != nil {
@@ -253,7 +328,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer restartScheduler.Stop()
-	apiServer := api.New(auth.New(db), serverService, log, secureCookie, api.Options{TrustLocalProxy: cfg.Server.TrustLocalProxy, Filesystem: files, DataDirectory: cfg.Data.Directory, FTP: ftpService, Settings: settingService, Diagnostics: diagnosticService, Templates: templateService, Provisioning: provisioner, ServerUpdates: serverUpdater, StatusHistory: statusHistory, GameConfig: gameConfigService, Logs: logManager, SetupConfig: configFile, SteamCMD: steamManager, RestartSchedules: restartScheduleStore, RestartScheduler: restartScheduler, EmailAlerts: emailAlerts, EmailVerification: emailVerification})
+	apiServer := api.New(auth.New(db), serverService, log, secureCookie, api.Options{TrustLocalProxy: cfg.Server.TrustLocalProxy, Filesystem: files, DataDirectory: cfg.Data.Directory, FTP: ftpService, Settings: settingService, Diagnostics: diagnosticService, Templates: templateService, Provisioning: provisioner, ServerUpdates: serverUpdater, StatusHistory: statusHistory, GameConfig: gameConfigService, Logs: logManager, SetupConfig: configFile, SteamCMD: steamManager, RestartSchedules: restartScheduleStore, RestartScheduler: restartScheduler, EmailAlerts: emailAlerts, EmailVerification: emailVerification, Updater: updater})
 	// Remote Node Foundation (v0.5A): a bounded, periodic status refresh for
 	// this installation's own remote node registry. It never blocks startup
 	// and is stopped cleanly on shutdown; see internal/api/node_refresh.go.
@@ -262,6 +337,28 @@ func main() {
 	handler := apiServer.Handler(static)
 	server := &http.Server{Addr: cfg.Server.Listen, Handler: handler, ReadHeaderTimeout: 0, ReadTimeout: 15e9, WriteTimeout: 15e9, IdleTimeout: 60e9}
 	log.Info("GameNode starting", "listen", cfg.Server.Listen, "tls", transportTLS, "trust_local_proxy", cfg.Server.TrustLocalProxy)
+	// Self-update lifecycle. Confirm reports a rollback that just happened and
+	// starts the health-confirmation timer for a freshly installed binary; the
+	// timer only fires if this process is still serving when it elapses.
+	updater.Confirm(apiServer.RecordUpdateOutcome)
+	updateContext, stopUpdateWatch := context.WithCancel(context.Background())
+	defer stopUpdateWatch()
+	go updater.RunAutoCheck(updateContext, func() bool {
+		values, getErr := settingService.Get(updateContext)
+		return getErr == nil && values.Updates.AutoCheck
+	}, 2*time.Minute, 12*time.Hour)
+	go func() {
+		select {
+		case <-updater.RestartRequested():
+			log.Info("shutting down to complete a self-update", "module", "SelfUpdate", "restart_mode", updater.RestartMode())
+			shutdownContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if shutdownErr := server.Shutdown(shutdownContext); shutdownErr != nil {
+				log.Warn("graceful shutdown for self-update was incomplete", "module", "SelfUpdate", "error", shutdownErr.Error())
+			}
+		case <-updateContext.Done():
+		}
+	}()
 	if transportTLS {
 		err = server.ListenAndServeTLS(cfg.Server.TLSCert, cfg.Server.TLSKey)
 	} else {
@@ -271,6 +368,12 @@ func main() {
 		log.Error("server stopped", "error", err.Error())
 		os.Exit(1)
 	}
+	if updater.RestartPending() {
+		// Deferred cleanup (database, FTP, scheduler, jobs) runs as run returns;
+		// main then performs the restart.
+		return updater.Relaunch
+	}
+	return nil
 }
 func spaHandler(assets fs.FS) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -77,3 +77,29 @@ func TestFileSetStoragePersistsAbsolutePaths(t *testing.T) {
 		t.Fatal("relative data directory accepted")
 	}
 }
+
+func TestUpdateRestartModeDefaultsAndValidates(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, extra string) string {
+		path := filepath.Join(dir, name)
+		contents := "server:\n  listen: 127.0.0.1:9443\ndatabase:\n  path: ./custom.db\n" + extra
+		if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	// An existing configuration without an update section keeps working.
+	loaded, err := Load(write("legacy.yaml", ""))
+	if err != nil || loaded.Update.RestartMode != "self" {
+		t.Fatalf("legacy config: %+v %v", loaded.Update, err)
+	}
+	loaded, err = Load(write("exit.yaml", "update:\n  restart_mode: exit\n"))
+	if err != nil || loaded.Update.RestartMode != "exit" {
+		t.Fatalf("exit mode: %+v %v", loaded.Update, err)
+	}
+	for _, bad := range []string{"restart", "", "shell", "SELF"} {
+		if _, err := Load(write("bad.yaml", "update:\n  restart_mode: \""+bad+"\"\n")); err == nil {
+			t.Errorf("restart_mode %q must be rejected", bad)
+		}
+	}
+}

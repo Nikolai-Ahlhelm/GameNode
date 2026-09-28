@@ -117,10 +117,10 @@ type ConfigAdapterDefinition struct {
 	// Platforms optionally restricts the adapter to specific host platforms
 	// ("windows", "linux") for games whose file layout differs per OS. An
 	// empty list applies everywhere.
-	Platforms       []string `json:"platforms,omitempty"`
-	RestartRequired bool     `json:"restart_required"`
-	PostStartOnly     bool                         `json:"post_start_only,omitempty"`
-	Fields            []ConfigAdapterField         `json:"fields"`
+	Platforms       []string             `json:"platforms,omitempty"`
+	RestartRequired bool                 `json:"restart_required"`
+	PostStartOnly   bool                 `json:"post_start_only,omitempty"`
+	Fields          []ConfigAdapterField `json:"fields"`
 }
 
 type ConfigAdapterInitialization struct {

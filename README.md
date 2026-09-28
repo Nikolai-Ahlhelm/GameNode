@@ -175,6 +175,20 @@ To publish an official release, push a semantic version tag such as `v0.1.0`. Th
 
 Release binaries expose the tag in Diagnostics and also include the build commit and UTC build time. Verify the SHA-256 checksums after downloading an asset. See [CI](docs/ci.md) for the exact job structure and release semantics.
 
+## Updating GameNode
+
+GameNode can update itself from these official releases. Nothing is ever installed without an administrator's action.
+
+- **Where:** *Settings > Updates* (users with `Update.View` also see a dashboard banner when a newer release exists; administrators have every permission). *Check for updates* asks GitHub for the latest published release; *Download and verify* fetches it; *Install and restart* replaces the running binary. Downloading and installing need `Update.Manage`. Automatic checking (about twice a day, first check shortly after start) can be switched off under the same tab with `Settings.Manage`; it only asks whether a newer release exists.
+- **What is verified before anything is replaced:** the release is fetched only from this project's GitHub releases (no configurable source); its SHA-256 must match `SHA256SUMS.txt`; the file must be an executable for this OS/CPU; and it must start and report the expected version (`gamenode --version`). Downgrades are never offered and development builds cannot update themselves.
+- **Safety checks** run before the download and again immediately before installing: a supported platform, a writable installation directory, enough disk space for the download and a database backup, no provisioning or server-update job running, no server starting or stopping, and a healthy database. These block the update. Running servers and a supervisor-restart configuration are *warnings* that you must acknowledge: your servers keep running through the restart, but live consoles of native servers detach (see [docs/runtime.md](docs/runtime.md)).
+- **Recovery:** the database is backed up under `<data>/updates/backups/` (newest three kept) and the previous binary is kept as `<name>.previous`. If the new version does not become healthy (60 seconds of continuous serving), the third unconfirmed start restores the previous binary automatically. The failed binary is kept as `<name>.failed`. A rollback restores the binary, not the database.
+- **Remote nodes:** on a node's detail page, *Software update* shows that node's own status and safety checks and lets you download and install on it. The node fetches and verifies the release itself; the controller only asks it to proceed. Requires `Node.View`/`Update.View` to read and `Node.Manage`/`Update.Manage` to change. Nodes advertise the `self_update` capability; older nodes must be updated by hand once.
+- **Restart behavior:** by default GameNode restarts itself (in place on Linux, via a detached successor on Windows). If you run it under a supervisor such as systemd, set `update.restart_mode: exit` in `config.yaml` and use `Restart=always`.
+- **First time:** self-update needs the *target* release to support `--version`, so an installation that predates this feature must be updated to the first release containing it manually, once.
+
+See [ADR 0013](docs/adr/0013-self-update.md) for the design, threat model, and known limitations (notably: the checksum defends against corruption and tampering in transit, not against a compromised GitHub release; detached signatures are the recommended follow-up).
+
 ## Documentation
 
 - [Architecture](docs/architecture.md)

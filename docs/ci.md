@@ -47,6 +47,8 @@ git push origin v0.1.0
 ```
 
 After downloading a release asset, verify it against `SHA256SUMS.txt` with the platform's SHA-256 tool before deployment.
+
+**Contract with self-update.** Installed GameNode nodes update themselves by downloading exactly these asset names (`gamenode-windows-amd64.exe`, `gamenode-linux-amd64`, `SHA256SUMS.txt`) from the release of a tag matching `vMAJOR.MINOR.PATCH[-pre]`, and require the binary to report the tag through `gamenode --version` (the `diagnostics.Version` ldflag). Renaming or dropping an asset, or publishing without the version ldflag, silently stops updates for every node; `TestReleaseWorkflowPublishesTheAssetsTheUpdaterDownloads` guards this. See ADR 0013.
 # Container runtime checks
 
 CI validates the Engine boundary with deterministic fakes. It does not claim a

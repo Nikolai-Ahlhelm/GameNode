@@ -1,6 +1,7 @@
 package gameconfig
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -33,6 +34,13 @@ func TestDragonwildsAdaptersEditOnlyManagedKeysInGeneratedFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// transformINISection deliberately preserves each line's own CRLF/LF
+	// terminator (real Unreal Engine .ini files are commonly CRLF on Windows
+	// servers), so which terminator this checked-out fixture has must not
+	// change what this test asserts. Normalize it to LF here so the test is
+	// deterministic regardless of the checkout platform's line-ending
+	// handling, independent of the adapter/parser behavior under test.
+	fixture = bytes.ReplaceAll(fixture, []byte("\r\n"), []byte("\n"))
 	for platform, folder := range map[string]string{"windows": "WindowsServer", "linux": "LinuxServer"} {
 		t.Run(platform, func(t *testing.T) {
 			definition := dragonwildsAdapter(t, platform)

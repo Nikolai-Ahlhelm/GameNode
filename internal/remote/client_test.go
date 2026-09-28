@@ -3,6 +3,7 @@ package remote_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -307,3 +308,96 @@ func asRemoteError(err error, target **remote.Error) bool {
 	}
 	return false
 }
+
+func TestUpdateCallsUseFixedPathsAndTypedErrors(t *testing.T) {
+	var paths []string
+	var bodies []string
+	var auth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		auth = r.Header.Get("Authorization")
+		data, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(data))
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/apply") && strings.Contains(string(data), "blocked"):
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":{"code":"preflight_blocked","message":"node text"},"checks":[{"id":"active_jobs","label":"Jobs","status":"block","message":"1 job running"}]}`))
+		case strings.HasSuffix(r.URL.Path, "/cancel"):
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			_, _ = w.Write([]byte(`{"current_version":"1.0.0","state":"idle","update_available":true,"checks":[]}`))
+		}
+	}))
+	defer server.Close()
+	client := remote.New()
+	ctx := context.Background()
+
+	status, err := client.GetUpdateStatus(ctx, server.URL, "machine-secret")
+	if err != nil || status.CurrentVersion != "1.0.0" || !status.UpdateAvailable {
+		t.Fatalf("status: %+v %v", status, err)
+	}
+	if auth != "Bearer machine-secret" {
+		t.Fatalf("machine credential not sent: %q", auth)
+	}
+	if _, err = client.CheckUpdate(ctx, server.URL, "c"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.PrepareUpdate(ctx, server.URL, "c", "2.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.ApplyUpdate(ctx, server.URL, "c", "2.0.0", true); err != nil {
+		t.Fatal(err)
+	}
+	wantPaths := []string{"GET /api/v1/node/update", "POST /api/v1/node/update/check", "POST /api/v1/node/update/prepare", "POST /api/v1/node/update/apply"}
+	if strings.Join(paths, "|") != strings.Join(wantPaths, "|") {
+		t.Fatalf("paths %v", paths)
+	}
+	if bodies[2] != `{"version":"2.0.0"}` || bodies[3] != `{"acknowledge_warnings":true,"version":"2.0.0"}` {
+		t.Fatalf("request bodies carry only a version (and the acknowledgement): %v", bodies)
+	}
+
+	// A refusal becomes a typed error carrying the node's checks.
+	_, err = client.ApplyUpdate(ctx, server.URL, "c", "blocked", false)
+	var updateErr *remote.UpdateError
+	if !errorsAs(err, &updateErr) || updateErr.Code != "preflight_blocked" || updateErr.StatusCode != 409 || len(updateErr.Checks) != 1 || updateErr.Checks[0].ID != "active_jobs" {
+		t.Fatalf("typed error: %v", err)
+	}
+	// A node built before self-update has no endpoint: a distinct, controlled kind.
+	_, err = client.CancelUpdate(ctx, server.URL, "c")
+	var remoteErr *remote.Error
+	if !errorsAs(err, &remoteErr) || remoteErr.Kind != remote.KindResourceNotFound {
+		t.Fatalf("404 must map to node_resource_not_found: %v", err)
+	}
+}
+
+func TestUpdateCallsRefuseRedirectsAndBadCredentials(t *testing.T) {
+	var followed bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { followed = true }))
+	defer target.Close()
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/steal", http.StatusFound)
+	}))
+	defer redirecting.Close()
+	_, err := remote.New().GetUpdateStatus(context.Background(), redirecting.URL, "secret")
+	var remoteErr *remote.Error
+	if !errorsAs(err, &remoteErr) || remoteErr.Kind != remote.KindMalformedResponse {
+		t.Fatalf("redirect must be refused: %v", err)
+	}
+	if followed {
+		t.Fatal("the client followed a redirect and would have forwarded the credential")
+	}
+	unauthorized := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) }))
+	defer unauthorized.Close()
+	_, err = remote.New().ApplyUpdate(context.Background(), unauthorized.URL, "bad", "2.0.0", false)
+	if !errorsAs(err, &remoteErr) || remoteErr.Kind != remote.KindAuthenticationFailed {
+		t.Fatalf("401: %v", err)
+	}
+	garbage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("<html>")) }))
+	defer garbage.Close()
+	_, err = remote.New().GetUpdateStatus(context.Background(), garbage.URL, "c")
+	if !errorsAs(err, &remoteErr) || remoteErr.Kind != remote.KindMalformedResponse {
+		t.Fatalf("garbage body: %v", err)
+	}
+}
+
+func errorsAs[T any](err error, target *T) bool { return errors.As(err, target) }

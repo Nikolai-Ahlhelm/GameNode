@@ -1778,3 +1778,13 @@ func parseTime(value sql.NullString) *time.Time {
 	}
 	return &parsed
 }
+
+// ActiveCount reports how many provisioning jobs are currently executing in
+// this process. It exists so process-level operations that would interrupt a
+// job (such as a GameNode self-update restart) can refuse to start; it grants
+// no control over the jobs themselves.
+func (s *Service) ActiveCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.active)
+}

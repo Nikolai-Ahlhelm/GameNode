@@ -67,6 +67,12 @@ host/container ports, resource limits, and compiled configuration operations. At
 start, only declared variables and the fixed `/home/container` `SERVER_ROOT` value
 expand the startup template. The host environment, live catalog, generic regex/eval
 configuration, and arbitrary Engine flags are never consulted.
+# GameNode self-update and running servers
+
+Installing a GameNode update (docs/adr/0013-self-update.md) restarts the GameNode process, and from a game server's point of view that is an ordinary GameNode restart described above: managed processes are not terminated, are rediscovered by verified PID plus start identity, and come back with their console detached. Update preflight therefore treats running servers as an acknowledgeable warning, and blocks while a server is starting or stopping or while a provisioning or manual server-update job is running.
+
+Shutdown for an update is graceful (`http.Server.Shutdown`, then every deferred cleanup) and the hand-over to the new binary happens only after that cleanup. On Linux the process image is replaced in place (`syscall.Exec`, same PID). On Windows a detached successor is started; managed game processes are not tied to GameNode's lifetime, so this does not affect them. Instances that share a console with an interactive terminal write to the normal log files after an update.
+
 # Scheduled restart lifecycle
 
 Scheduled restarts are local configuration, not a second runtime. At startup
