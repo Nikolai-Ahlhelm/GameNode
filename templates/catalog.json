@@ -33,6 +33,20 @@
       "minimum_gamenode_version": "0.2.0"
     },
     {
+      "id": "minecraft-java",
+      "name": "Minecraft Java Edition",
+      "description": "Install a Minecraft Java Edition server - vanilla, NeoForge, Forge, or Fabric - at an exact Minecraft and loader version, then manage its mods.",
+      "category": "minecraft",
+      "version": "1.1.0",
+      "template_schema_version": 2,
+      "platforms": ["windows", "linux"],
+      "installer": "minecraft",
+      "file": "minecraft/java/template.json",
+      "tags": ["minecraft", "java", "mods", "vanilla", "neoforge", "forge", "fabric"],
+      "icon": "minecraft",
+      "minimum_gamenode_version": "0.2.0"
+    },
+    {
       "id": "minecraft-neoforge",
       "name": "Minecraft NeoForge",
       "description": "Adopt an existing NeoForge server and run its generated Java argument files without a shell.",

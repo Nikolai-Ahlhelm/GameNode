@@ -1,0 +1,1228 @@
+{
+  "schema_version": 2,
+  "id": "minecraft-java",
+  "name": "Minecraft Java Edition",
+  "description": "Install a Minecraft Java Edition server - vanilla, NeoForge, Forge, or Fabric - at an exact Minecraft and loader version, then manage its mods.",
+  "version": "1.1.0",
+  "category": "minecraft",
+  "minimum_gamenode_version": "0.2.0",
+  "known_limitations": [
+    "Java must be installed through JAVA_HOME or PATH and match the Minecraft version (Java 21 for 1.20.5-1.21.x, Java 25 for 26.x).",
+    "Forge is offered for Minecraft 1.17 and newer; NeoForge for 1.20.2 and newer.",
+    "Forge, NeoForge and Fabric download their own libraries during installation or first start.",
+    "The Minecraft EULA is accepted only if the operator ticks the EULA option when creating the server.",
+    "Some server.properties keys exist only in newer Minecraft versions; GameNode writes all managed keys and Minecraft ignores unknown ones."
+  ],
+  "icon": "minecraft",
+  "source_type": "official",
+  "source_identifier": "minecraft-java",
+  "source_format_version": "2",
+  "tags": [
+    "minecraft",
+    "java",
+    "mods",
+    "vanilla",
+    "neoforge",
+    "forge",
+    "fabric"
+  ],
+  "source_metadata": {
+    "author": "GameNode",
+    "tags": [
+      "minecraft",
+      "java",
+      "mods",
+      "vanilla",
+      "neoforge",
+      "forge",
+      "fabric"
+    ]
+  },
+  "installer": {
+    "type": "minecraft"
+  },
+  "launch": {
+    "executable": "java",
+    "arguments": [],
+    "working_root": "server_root",
+    "stop_command": "stop",
+    "stop_method": "stdin_command",
+    "stop_timeout_seconds": 60,
+    "resolver": "minecraft"
+  },
+  "variables": [
+    {
+      "name": "Server type",
+      "description": "Vanilla, NeoForge, Forge, or Fabric",
+      "key": "LOADER",
+      "default_value": "vanilla",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "enum",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "allowed": [
+          "vanilla",
+          "neoforge",
+          "forge",
+          "fabric"
+        ]
+      },
+      "group": "Minecraft"
+    },
+    {
+      "name": "Minecraft version",
+      "description": "Exact release version, for example 1.21.1",
+      "key": "MINECRAFT_VERSION",
+      "default_value": "1.21.1",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min_length": 3,
+        "max_length": 16
+      },
+      "group": "Minecraft"
+    },
+    {
+      "name": "Loader version",
+      "description": "Exact NeoForge, Forge or Fabric build; leave empty for vanilla",
+      "key": "LOADER_VERSION",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": false,
+      "nullable": true,
+      "validation": {
+        "max_length": 64
+      },
+      "group": "Minecraft"
+    },
+    {
+      "name": "Server port",
+      "description": "TCP port players connect to",
+      "key": "SERVER_PORT",
+      "default_value": "25565",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1024,
+        "max": 65535
+      },
+      "group": "Network"
+    },
+    {
+      "name": "Minimum memory",
+      "description": "Initial Java heap in MiB",
+      "key": "MIN_MEMORY_MB",
+      "default_value": "1024",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 256,
+        "max": 262144
+      },
+      "group": "Java"
+    },
+    {
+      "name": "Maximum memory",
+      "description": "Maximum Java heap in MiB",
+      "key": "MAX_MEMORY_MB",
+      "default_value": "4096",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 512,
+        "max": 262144
+      },
+      "group": "Java"
+    },
+    {
+      "name": "Disable graphical console",
+      "description": "Pass nogui to the Minecraft server",
+      "key": "NOGUI",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Java",
+      "advanced": true
+    },
+    {
+      "name": "Message of the day",
+      "description": "Text shown in the multiplayer server list.",
+      "key": "MC_MOTD",
+      "default_value": "A Minecraft Server",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "max_length": 256
+      },
+      "group": "Network"
+    },
+    {
+      "name": "Bind address",
+      "description": "Network interface to bind. Leave empty to listen on all interfaces.",
+      "key": "MC_SERVER_IP",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": false,
+      "nullable": true,
+      "validation": {
+        "max_length": 64
+      },
+      "group": "Network",
+      "advanced": true
+    },
+    {
+      "name": "Maximum players",
+      "description": "Number of players that can be online at once.",
+      "key": "MC_MAX_PLAYERS",
+      "default_value": "20",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1,
+        "max": 2147483647
+      },
+      "group": "Players & access"
+    },
+    {
+      "name": "Online mode",
+      "description": "Verify players against Mojang accounts. Disable only behind a trusted proxy.",
+      "key": "MC_ONLINE_MODE",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Players & access"
+    },
+    {
+      "name": "Whitelist",
+      "description": "Only whitelisted players can join.",
+      "key": "MC_WHITE_LIST",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Players & access"
+    },
+    {
+      "name": "Enforce whitelist",
+      "description": "Kick non-whitelisted players when the whitelist is reloaded.",
+      "key": "MC_ENFORCE_WHITELIST",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Players & access",
+      "advanced": true
+    },
+    {
+      "name": "Enforce secure profile",
+      "description": "Require chat messages to carry a Mojang-signed public key.",
+      "key": "MC_ENFORCE_SECURE_PROFILE",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Players & access",
+      "advanced": true
+    },
+    {
+      "name": "Operator permission level",
+      "description": "Default permission level for operators (0-4).",
+      "key": "MC_OP_PERMISSION_LEVEL",
+      "default_value": "4",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 0,
+        "max": 4
+      },
+      "group": "Players & access",
+      "advanced": true
+    },
+    {
+      "name": "Function permission level",
+      "description": "Permission level for datapack functions.",
+      "key": "MC_FUNCTION_PERMISSION_LEVEL",
+      "default_value": "2",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1,
+        "max": 4
+      },
+      "group": "Players & access",
+      "advanced": true
+    },
+    {
+      "name": "Idle timeout (minutes)",
+      "description": "Kick idle players after this many minutes. 0 disables.",
+      "key": "MC_PLAYER_IDLE_TIMEOUT",
+      "default_value": "0",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 0,
+        "max": 2147483647
+      },
+      "group": "Players & access",
+      "advanced": true
+    },
+    {
+      "name": "Hide online players",
+      "description": "Hide the player list from server status queries.",
+      "key": "MC_HIDE_ONLINE_PLAYERS",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Players & access",
+      "advanced": true
+    },
+    {
+      "name": "Prevent proxy connections",
+      "description": "Kick players whose ISP/AS differs from the Mojang authentication server.",
+      "key": "MC_PREVENT_PROXY",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Players & access",
+      "advanced": true
+    },
+    {
+      "name": "Log player IPs",
+      "description": "Write player IP addresses to the server log.",
+      "key": "MC_LOG_IPS",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Players & access",
+      "advanced": true
+    },
+    {
+      "name": "Accept transfers",
+      "description": "Accept players transferred from other servers (Minecraft 1.20.5+).",
+      "key": "MC_ACCEPTS_TRANSFERS",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Players & access",
+      "advanced": true
+    },
+    {
+      "name": "Difficulty",
+      "description": "World difficulty.",
+      "key": "MC_DIFFICULTY",
+      "default_value": "easy",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "enum",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "allowed": [
+          "peaceful",
+          "easy",
+          "normal",
+          "hard"
+        ]
+      },
+      "group": "Gameplay"
+    },
+    {
+      "name": "Default game mode",
+      "description": "Game mode for new players.",
+      "key": "MC_GAMEMODE",
+      "default_value": "survival",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "enum",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "allowed": [
+          "survival",
+          "creative",
+          "adventure",
+          "spectator"
+        ]
+      },
+      "group": "Gameplay"
+    },
+    {
+      "name": "Force game mode",
+      "description": "Reset players to the default game mode on join.",
+      "key": "MC_FORCE_GAMEMODE",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Gameplay",
+      "advanced": true
+    },
+    {
+      "name": "Hardcore",
+      "description": "Players are banned on death. Applies to new worlds.",
+      "key": "MC_HARDCORE",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Gameplay"
+    },
+    {
+      "name": "PvP",
+      "description": "Allow players to damage each other.",
+      "key": "MC_PVP",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Gameplay"
+    },
+    {
+      "name": "Allow flight",
+      "description": "Allow flying in survival (needed by some mods).",
+      "key": "MC_ALLOW_FLIGHT",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Gameplay",
+      "advanced": true
+    },
+    {
+      "name": "Spawn animals",
+      "description": "Spawn passive mobs.",
+      "key": "MC_SPAWN_ANIMALS",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Gameplay",
+      "advanced": true
+    },
+    {
+      "name": "Spawn monsters",
+      "description": "Spawn hostile mobs.",
+      "key": "MC_SPAWN_MONSTERS",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Gameplay",
+      "advanced": true
+    },
+    {
+      "name": "Spawn villagers",
+      "description": "Spawn villagers.",
+      "key": "MC_SPAWN_NPCS",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Gameplay",
+      "advanced": true
+    },
+    {
+      "name": "Spawn protection radius",
+      "description": "Radius around spawn that only operators can edit. 0 disables.",
+      "key": "MC_SPAWN_PROTECTION",
+      "default_value": "16",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 0,
+        "max": 2147483647
+      },
+      "group": "Gameplay",
+      "advanced": true
+    },
+    {
+      "name": "Command blocks",
+      "description": "Allow command blocks to run.",
+      "key": "MC_ENABLE_COMMAND_BLOCK",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Gameplay",
+      "advanced": true
+    },
+    {
+      "name": "World name",
+      "description": "Name of the world folder.",
+      "key": "MC_LEVEL_NAME",
+      "default_value": "world",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min_length": 1,
+        "max_length": 64
+      },
+      "group": "World"
+    },
+    {
+      "name": "World seed",
+      "description": "Seed for new worlds. Leave empty for a random seed.",
+      "key": "MC_LEVEL_SEED",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": false,
+      "nullable": true,
+      "validation": {
+        "max_length": 128
+      },
+      "group": "World"
+    },
+    {
+      "name": "World type",
+      "description": "World generator for new worlds.",
+      "key": "MC_LEVEL_TYPE",
+      "default_value": "minecraft:normal",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "enum",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "allowed": [
+          "minecraft:normal",
+          "minecraft:flat",
+          "minecraft:large_biomes",
+          "minecraft:amplified",
+          "minecraft:single_biome_surface"
+        ]
+      },
+      "group": "World"
+    },
+    {
+      "name": "Generator settings",
+      "description": "JSON settings for the flat or custom world generator.",
+      "key": "MC_GENERATOR_SETTINGS",
+      "default_value": "{}",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "max_length": 2048
+      },
+      "group": "World",
+      "advanced": true
+    },
+    {
+      "name": "Generate structures",
+      "description": "Generate villages, strongholds and other structures.",
+      "key": "MC_GENERATE_STRUCTURES",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "World"
+    },
+    {
+      "name": "Allow the Nether",
+      "description": "Allow travel to the Nether.",
+      "key": "MC_ALLOW_NETHER",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "World",
+      "advanced": true
+    },
+    {
+      "name": "View distance",
+      "description": "Chunks sent to each player. Lower values reduce load.",
+      "key": "MC_VIEW_DISTANCE",
+      "default_value": "10",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 3,
+        "max": 32
+      },
+      "group": "World"
+    },
+    {
+      "name": "Simulation distance",
+      "description": "Chunks around players that are ticked.",
+      "key": "MC_SIMULATION_DISTANCE",
+      "default_value": "10",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 3,
+        "max": 32
+      },
+      "group": "World"
+    },
+    {
+      "name": "Maximum world size",
+      "description": "Maximum world radius in blocks.",
+      "key": "MC_MAX_WORLD_SIZE",
+      "default_value": "29999984",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1,
+        "max": 29999984
+      },
+      "group": "World",
+      "advanced": true
+    },
+    {
+      "name": "Entity broadcast range (%)",
+      "description": "Distance at which entities are sent to players, as a percentage.",
+      "key": "MC_ENTITY_BROADCAST_RANGE",
+      "default_value": "100",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 10,
+        "max": 1000
+      },
+      "group": "World",
+      "advanced": true
+    },
+    {
+      "name": "Synchronous chunk writes",
+      "description": "Write region files synchronously to avoid corruption on crashes.",
+      "key": "MC_SYNC_CHUNK_WRITES",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Advanced",
+      "advanced": true
+    },
+    {
+      "name": "Region file compression",
+      "description": "Compression for region files.",
+      "key": "MC_REGION_FILE_COMPRESSION",
+      "default_value": "deflate",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "enum",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "allowed": [
+          "deflate",
+          "lz4",
+          "none"
+        ]
+      },
+      "group": "Advanced",
+      "advanced": true
+    },
+    {
+      "name": "Maximum tick time (ms)",
+      "description": "Watchdog stops a hung server after this many ms. -1 disables.",
+      "key": "MC_MAX_TICK_TIME",
+      "default_value": "60000",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": -1,
+        "max": 9223372036854775807
+      },
+      "group": "Advanced",
+      "advanced": true
+    },
+    {
+      "name": "Network compression threshold",
+      "description": "Compress packets larger than this many bytes. -1 disables.",
+      "key": "MC_NETWORK_COMPRESSION",
+      "default_value": "256",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": -1,
+        "max": 2147483647
+      },
+      "group": "Advanced",
+      "advanced": true
+    },
+    {
+      "name": "Packet rate limit",
+      "description": "Kick clients exceeding this many packets per second. 0 disables.",
+      "key": "MC_RATE_LIMIT",
+      "default_value": "0",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 0,
+        "max": 2147483647
+      },
+      "group": "Advanced",
+      "advanced": true
+    },
+    {
+      "name": "Max chained neighbor updates",
+      "description": "Limit on consecutive neighbor updates before skipping.",
+      "key": "MC_MAX_CHAINED_UPDATES",
+      "default_value": "1000000",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": -1,
+        "max": 2147483647
+      },
+      "group": "Advanced",
+      "advanced": true
+    },
+    {
+      "name": "Native transport",
+      "description": "Use optimized Linux packet handling.",
+      "key": "MC_USE_NATIVE_TRANSPORT",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Advanced",
+      "advanced": true
+    },
+    {
+      "name": "Broadcast console to operators",
+      "description": "Send console output to online operators.",
+      "key": "MC_BROADCAST_CONSOLE_TO_OPS",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Advanced",
+      "advanced": true
+    },
+    {
+      "name": "Server list status",
+      "description": "Appear online in the server list.",
+      "key": "MC_ENABLE_STATUS",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Advanced",
+      "advanced": true
+    },
+    {
+      "name": "JMX monitoring",
+      "description": "Expose JMX MBeans for server metrics.",
+      "key": "MC_ENABLE_JMX",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Advanced",
+      "advanced": true
+    },
+    {
+      "name": "GameSpy4 query",
+      "description": "Enable the UDP query protocol.",
+      "key": "MC_ENABLE_QUERY",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Network",
+      "advanced": true
+    },
+    {
+      "name": "Query port",
+      "description": "UDP port for the query protocol.",
+      "key": "MC_QUERY_PORT",
+      "default_value": "25565",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1,
+        "max": 65535
+      },
+      "group": "Network",
+      "advanced": true
+    },
+    {
+      "name": "RCON",
+      "description": "Enable remote console access.",
+      "key": "MC_ENABLE_RCON",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Network",
+      "advanced": true
+    },
+    {
+      "name": "RCON port",
+      "description": "TCP port for RCON.",
+      "key": "MC_RCON_PORT",
+      "default_value": "25575",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1,
+        "max": 65535
+      },
+      "group": "Network",
+      "advanced": true
+    },
+    {
+      "name": "RCON password",
+      "description": "Password for RCON. Required when RCON is enabled.",
+      "key": "MC_RCON_PASSWORD",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "secret",
+      "sensitive": true,
+      "required": false,
+      "nullable": true,
+      "validation": {
+        "max_length": 128
+      },
+      "group": "Network",
+      "advanced": true
+    },
+    {
+      "name": "Broadcast RCON to operators",
+      "description": "Send RCON command output to online operators.",
+      "key": "MC_BROADCAST_RCON_TO_OPS",
+      "default_value": "true",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Network",
+      "advanced": true
+    },
+    {
+      "name": "Resource pack URL",
+      "description": "Direct download URL offered to players. Players download it from their own client.",
+      "key": "MC_RESOURCE_PACK",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": false,
+      "nullable": true,
+      "validation": {
+        "max_length": 512
+      },
+      "group": "Resource pack",
+      "advanced": true
+    },
+    {
+      "name": "Resource pack SHA-1",
+      "description": "SHA-1 of the resource pack, so clients can verify it.",
+      "key": "MC_RESOURCE_PACK_SHA1",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": false,
+      "nullable": true,
+      "validation": {
+        "max_length": 64
+      },
+      "group": "Resource pack",
+      "advanced": true
+    },
+    {
+      "name": "Resource pack ID",
+      "description": "UUID identifying the resource pack.",
+      "key": "MC_RESOURCE_PACK_ID",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": false,
+      "nullable": true,
+      "validation": {
+        "max_length": 64
+      },
+      "group": "Resource pack",
+      "advanced": true
+    },
+    {
+      "name": "Resource pack prompt",
+      "description": "Message shown when offering the pack.",
+      "key": "MC_RESOURCE_PACK_PROMPT",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": false,
+      "nullable": true,
+      "validation": {
+        "max_length": 256
+      },
+      "group": "Resource pack",
+      "advanced": true
+    },
+    {
+      "name": "Require resource pack",
+      "description": "Disconnect players who decline the pack.",
+      "key": "MC_REQUIRE_RESOURCE_PACK",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Resource pack",
+      "advanced": true
+    },
+    {
+      "name": "Enabled data packs",
+      "description": "Comma-separated data packs enabled for new worlds.",
+      "key": "MC_INITIAL_ENABLED_PACKS",
+      "default_value": "vanilla",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "max_length": 256
+      },
+      "group": "Advanced",
+      "advanced": true
+    },
+    {
+      "name": "Disabled data packs",
+      "description": "Comma-separated data packs disabled for new worlds.",
+      "key": "MC_INITIAL_DISABLED_PACKS",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": false,
+      "nullable": true,
+      "validation": {
+        "max_length": 256
+      },
+      "group": "Advanced",
+      "advanced": true
+    },
+    {
+      "name": "Text filtering config",
+      "description": "Path of a text filtering configuration file.",
+      "key": "MC_TEXT_FILTERING_CONFIG",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": false,
+      "nullable": true,
+      "validation": {
+        "max_length": 256
+      },
+      "group": "Advanced",
+      "advanced": true
+    },
+    {
+      "name": "Accept the Minecraft EULA",
+      "description": "Tick to accept the Minecraft EULA (https://aka.ms/MinecraftEULA). GameNode then writes eula=true; leave unticked to accept it yourself in eula.txt before the first start.",
+      "key": "ACCEPT_EULA",
+      "default_value": "false",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "boolean",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {},
+      "group": "Legal"
+    }
+  ],
+  "ports": [
+    {
+      "name": "Minecraft TCP",
+      "protocol": "tcp",
+      "variable": "SERVER_PORT",
+      "purpose": "Minecraft Java Edition game connections"
+    }
+  ],
+  "expected_files": [
+    {
+      "path": "eula.txt",
+      "type": "file",
+      "required": false
+    }
+  ],
+  "config_files": [
+    {
+      "path": "eula.txt",
+      "format": "properties",
+      "description": "Minecraft EULA state; written as accepted only when the operator ticks the EULA option."
+    },
+    {
+      "path": "server.properties",
+      "format": "properties",
+      "description": "Minecraft server configuration, managed by the GameNode server.properties adapter."
+    }
+  ],
+  "requirements": [
+    {
+      "type": "java",
+      "level": "hard",
+      "description": "Java must be available through JAVA_HOME or PATH."
+    },
+    {
+      "type": "note",
+      "level": "informational",
+      "description": "Installation downloads from Mojang, NeoForged, MinecraftForge and FabricMC only; mods are added by upload, never from a user-supplied URL."
+    }
+  ],
+  "help": {
+    "summary": "GameNode downloads the selected server from its official source, verifies the published digest, and launches Java directly with structured arguments.",
+    "notes": [
+      "Mods are managed on the server's Mods tab.",
+      "server.properties is managed on the Configuration tab; changes apply after a restart."
+    ]
+  },
+  "compatibility": {
+    "status": "compatible",
+    "findings": []
+  },
+  "read_only": true,
+  "platforms": [
+    "windows",
+    "linux"
+  ],
+  "prerequisites": [
+    "Java available through JAVA_HOME or PATH matching the Minecraft version",
+    "Network access to the official Minecraft, NeoForged, Forge and Fabric sources"
+  ],
+  "configuration": {
+    "adapters": [
+      {
+        "id": "minecraft-server-properties",
+        "schema_version": 1,
+        "file": "server.properties.adapter.json"
+      }
+    ]
+  }
+}

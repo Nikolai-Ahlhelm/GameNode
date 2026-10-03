@@ -206,7 +206,7 @@ func ValidateDefinition(definition templates.ConfigAdapterDefinition) error {
 			return ErrUnsafeTarget
 		}
 	} else {
-		standardFormat := definition.Format == templates.FormatXMLProperties || definition.Format == templates.FormatINIKeyValues || definition.Format == templates.FormatJSONKeyValues || definition.Format == templates.FormatINISectionKeyValues
+		standardFormat := definition.Format == templates.FormatXMLProperties || definition.Format == templates.FormatINIKeyValues || definition.Format == templates.FormatJSONKeyValues || definition.Format == templates.FormatINISectionKeyValues || definition.Format == propertiesFormat
 		if !safeDefinitionTarget(definition.Format, definition.Target) || (!standardFormat && !tupleFormat) || (definition.PostStartOnly && definition.Format != templates.FormatINIKeyValues && definition.Format != templates.FormatJSONKeyValues && definition.Format != templates.FormatINISectionKeyValues) {
 			return ErrUnsafeTarget
 		}
@@ -246,7 +246,7 @@ func ValidateDefinition(definition templates.ConfigAdapterDefinition) error {
 				return ErrInvalidValue
 			}
 			bindings[target] = true
-		} else if field.Binding != nil || properties[field.Property] || !propertyName.MatchString(field.Property) {
+		} else if field.Binding != nil || properties[field.Property] || !propertyNameFor(definition.Format).MatchString(field.Property) {
 			return ErrInvalidValue
 		}
 		keys[field.Key], properties[field.Property] = true, true
@@ -262,7 +262,7 @@ func ManagedLaunch(definition templates.ConfigAdapterDefinition) bool {
 
 func safeDefinitionTarget(format, target string) bool {
 	extension := strings.ToLower(filepath.Ext(target))
-	if (format != "xml-properties" && format != "ini-key-values" && format != templates.FormatJSONKeyValues && format != templates.FormatINISectionKeyValues && format != sectionTupleFormat) || (format == "xml-properties" && extension != ".xml") || ((format == "ini-key-values" || format == templates.FormatINISectionKeyValues || format == sectionTupleFormat) && extension != ".ini") || (format == templates.FormatJSONKeyValues && extension != ".json") || !safeDefinitionPath(target) {
+	if (format != "xml-properties" && format != "ini-key-values" && format != propertiesFormat && format != templates.FormatJSONKeyValues && format != templates.FormatINISectionKeyValues && format != sectionTupleFormat) || (format == "xml-properties" && extension != ".xml") || ((format == "ini-key-values" || format == templates.FormatINISectionKeyValues || format == sectionTupleFormat) && extension != ".ini") || (format == templates.FormatJSONKeyValues && extension != ".json") || (format == propertiesFormat && extension != ".properties") || !safeDefinitionPath(target) {
 		return false
 	}
 	return true
@@ -314,8 +314,11 @@ func applyWithWriters(root string, definition templates.ConfigAdapterDefinition,
 		if err := validateValue(field, value); err != nil {
 			return err
 		}
-		if (definition.Format == "ini-key-values" || definition.Format == templates.FormatINISectionKeyValues || definition.Format == sectionTupleFormat || definition.Format == templates.FormatJSONKeyValues) && strings.ContainsAny(value, "\r\n") {
+		if (definition.Format == "ini-key-values" || definition.Format == propertiesFormat || definition.Format == templates.FormatINISectionKeyValues || definition.Format == sectionTupleFormat || definition.Format == templates.FormatJSONKeyValues) && strings.ContainsAny(value, "\r\n") {
 			return ErrInvalidValue
+		}
+		if definition.Format == propertiesFormat && field.Type == "boolean" {
+			value = normalizePropertiesBoolean(value)
 		}
 		replacements[field.Property] = value
 	}
@@ -328,6 +331,11 @@ func applyWithWriters(root string, definition templates.ConfigAdapterDefinition,
 	}
 	data, err := readBounded(target)
 	targetExisted := err == nil
+	if err != nil && definition.Format == propertiesFormat && errors.Is(err, os.ErrNotExist) {
+		// The game creates server.properties on first start; seeding it here is
+		// safe because Minecraft defaults every key GameNode does not write.
+		data, err = []byte(propertiesHeader), nil
+	}
 	if err != nil && definition.Initialization != nil && errors.Is(err, os.ErrNotExist) {
 		source, sourceErr := safeTarget(root, definition.Initialization.Source)
 		if sourceErr != nil {
@@ -389,9 +397,14 @@ func Read(root string, definition templates.ConfigAdapterDefinition) (map[string
 	for _, field := range definition.Fields {
 		value, ok := found[field.Property]
 		if !ok {
+			if definition.Format == propertiesFormat {
+				continue
+			}
 			return nil, fmt.Errorf("%w: managed property is missing", ErrParse)
 		}
-		if err = validateValue(field, value); err != nil {
+		// A hand-edited properties file may hold values GameNode would not
+		// write; show them rather than hiding every setting.
+		if err = validateValue(field, value); err != nil && definition.Format != propertiesFormat {
 			return nil, fmt.Errorf("%w: managed property type is invalid", ErrParse)
 		}
 		result[field.Key] = value
@@ -414,6 +427,8 @@ func transformForDefinition(definition templates.ConfigAdapterDefinition, data [
 		return transformXML(data, replacements, wanted)
 	case "ini-key-values":
 		return transformINI(data, replacements, wanted)
+	case propertiesFormat:
+		return transformProperties(data, replacements, wanted)
 	case templates.FormatJSONKeyValues:
 		return transformJSON(data, replacements, wanted)
 	case templates.FormatINISectionKeyValues:

@@ -25,6 +25,7 @@ import (
 	"gamenode/internal/gameconfig"
 	"gamenode/internal/identity"
 	"gamenode/internal/logging"
+	"gamenode/internal/minecraft"
 	"gamenode/internal/monitoring"
 	"gamenode/internal/nodeidentity"
 	"gamenode/internal/nodes"
@@ -56,6 +57,8 @@ type Server struct {
 	trustLocalProxy   bool
 	servers           *servers.Service
 	files             *filesystem.Service
+	mods              *minecraft.ModManager
+	minecraftSource   *minecraft.Source
 	ftp               *ftpservice.Service
 	identity          *identity.Service
 	rbac              *rbac.Service
@@ -149,6 +152,8 @@ type Options struct {
 	// proxy reached over the network.
 	TrustLocalProxy bool
 	Filesystem      *filesystem.Service
+	// MinecraftSource overrides the fixed official version source (tests only).
+	MinecraftSource *minecraft.Source
 	// DataDirectory is the GameNode data root used for safe physical
 	// migration of provisioned servers between tenant storage trees.
 	DataDirectory     string
@@ -317,6 +322,10 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	if len(options) > 0 && options[0].Support != nil {
 		supportService = options[0].Support
 	}
+	minecraftSource := minecraft.NewSource()
+	if len(options) > 0 && options[0].MinecraftSource != nil {
+		minecraftSource = options[0].MinecraftSource
+	}
 	templateService := templates.NewService(templates.NewStore(a.Database()))
 	var provisioner *provisioning.Service
 	if len(options) > 0 {
@@ -343,7 +352,7 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	nodesService := nodes.New(a.Database())
 	var remoteClient remoteNodeClient = remote.New()
 	historyStore := statushistory.New(a.Database())
-	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, identity: identityService, rbac: rbac.New(a.Database()), tenants: tenants.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, pelican: templates.NewPelicanCatalog(), provisioning: provisioner, serverUpdates: serverUpdater, statusHistory: historyStore, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie, nodeIdentity: nodeIdentityService, nodes: nodesService, remoteClient: remoteClient}
+	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, mods: minecraft.NewModManager(files), minecraftSource: minecraftSource, identity: identityService, rbac: rbac.New(a.Database()), tenants: tenants.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, pelican: templates.NewPelicanCatalog(), provisioning: provisioner, serverUpdates: serverUpdater, statusHistory: historyStore, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie, nodeIdentity: nodeIdentityService, nodes: nodesService, remoteClient: remoteClient}
 	result.registration = registration.New(a.Database(), identityService, nil)
 	result.passwordReset = passwordreset.New(a.Database(), identityService, nil)
 	if len(options) > 0 {
@@ -436,6 +445,7 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/password-reset", s.passwordResetHandler)
 	mux.HandleFunc("/api/v1/templates", s.templatesHandler)
 	mux.HandleFunc("/api/v1/templates/", s.templateHandler)
+	mux.HandleFunc("/api/v1/minecraft/versions", s.minecraftVersionsHandler)
 	mux.HandleFunc("/api/v1/template-catalog", s.templateCatalogHandler)
 	mux.HandleFunc("/api/v1/template-catalog/refresh", s.templateCatalogRefreshHandler)
 	mux.HandleFunc("/api/v1/pelican-catalog", s.pelicanCatalogHandler)

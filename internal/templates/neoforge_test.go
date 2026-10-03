@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,5 +102,35 @@ func TestLocalNeoForgeReferenceWhenPresent(t *testing.T) {
 	}
 	if resolved.NeoForgeVersion != "26.2.0.59" || resolved.MinecraftVersion != "26.2" || !strings.HasSuffix(resolved.Arguments[2], "win_args.txt") {
 		t.Fatalf("unexpected local reference resolution: %+v", resolved)
+	}
+}
+
+func TestMinecraftTemplateContractIsPinned(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "templates", "minecraft", "java", "template.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	load := func(mutate func(*Template)) error {
+		var template Template
+		if err := json.Unmarshal(data, &template); err != nil {
+			t.Fatal(err)
+		}
+		mutate(&template)
+		return validateOfficial(template)
+	}
+	if err := load(func(*Template) {}); err != nil {
+		t.Fatalf("repository template must validate: %v", err)
+	}
+	for name, mutate := range map[string]func(*Template){
+		"widened loader list": func(tpl *Template) {
+			tpl.Variables[0].Validation.Allowed = append(tpl.Variables[0].Validation.Allowed, "quilt")
+		},
+		"wrong resolver":      func(tpl *Template) { tpl.Launch.Resolver = "java" },
+		"non-java executable": func(tpl *Template) { tpl.Launch.Executable = "sh" },
+		"missing version var": func(tpl *Template) { tpl.Variables = append(tpl.Variables[:1], tpl.Variables[2:]...) },
+	} {
+		if err := load(mutate); err == nil {
+			t.Errorf("%s must be rejected", name)
+		}
 	}
 }

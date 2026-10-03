@@ -572,6 +572,19 @@ func (store *Store) SensitiveEnvironmentKeys(ctx context.Context, id string) ([]
 	}
 	return keys, rows.Err()
 }
+
+// TemplateID reports the template a server was created from, or "" when the
+// server was not created from a template. Provenance is recorded once at
+// creation and never changes with later catalog updates.
+func (store *Store) TemplateID(ctx context.Context, id string) (string, error) {
+	var templateID string
+	err := store.db.QueryRowContext(ctx, `SELECT template_id FROM server_template_variables WHERE server_id=? LIMIT 1`, id).Scan(&templateID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return templateID, err
+}
+
 func (store *Store) List(ctx context.Context) ([]Record, error) {
 	rows, err := store.db.QueryContext(ctx, selectSQL+` ORDER BY s.name`)
 	if err != nil {
@@ -1041,6 +1054,12 @@ func (s *Service) List(ctx context.Context) ([]Record, error) {
 	}
 	return records, nil
 }
+
+// TemplateID exposes the creation-time template provenance of a server.
+func (s *Service) TemplateID(ctx context.Context, id string) (string, error) {
+	return s.store.TemplateID(ctx, id)
+}
+
 func (s *Service) Get(ctx context.Context, id string) (Record, error) {
 	record, err := s.refresh(ctx, id)
 	if err == nil {

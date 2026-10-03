@@ -27,6 +27,7 @@ import (
 	"gamenode/internal/gameconfig"
 	"gamenode/internal/identity"
 	"gamenode/internal/logging"
+	"gamenode/internal/minecraft"
 	"gamenode/internal/monitoring"
 	"gamenode/internal/notifications"
 	"gamenode/internal/provisioning"
@@ -226,6 +227,7 @@ func main() {
 	steamManager := steamcmd.New(filepath.Join(cfg.Data.Directory, "tools", "steamcmd"), steamPlatform, nil, nil)
 	steamManager.SetLogger(logging.WithCategory(log, logging.CategorySteamCMD))
 	provisioner = provisioning.NewWithOptions(db, templateService, steamManager, serverService, cfg.Data.Directory, provisioning.Options{Log: logging.WithCategory(log, logging.CategoryProvisioning), ContainerInstaller: runtime.NewContainerInstaller(dockerEngine), ImagePolicy: provisioning.ImagePolicy{AllowedRegistries: currentSettings.Runtime.ContainerImageAllowlist}})
+	provisioner.SetMinecraftInstaller(minecraft.NewInstaller(minecraft.NewSource()))
 	// serverupdates reuses the same managed steamManager instance as
 	// provisioning: one bootstrap/download implementation, one SteamCMD
 	// invocation path, for both initial installation and manual updates.
