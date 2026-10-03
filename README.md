@@ -20,6 +20,7 @@ The current implementation covers the foundation, Native and Linux-first Docker 
 - Analyze and persist Pelican/Pterodactyl Eggs as normalized GameNode templates with compatibility reports and native SteamCMD/launch plans.
 - Provision supported templates asynchronously through a managed SteamCMD installation, then create an ordinary native GameNode server.
 - Manually update an eligible, already-provisioned SteamCMD-managed server's installed game files in place, without migrating its pinned template, ports, or configuration.
+- Install Minecraft Java servers (vanilla, NeoForge, Forge, Fabric) at an exact Minecraft/loader version from the official sources, configure every server.properties setting, and manage mods (list, upload, enable/disable, remove) on the server Mods tab (ADR 0013).
 - Adopt an existing Minecraft NeoForge installation through the Official read-only template and a conservative launcher resolver.
 - Enroll another GameNode installation as a Remote Node: durable node identity, secure pairing-token enrollment, an authenticated machine-to-machine Node API, health/capability status, remote server lifecycle, bounded console/files/monitoring operations, and typed native/container provisioning on the selected node - without giving up local autonomy. See [Remote Nodes](#remote-nodes-v05a) and [Cluster Scheduling](#cluster-scheduling-v06) below.
 

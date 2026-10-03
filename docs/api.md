@@ -148,6 +148,12 @@ The typed surface includes `monitoring.sample_interval_seconds` (1–300), `moni
 
 `POST /api/v1/support/bundle` requires authentication, global-only `Settings.Manage` (server-scoped assignments do not apply), same-origin validation, and `X-CSRF-Token`. It returns `200 application/zip` with `Content-Disposition: attachment` and a server-generated safe `gamenode-support-<UTC>.zip` filename. The fixed archive contains only `manifest.json`, `diagnostics.json`, `settings.json`, `audit-recent.json`, and `servers.json`; core output is capped at 10 MiB. Generation completes in a bounded in-memory buffer before ZIP headers are committed, so a generation failure returns a controlled JSON API error rather than a partial download. There are no other support endpoints.
 
+## Minecraft versions and mods
+
+`GET /api/v1/minecraft/versions?loader=vanilla|neoforge|forge|fabric[&minecraft_version=1.21.1]` (global `Templates.View`) returns `game_versions` and, when a Minecraft version is given, `loader_versions` (`version`, `stable`, `latest`) and `java` (`found`, `major`, `required_major`). Errors: `400` unsupported loader/version, `404 minecraft_version_not_found`, `502 minecraft_source_unavailable`.
+
+`GET|POST|DELETE /api/v1/servers/{id}/mods` manage jars in the server's `mods` directory. GET (`Files.View`) returns `{available, loader?, mods[], max_upload_bytes}`; POST (`Files.Upload`, CSRF) takes one multipart `file` part and optional `?overwrite=true`; DELETE (`Files.Delete`, CSRF) takes `?file=<name>.jar`. PATCH (`Files.Rename`, CSRF) takes `{"file":"x.jar"|"x.jar.disabled","enabled":bool}` and renames between `x.jar` and `x.jar.disabled` (disabled mods stay installed but are not loaded; `disabled:true` in the list). DELETE accepts either name. Errors: `invalid_mod`, `invalid_mod_archive`, `not_found`, `file_conflict`. See ADR 0013.
+
 ## Server ports
 
 Port records contain `id`, `name`, `protocol`, `bind_address`, `port`, and dynamic `status`. Protocol is `tcp` or `udp`; ports are 1–65535. Bind addresses may be empty/wildcard, `0.0.0.0`, `::`, or concrete IPv4/IPv6 literals. Hostnames are unsupported. `Ports.View` and `Ports.Manage` are independent server-scoped permissions: global grants apply everywhere and server grants only at that server. Mutations require the normal CSRF token. Validation can reject invalid ports, protocols or addresses, an internal registry collision, or an externally occupied OS port; unknown servers/ports and missing permissions use the normal API errors.

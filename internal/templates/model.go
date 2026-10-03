@@ -17,6 +17,7 @@ const (
 	InstallerExisting        = "existing"
 	InstallerExistingFiles   = "existing-files"
 	InstallerSteamCMD        = "steamcmd"
+	InstallerMinecraft       = "minecraft"
 	InstallerUnsupported     = "unsupported"
 	Compatible               = "compatible"
 	PartiallyCompatible      = "partially_compatible"
@@ -41,6 +42,10 @@ const (
 	FormatINISectionKeyValues = "ini-section-key-values"
 	FormatSectionTuple        = "section-tuple-key-values"
 	FormatManagedLaunch       = "managed-launch"
+
+	// FormatPropertiesKeyValues edits a Java .properties file (Minecraft
+	// server.properties): absent keys are appended and a missing file is created.
+	FormatPropertiesKeyValues = "properties-key-values"
 
 	// Binding types are a closed whitelist. There is deliberately no
 	// expression, template, or index-based argument manipulation.
@@ -117,10 +122,10 @@ type ConfigAdapterDefinition struct {
 	// Platforms optionally restricts the adapter to specific host platforms
 	// ("windows", "linux") for games whose file layout differs per OS. An
 	// empty list applies everywhere.
-	Platforms       []string `json:"platforms,omitempty"`
-	RestartRequired bool     `json:"restart_required"`
-	PostStartOnly     bool                         `json:"post_start_only,omitempty"`
-	Fields            []ConfigAdapterField         `json:"fields"`
+	Platforms       []string             `json:"platforms,omitempty"`
+	RestartRequired bool                 `json:"restart_required"`
+	PostStartOnly   bool                 `json:"post_start_only,omitempty"`
+	Fields          []ConfigAdapterField `json:"fields"`
 }
 
 type ConfigAdapterInitialization struct {

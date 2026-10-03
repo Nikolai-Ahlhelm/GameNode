@@ -214,6 +214,10 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 		s.filesHandler(w, r, id)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "mods" {
+		s.serverModsHandler(w, r, id)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "monitoring" {
 		s.monitoringHandler(w, r, id)
 		return

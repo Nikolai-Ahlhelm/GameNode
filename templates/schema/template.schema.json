@@ -51,7 +51,8 @@
     "installer": {
       "oneOf": [
         {"type": "object", "additionalProperties": false, "required": ["type", "steamcmd"], "properties": {"type": {"const": "steamcmd"}, "steamcmd": {"$ref": "#/$defs/steamcmd"}}},
-        {"type": "object", "additionalProperties": false, "required": ["type"], "properties": {"type": {"const": "existing-files"}}}
+        {"type": "object", "additionalProperties": false, "required": ["type"], "properties": {"type": {"const": "existing-files"}}},
+        {"type": "object", "additionalProperties": false, "required": ["type"], "properties": {"type": {"const": "minecraft"}}}
       ]
     },
     "steamcmd": {

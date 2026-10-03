@@ -1,0 +1,23 @@
+# ADR 0013: Minecraft loaders, exact versions, and mod management
+
+## Status
+Accepted.
+
+## Context
+Minecraft support was adopt-only (an existing NeoForge directory). Operators need to install vanilla, NeoForge, Forge, or Fabric at an exact Minecraft and loader version, and to manage mods.
+
+## Decision
+- A new transport-free package, `internal/minecraft`, owns version discovery, installation, launch resolution, and mod jar management. `internal/templates` gains the installer type `minecraft` and launch resolver `minecraft`; `internal/provisioning` runs the installer and ends in an ordinary native `servers.Server` (no SteamCMD provenance row, so such servers are not manual-update eligible).
+- **Sources are compiled in**: Mojang (`piston-meta`/`piston-data`/`launcher.mojang.com`), `maven.neoforged.net`, `maven.minecraftforge.net`, `meta.fabricmc.net`. HTTPS only, host allow-list applied to every request and redirect, bounded metadata (16 MiB) and artifact (512 MiB) sizes. The only user input is loader plus exact versions; version strings are validated as safe tokens and NeoForge builds must map to the chosen Minecraft version. Forge is limited to Minecraft 1.17+ (generated argument files); older Forge is unsupported.
+- **Integrity**: vanilla uses the SHA-1 from Mojang's version JSON; Forge/NeoForge use the maven `.sha1`; downloads go to a temporary file and are renamed only after verification. Fabric's meta service publishes no digest, so Fabric relies on TLS to the fixed host.
+- **Forge/NeoForge installers** are downloaded jars run as `exec.CommandContext(java, "-jar", installer, "--installServer"|"--install-server")` in the server root with a 20 minute bound. This executes downloaded code from the fixed upstream host, the same trust level as SteamCMD; it is not a shell and takes no user flag. The installer jar and log are removed afterwards.
+- **Launch** is computed from the plan, never parsed from `run.sh`/`run.bat`: vanilla/Fabric `java -Xms -Xmx -jar server.jar nogui`; Forge/NeoForge `java -Xms -Xmx @libraries/.../{win,unix}_args.txt nogui`, where the argument file is validated (no nested `@`, JVM agents, absolute paths, traversal). Memory flags are typed values.
+- **EULA**: GameNode never accepts it implicitly. The template has a boolean `ACCEPT_EULA` (default false) whose description links to the EULA; only when the operator ticks it does provisioning write `eula.txt` with `eula=true`. Otherwise eula.txt is left to the operator. (The older NeoForge adopt template still never touches eula.txt.)
+- **server.properties adapter**: new adapter format `properties-key-values` (Java `.properties`; lowercase/dot/hyphen keys). It creates a missing file, appends absent keys, preserves unmanaged lines, comments, line endings and key order, writes booleans as `true`/`false` (template booleans are `1`/`0`, which Java reads as false), escapes backslash, colon and non-ASCII (as \uXXXX), and reads leniently (absent or unusual values are shown, not fatal). It is not post-start-only: provisioning writes the complete file (60 managed keys) so the first start already uses the chosen settings. Provisioning never copies template values into the process environment for this launch, so the RCON password is not persisted in the server definition.
+- **Disabling mods**: renaming `x.jar` to `x.jar.disabled` in the same directory (loaders only scan `*.jar`); atomic, nothing is moved or deleted, enable renames back, and a conflicting copy is refused. `PATCH .../mods` requires `Files.Rename` and audits as `file.rename`.
+- **Mods** live in `<root>/mods`. List, add (upload only, `.jar`, ZIP signature, must parse as a jar) and remove go through `internal/filesystem` (sandbox, atomic upload). There is no URL-based mod download. Metadata (Fabric/Quilt/Forge/NeoForge, MANIFEST version fallback) is best effort and untrusted (control characters stripped, bounded).
+- **RBAC/audit**: no new permissions. `GET .../mods` needs `Files.View`, `POST` needs `Files.Upload`, `DELETE` needs `Files.Delete`, so a mod change grants nothing the file browser would not. Audit reuses `file.upload`/`file.delete` with the `mods/<name>` path.
+- `GET /api/v1/minecraft/versions?loader=&minecraft_version=` requires global `Templates.View` and returns upstream versions, plus advisory Java detection.
+
+## Consequences
+Installation requires outbound access to the four sources and a Java matching the Minecraft version (advisory only). Existing servers are unaffected; the old NeoForge adopt template remains. No mod-compatibility checking, enable/disable, modpack import, or Modrinth/CurseForge integration (each would need its own fixed-source review).

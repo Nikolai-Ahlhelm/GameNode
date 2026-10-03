@@ -4,11 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+
+	"gamenode/internal/minecraft"
 )
 
 const maxLauncherBytes = 32 << 10
@@ -192,22 +193,4 @@ func readLocal(root, relative string) ([]byte, error) {
 
 // DiscoverJava resolves only JAVA_HOME/bin/java or the host PATH. Templates
 // cannot select an arbitrary Java binary or request an installation.
-func DiscoverJava() (string, bool) {
-	name := "java"
-	if runtime.GOOS == "windows" {
-		name = "java.exe"
-	}
-	if home := strings.TrimSpace(os.Getenv("JAVA_HOME")); home != "" {
-		candidate := filepath.Join(home, "bin", name)
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, true
-		}
-	}
-	if candidate, err := exec.LookPath(name); err == nil {
-		if absolute, absErr := filepath.Abs(candidate); absErr == nil {
-			return absolute, true
-		}
-		return candidate, true
-	}
-	return name, false
-}
+func DiscoverJava() (string, bool) { return minecraft.DiscoverJava() }

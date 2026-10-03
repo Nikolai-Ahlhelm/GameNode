@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"gamenode/internal/minecraft"
 )
 
 // ResolvedLaunch is the only template output consumed by provisioning. Every
@@ -55,6 +57,10 @@ func ResolveLaunch(template Template, platform string, values map[string]string,
 			return ResolvedLaunch{}, err
 		}
 		return ResolvedLaunch{Executable: resolved.Executable, Arguments: resolved.Arguments, WorkingDirectory: resolved.WorkingDirectory, Environment: map[string]string{}, StopMethod: resolved.StopMethod, StopCommand: resolved.StopCommand, StopTimeout: resolved.StopTimeout}, nil
+	}
+
+	if launch.Resolver == "minecraft" {
+		return resolveMinecraftLaunch(template, platform, values, serverRoot)
 	}
 
 	known := make(map[string]bool, len(values))
@@ -120,6 +126,32 @@ func ResolveLaunch(template Template, platform string, values map[string]string,
 		stopTimeout = 15
 	}
 	return ResolvedLaunch{Executable: executable, Arguments: arguments, WorkingDirectory: workingDirectory, Environment: environment, StopMethod: stopMethod, StopCommand: launch.StopCommand, StopTimeout: stopTimeout}, nil
+}
+
+// MinecraftPlan builds the installer plan from resolved template values. Only
+// the loader and exact versions are taken from the user.
+func MinecraftPlan(values map[string]string) minecraft.Plan {
+	return minecraft.Plan{Loader: values["LOADER"], MinecraftVersion: values["MINECRAFT_VERSION"], LoaderVersion: values["LOADER_VERSION"]}
+}
+
+func resolveMinecraftLaunch(template Template, platform string, values map[string]string, serverRoot string) (ResolvedLaunch, error) {
+	minimum, minErr := strconv.Atoi(values["MIN_MEMORY_MB"])
+	maximum, maxErr := strconv.Atoi(values["MAX_MEMORY_MB"])
+	nogui := values["NOGUI"] == "1" || strings.EqualFold(values["NOGUI"], "true")
+	if minErr != nil || maxErr != nil {
+		return ResolvedLaunch{}, validationError(CodeInvalidVariable, "Minecraft memory variables are invalid")
+	}
+	resolved, err := minecraft.ResolveLaunch(serverRoot, platform, MinecraftPlan(values), minimum, maximum, nogui)
+	if err != nil {
+		return ResolvedLaunch{}, validationError(CodeInvalidPlatformLaunch, "Minecraft launch files could not be resolved safely")
+	}
+	if !resolved.JavaFound {
+		return ResolvedLaunch{}, validationError(CodeRequirementUnavailable, "Java runtime not found")
+	}
+	if err = ValidateExpectedFiles(template, platform, values, serverRoot); err != nil {
+		return ResolvedLaunch{}, err
+	}
+	return ResolvedLaunch{Executable: resolved.Executable, Arguments: resolved.Arguments, WorkingDirectory: resolved.WorkingDirectory, Environment: map[string]string{}, StopMethod: resolved.StopMethod, StopCommand: resolved.StopCommand, StopTimeout: resolved.StopTimeout}, nil
 }
 
 // ValidateExpectedFiles checks required artifacts after installation. Symlinks

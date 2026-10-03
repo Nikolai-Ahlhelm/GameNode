@@ -21,6 +21,7 @@ import (
 
 	"gamenode/internal/filesystem"
 	"gamenode/internal/gameconfig"
+	"gamenode/internal/minecraft"
 	"gamenode/internal/ports"
 	gameruntime "gamenode/internal/runtime"
 	"gamenode/internal/servers"
@@ -173,6 +174,12 @@ type TemplateSource interface {
 type Installer interface {
 	Install(context.Context, string, steamcmd.InstallPlan, io.Writer, steamcmd.EventSink) error
 }
+
+// MinecraftInstaller installs a Minecraft Java server (vanilla, NeoForge,
+// Forge, or Fabric) into an already-reserved server root from fixed sources.
+type MinecraftInstaller interface {
+	Install(context.Context, string, minecraft.Plan, io.Writer, func(minecraft.Event)) error
+}
 type ContainerInstaller interface {
 	Available(context.Context) error
 	PullImage(context.Context, string) error
@@ -283,6 +290,7 @@ type Service struct {
 	store              *Store
 	templates          TemplateSource
 	installer          Installer
+	minecraftInstaller MinecraftInstaller
 	containerInstaller ContainerInstaller
 	imagePolicy        ImagePolicy
 	containerTimeout   time.Duration
@@ -315,6 +323,9 @@ type run struct {
 	once   sync.Once
 	job    Job
 	root   string
+	// minecraft is the validated installer plan for a minecraft-installer
+	// template; nil for SteamCMD and container jobs.
+	minecraft *minecraft.Plan
 	// finalizing closes cancellation before the transactional server insert.
 	finalizing bool
 	recovering bool
@@ -428,6 +439,13 @@ func NewWithOptions(db *sql.DB, source TemplateSource, installer Installer, crea
 	return &Service{store: NewStore(db), templates: source, installer: installer, containerInstaller: options.ContainerInstaller, imagePolicy: policy, containerTimeout: timeout, servers: creator, ports: ports.New(db), dataRoot: filepath.Clean(dataDirectory), hostOS: host, ctx: ctx, cancel: cancel, active: map[string]*run{}, roots: map[string]string{}, outputs: map[string]*installerOutput{}, now: func() time.Time { return time.Now().UTC() }, log: log}
 }
 
+// SetMinecraftInstaller enables provisioning of the "minecraft" installer type.
+func (s *Service) SetMinecraftInstaller(installer MinecraftInstaller) {
+	s.mu.Lock()
+	s.minecraftInstaller = installer
+	s.mu.Unlock()
+}
+
 func (s *Service) SetContainerInstaller(installer ContainerInstaller) {
 	s.mu.Lock()
 	s.containerInstaller = installer
@@ -492,6 +510,7 @@ func (s *Service) Start(ctx context.Context, request Request) (Job, error) {
 		runtimeType = RuntimeNative
 	}
 	var plan steamcmd.InstallPlan
+	var minecraftPlan *minecraft.Plan
 	var containerPlan *templates.ContainerEggRuntimePlan
 	selectedImage := ""
 	if runtimeType == RuntimeContainer {
@@ -517,7 +536,11 @@ func (s *Service) Start(ctx context.Context, request Request) (Job, error) {
 			return Job{}, ErrContainerRuntimeUnavailable
 		}
 	} else if runtimeType == RuntimeNative {
-		plan, err = CheckProvisionable(template, values, s.hostOS)
+		if template.Installer.Type == templates.InstallerMinecraft {
+			minecraftPlan, err = s.checkMinecraft(template, values)
+		} else {
+			plan, err = CheckProvisionable(template, values, s.hostOS)
+		}
 		if err != nil {
 			return Job{}, err
 		}
@@ -609,7 +632,7 @@ func (s *Service) Start(ctx context.Context, request Request) (Job, error) {
 		return Job{}, err
 	}
 	jobCtx, cancel := context.WithCancel(s.ctx)
-	current := &run{cancel: cancel, job: job, root: root, recovering: request.RecoverExisting}
+	current := &run{cancel: cancel, job: job, root: root, minecraft: minecraftPlan, recovering: request.RecoverExisting}
 	s.active[id] = current
 	s.roots[root] = id
 	s.outputs[id] = &installerOutput{}
@@ -1011,6 +1034,19 @@ func (s *Service) Check(ctx context.Context, templateID string) (Provisionabilit
 	for _, variable := range template.Variables {
 		values[variable.Key] = variable.DefaultValue
 	}
+	if template.Installer.Type == templates.InstallerMinecraft {
+		if _, mcErr := s.checkMinecraft(template, values); mcErr != nil {
+			result.Code, result.Summary = provisionabilityFailure(mcErr)
+			return result, nil
+		}
+		launch, _ := templates.LaunchForPlatform(template, s.hostOS)
+		result.NativeCompatibility = template.Compatibility
+		result.Provisionable = true
+		result.Summary = "Minecraft server installation from the official sources and structured Java launch are available"
+		result.Installer = templates.InstallerMinecraft
+		result.LaunchExecutable = launch.Executable
+		return result, nil
+	}
 	plan, err := CheckProvisionable(template, values, s.hostOS)
 	if err != nil {
 		code, summary := provisionabilityFailure(err)
@@ -1034,6 +1070,91 @@ func (s *Service) Check(ctx context.Context, templateID string) (Provisionabilit
 		}
 	}
 	return result, nil
+}
+
+// checkMinecraft validates a minecraft-installer request without any network
+// access: the template shape, host platform, Java availability, and that the
+// loader/version selection is well-formed. Whether the upstream actually offers
+// the version is established by the installer when the job runs.
+func (s *Service) checkMinecraft(template templates.Template, values map[string]string) (*minecraft.Plan, error) {
+	if template.Compatibility.Status == templates.Unsupported {
+		return nil, ErrNotProvisionable
+	}
+	s.mu.Lock()
+	installer := s.minecraftInstaller
+	s.mu.Unlock()
+	if installer == nil {
+		return nil, fmt.Errorf("%w: %w", ErrNotProvisionable, &templates.ValidationError{Code: templates.CodeUnsupportedInstaller, Message: "Minecraft installation is unavailable"})
+	}
+	if s.hostOS != "windows" && s.hostOS != "linux" {
+		return nil, ErrNotProvisionable
+	}
+	if err := templates.CheckHostRequirements(template, s.hostOS, runtime.GOARCH); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrNotProvisionable, err)
+	}
+	if _, ok := templates.LaunchForPlatform(template, s.hostOS); !ok {
+		return nil, ErrNotProvisionable
+	}
+	plan := templates.MinecraftPlan(values)
+	if err := plan.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrNotProvisionable, &templates.ValidationError{Code: templates.CodeInvalidVariable, Message: "Minecraft loader or version selection is invalid"})
+	}
+	return &plan, nil
+}
+
+// installMinecraft runs the compiled Minecraft installer and seeds
+// server.properties. It reports false after finishing the job on cancellation
+// or failure.
+func (s *Service) installMinecraft(ctx context.Context, current *run, template templates.Template, values map[string]string, sensitive map[string]bool) bool {
+	s.mu.Lock()
+	installer := s.minecraftInstaller
+	s.mu.Unlock()
+	plan := *current.minecraft
+	log := s.log.With("module", "Minecraft.Install")
+	log.Info("Minecraft installation started", "job_id", current.job.ID, "template_id", template.ID, "loader", plan.Loader, "minecraft_version", plan.MinecraftVersion)
+	err := installer.Install(ctx, current.root, plan, s.outputWriter(current.job.ID, values, sensitive), func(event minecraft.Event) {
+		log.Info(event.Summary, "job_id", current.job.ID, "template_id", template.ID, "phase", event.Phase)
+		if event.Phase != minecraft.PhaseResolving {
+			s.phase(current, Installing, event.Summary)
+		}
+	})
+	if ctx.Err() != nil {
+		s.finish(current, Cancelled, "Provisioning was cancelled", "", true, "")
+		return false
+	}
+	if err == nil {
+		if port, convErr := strconv.Atoi(values["SERVER_PORT"]); convErr == nil {
+			err = minecraft.WriteServerProperties(current.root, port)
+		}
+	}
+	if err == nil && values["ACCEPT_EULA"] == "1" {
+		// Only an explicit operator opt-in reaches this write.
+		err = minecraft.AcceptEULA(current.root)
+	}
+	if err != nil {
+		code, summary := minecraftFailure(err)
+		log.Error("Minecraft installation failed", "job_id", current.job.ID, "template_id", template.ID, "code", code, "error", err)
+		s.fail(current, Installing, code, "Game installation failed", summary, true)
+		return false
+	}
+	s.installationCompleted(current)
+	return true
+}
+
+func minecraftFailure(err error) (string, string) {
+	switch {
+	case errors.Is(err, minecraft.ErrVersionNotFound):
+		return "MINECRAFT_VERSION_NOT_FOUND", "The selected Minecraft or loader version is not offered by the official source"
+	case errors.Is(err, minecraft.ErrSourceUnavailable):
+		return "MINECRAFT_SOURCE_UNAVAILABLE", "The official Minecraft download source could not be reached; try again later"
+	case errors.Is(err, minecraft.ErrDigestMismatch):
+		return "MINECRAFT_DIGEST_MISMATCH", "A downloaded file did not match its published digest and was discarded"
+	case errors.Is(err, minecraft.ErrJavaNotFound):
+		return "MINECRAFT_JAVA_NOT_FOUND", "Java was not found through JAVA_HOME or PATH, which the loader installer requires"
+	case errors.Is(err, minecraft.ErrInstallerFailed):
+		return "MINECRAFT_INSTALLER_FAILED", "The loader installer failed; target files may remain"
+	}
+	return "MINECRAFT_INSTALL_FAILED", "The Minecraft server could not be installed; target files may remain"
 }
 
 func provisionabilityFailure(err error) (string, string) {
@@ -1090,33 +1211,39 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 			s.executeContainer(ctx, current, template, values, sensitive, provisionedPorts, containerPlan, selectedImage, request, created, false)
 			return
 		}
-		s.log.With("module", "SteamCMD.Install").Info("SteamCMD installation started", "job_id", current.job.ID, "template_id", template.ID, "app_id", plan.AppID)
-		err = s.installer.Install(ctx, current.root, plan, s.outputWriter(current.job.ID, values, sensitive), func(event steamcmd.Event) {
-			s.log.With("module", "SteamCMD.Install").Info(event.Summary, "job_id", current.job.ID, "template_id", template.ID, "app_id", plan.AppID, "phase", event.Phase)
-			switch event.Phase {
-			case "downloading_steamcmd":
-				s.phase(current, DownloadingSteamCMD, event.Summary)
-			case "steamcmd_ready":
-				s.phase(current, SteamCMDReady, event.Summary)
-			case "installing":
-				s.phase(current, Installing, event.Summary)
+		if current.minecraft != nil {
+			if !s.installMinecraft(ctx, current, template, values, sensitive) {
+				return
 			}
-		})
-		if ctx.Err() != nil {
-			s.finish(current, Cancelled, "Provisioning was cancelled", "", true, "")
-			return
-		}
-		if err != nil {
-			failureCode, errorSummary := steamCMDFailureCode(err), "SteamCMD could not install the game; target files may remain"
-			if s.installerReportedDiskSpace(current.job.ID) {
-				failureCode, errorSummary = "STEAMCMD_INSUFFICIENT_DISK_SPACE", "Not enough free disk space to install this server."
+		} else {
+			s.log.With("module", "SteamCMD.Install").Info("SteamCMD installation started", "job_id", current.job.ID, "template_id", template.ID, "app_id", plan.AppID)
+			err = s.installer.Install(ctx, current.root, plan, s.outputWriter(current.job.ID, values, sensitive), func(event steamcmd.Event) {
+				s.log.With("module", "SteamCMD.Install").Info(event.Summary, "job_id", current.job.ID, "template_id", template.ID, "app_id", plan.AppID, "phase", event.Phase)
+				switch event.Phase {
+				case "downloading_steamcmd":
+					s.phase(current, DownloadingSteamCMD, event.Summary)
+				case "steamcmd_ready":
+					s.phase(current, SteamCMDReady, event.Summary)
+				case "installing":
+					s.phase(current, Installing, event.Summary)
+				}
+			})
+			if ctx.Err() != nil {
+				s.finish(current, Cancelled, "Provisioning was cancelled", "", true, "")
+				return
 			}
-			s.log.With("module", "SteamCMD.Install").Error("SteamCMD installation failed", "job_id", current.job.ID, "template_id", template.ID, "app_id", plan.AppID, "failure", steamCMDFailure(err), "error", err)
-			s.fail(current, Installing, failureCode, "Game installation failed", errorSummary, true)
-			return
+			if err != nil {
+				failureCode, errorSummary := steamCMDFailureCode(err), "SteamCMD could not install the game; target files may remain"
+				if s.installerReportedDiskSpace(current.job.ID) {
+					failureCode, errorSummary = "STEAMCMD_INSUFFICIENT_DISK_SPACE", "Not enough free disk space to install this server."
+				}
+				s.log.With("module", "SteamCMD.Install").Error("SteamCMD installation failed", "job_id", current.job.ID, "template_id", template.ID, "app_id", plan.AppID, "failure", steamCMDFailure(err), "error", err)
+				s.fail(current, Installing, failureCode, "Game installation failed", errorSummary, true)
+				return
+			}
+			s.phase(current, SteamCMDCompleted, "SteamCMD completed successfully")
+			s.installationCompleted(current)
 		}
-		s.phase(current, SteamCMDCompleted, "SteamCMD completed successfully")
-		s.installationCompleted(current)
 	}
 	if runtimeType == RuntimeContainer {
 		s.executeContainer(ctx, current, template, values, sensitive, provisionedPorts, containerPlan, selectedImage, request, created, current.recovering)
@@ -1185,13 +1312,19 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 		s.fail(current, ResolvingLaunch, templates.ValidationCode(err), "Launch resolution failed", "Game files and configuration were validated, but GameNode could not resolve the native server launch", true)
 		return
 	}
-	server, metadata, err := buildServer(template, resolvedLaunch, current.job.ServerName, current.job.TenantID, values, sensitive, managedKeys)
+	server, metadata, err := buildServer(template, resolvedLaunch, current.job.ServerName, current.job.TenantID, values, sensitive, managedKeys, current.minecraft != nil)
 	if err != nil {
 		s.log.With("module", "Provisioning.ServerConfig").Error("server configuration could not be built", "job_id", current.job.ID, "template_id", template.ID, "error", err)
 		s.fail(current, ResolvingLaunch, "LAUNCH_RESOLUTION_FAILED", "Launch resolution failed", "Game files were installed successfully, but GameNode could not resolve the native server launch", true)
 		return
 	}
 	steamCMDInfo := servers.ProvisionedSteamCMD{InstallerType: template.Installer.Type, AppID: plan.AppID, LoginMode: "anonymous", Validate: plan.Validate, BetaBranch: plan.BetaBranch, TemplateID: template.ID, TemplateVersion: template.Version, TemplateSource: template.SourceType}
+	var steamCMDRecord *servers.ProvisionedSteamCMD
+	if current.minecraft == nil {
+		// Only SteamCMD-managed servers carry the manual-update provenance row;
+		// a Minecraft server has no SteamCMD App ID and is not update-eligible.
+		steamCMDRecord = &steamCMDInfo
+	}
 	safeAdapters, managedSecrets := redactedAdapters(configSnapshots)
 	if managedSecrets {
 		// Managed secrets must never be written to job state, so this
@@ -1223,7 +1356,7 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 	}
 	current.finalizing = true
 	s.mu.Unlock()
-	record, err := s.servers.CreateProvisioned(ctx, server, template.ID, metadata, provisionedPorts, configSnapshots, &steamCMDInfo)
+	record, err := s.servers.CreateProvisioned(ctx, server, template.ID, metadata, provisionedPorts, configSnapshots, steamCMDRecord)
 	if err != nil {
 		failure, summary := serverCreationFailure(err)
 		if managedSecrets {
@@ -1555,14 +1688,20 @@ func redactedAdapters(adapters []servers.ProvisionedConfigAdapter) ([]servers.Pr
 // managed-launch adapter are deliberately excluded from the process
 // environment and from template-variable metadata: the adapter snapshot and
 // server_config_values are their single source of truth.
-func buildServer(template templates.Template, launch templates.ResolvedLaunch, name, tenantID string, values map[string]string, sensitive map[string]bool, managed map[string]bool) (servers.Server, []servers.ProvisionedVariable, error) {
+func buildServer(template templates.Template, launch templates.ResolvedLaunch, name, tenantID string, values map[string]string, sensitive map[string]bool, managed map[string]bool, withoutEnvironment bool) (servers.Server, []servers.ProvisionedVariable, error) {
 	metadata := make([]servers.ProvisionedVariable, 0, len(values))
 	environment := map[string]string{}
 	for key, value := range values {
 		if managed[key] {
 			continue
 		}
-		environment[key] = value
+		// A launch that reads no environment (Minecraft: settings live in
+		// server.properties/arguments/eula.txt) must not carry template values
+		// - including secrets such as the RCON password - into the persisted
+		// server definition. Provenance rows are still recorded.
+		if !withoutEnvironment {
+			environment[key] = value
+		}
 		metadata = append(metadata, servers.ProvisionedVariable{Key: key, Sensitive: sensitive[key], Source: template.SourceType, Version: template.Version})
 	}
 	for key, value := range launch.Environment {

@@ -1,0 +1,16 @@
+.minecraft-picker{display:grid;gap:12px}
+.minecraft-loaders{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin:0;padding:0;border:0}
+.minecraft-loaders label{display:grid;gap:3px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-subtle);cursor:pointer}
+.minecraft-loaders label.selected{border-color:var(--accent);background:var(--surface-hover)}
+.minecraft-loaders input{position:absolute;opacity:0;pointer-events:none}
+.minecraft-loaders label:focus-within{outline:2px solid var(--accent);outline-offset:1px}
+.minecraft-loaders span{font-weight:650;color:var(--text-primary)}
+.minecraft-loaders small{color:var(--text-muted)}
+.mods-panel .notice{margin:10px 0}
+.mods-search{flex:1;min-width:180px;min-height:34px}
+.mods-count{align-self:center;margin-left:auto;font-size:12px}
+.mods-row{grid-template-columns:minmax(200px,2.2fr) minmax(70px,.8fr) minmax(110px,1fr) 90px minmax(190px,1fr)}
+.mod-name{display:grid;min-width:0}
+.mod-name small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted)}
+.mod-disabled{opacity:.6}.mod-badge{margin-left:8px;font-size:10px}.mods-footnote{margin-top:12px;font-size:12px}
+@media(max-width:900px){.mods-row{grid-template-columns:1fr auto}.mods-row>span:not(.file-actions):not(.mod-name){display:none}}

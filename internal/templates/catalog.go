@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gamenode/internal/minecraft"
 )
 
 const (
@@ -360,7 +362,7 @@ func decodeCatalog(data []byte) (CatalogManifest, error) {
 				return CatalogManifest{}, errors.New("catalog platform is unsupported")
 			}
 		}
-		if entry.Installer != InstallerExisting && entry.Installer != InstallerExistingFiles && entry.Installer != InstallerSteamCMD {
+		if entry.Installer != InstallerExisting && entry.Installer != InstallerExistingFiles && entry.Installer != InstallerSteamCMD && entry.Installer != InstallerMinecraft {
 			return CatalogManifest{}, errors.New("catalog installer is unsupported")
 		}
 		seen[entry.ID] = true
@@ -495,6 +497,21 @@ func validateOfficial(template Template) error {
 				}
 			}
 		}
+	} else if template.Installer.Type == InstallerMinecraft {
+		if template.Installer.SteamCMD != nil || template.Launch == nil || len(template.PlatformLaunches) != 0 || template.Launch.Resolver != "minecraft" || template.Launch.Executable != "java" {
+			return validationError(CodeUnsupportedInstaller, "minecraft installer launch shape is invalid")
+		}
+		for _, platform := range template.Platforms {
+			if err := validateOfficialLaunch(*template.Launch, known, platform); err != nil {
+				return err
+			}
+		}
+		if err := validateLaunchSensitive(*template.Launch, definitions); err != nil {
+			return err
+		}
+		if err := validateMinecraftVariables(definitions); err != nil {
+			return err
+		}
 	} else if template.Installer.Type == InstallerSteamCMD {
 		plan := template.Installer.SteamCMD
 		if plan == nil || plan.AppID <= 0 || plan.LoginMode != "anonymous" || plan.InstallTarget != "server_root" || plan.Platform != "native" || plan.UsernameVariable != "" || plan.PasswordVariable != "" || plan.AuthVariable != "" || plan.PlatformVariable != "" || plan.BetaPasswordVariable != "" || template.Launch != nil || len(template.PlatformLaunches) == 0 {
@@ -548,6 +565,23 @@ func validateOfficial(template Template) error {
 	}
 	if err := validateConfigurationReferences(template.Configuration); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateMinecraftVariables pins the variable contract the compiled "minecraft"
+// resolver and installer read. The loader allow-list must equal the compiled
+// loader set so a template cannot widen or narrow what the installer accepts.
+func validateMinecraftVariables(definitions map[string]TemplateVariable) error {
+	loader, ok := definitions["LOADER"]
+	if !ok || loader.Type != "enum" || !loader.UserEditable || !equalStrings(loader.Validation.Allowed, minecraft.Loaders) {
+		return validationError(CodeInvalidVariable, "minecraft template LOADER variable is invalid")
+	}
+	for key, kind := range map[string]string{"MINECRAFT_VERSION": "string", "LOADER_VERSION": "string", "MIN_MEMORY_MB": "integer", "MAX_MEMORY_MB": "integer", "NOGUI": "boolean", "ACCEPT_EULA": "boolean"} {
+		variable, found := definitions[key]
+		if !found || variable.Type != kind || !variable.UserEditable || variable.Sensitive {
+			return validationError(CodeInvalidVariable, "minecraft template variable "+key+" is invalid")
+		}
 	}
 	return nil
 }
@@ -619,12 +653,15 @@ func decodeConfigAdapter(data []byte, reference ConfigAdapterReference, template
 		}
 	} else {
 		extension := strings.ToLower(path.Ext(adapter.Target))
-		standardFormat := adapter.Format == FormatXMLProperties || adapter.Format == FormatINIKeyValues || adapter.Format == FormatJSONKeyValues || adapter.Format == FormatINISectionKeyValues
-		if (!standardFormat && !tupleFormat) || (adapter.Format == FormatXMLProperties && extension != ".xml") || ((adapter.Format == FormatINIKeyValues || adapter.Format == FormatINISectionKeyValues || tupleFormat) && extension != ".ini") || (adapter.Format == FormatJSONKeyValues && extension != ".json") || validateRelativeConfigTarget(adapter.Target) != nil {
+		standardFormat := adapter.Format == FormatXMLProperties || adapter.Format == FormatINIKeyValues || adapter.Format == FormatJSONKeyValues || adapter.Format == FormatINISectionKeyValues || adapter.Format == FormatPropertiesKeyValues
+		if (!standardFormat && !tupleFormat) || (adapter.Format == FormatPropertiesKeyValues && extension != ".properties") || (adapter.Format == FormatXMLProperties && extension != ".xml") || ((adapter.Format == FormatINIKeyValues || adapter.Format == FormatINISectionKeyValues || tupleFormat) && extension != ".ini") || (adapter.Format == FormatJSONKeyValues && extension != ".json") || validateRelativeConfigTarget(adapter.Target) != nil {
 			return ConfigAdapterDefinition{}, errors.New("configuration adapter target is unsafe")
 		}
 	}
 	propertyPattern := regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
+	if adapter.Format == FormatPropertiesKeyValues {
+		propertyPattern = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,63}$`)
+	}
 	sectionPattern := regexp.MustCompile(`^[A-Za-z0-9_./-]{1,160}$`)
 	if tupleFormat {
 		if !sectionPattern.MatchString(adapter.Section) || !propertyPattern.MatchString(adapter.ContainerProperty) {
