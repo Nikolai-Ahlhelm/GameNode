@@ -5,7 +5,7 @@
   "description": "Install a Minecraft Java Edition server - vanilla, NeoForge, Forge, or Fabric - at an exact Minecraft and loader version, then manage its mods.",
   "version": "1.1.0",
   "category": "minecraft",
-  "minimum_gamenode_version": "0.2.0",
+  "minimum_gamenode_version": "1.2.0",
   "known_limitations": [
     "Java must be installed through JAVA_HOME or PATH and match the Minecraft version (Java 21 for 1.20.5-1.21.x, Java 25 for 26.x).",
     "Forge is offered for Minecraft 1.17 and newer; NeoForge for 1.20.2 and newer.",
