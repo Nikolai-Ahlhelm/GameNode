@@ -122,7 +122,9 @@ func TestMinecraftTemplateContractIsPinned(t *testing.T) {
 		t.Fatalf("repository template must validate: %v", err)
 	}
 	for name, mutate := range map[string]func(*Template){
-		"widened loader list": func(tpl *Template) { tpl.Variables[0].Validation.Allowed = append(tpl.Variables[0].Validation.Allowed, "quilt") },
+		"widened loader list": func(tpl *Template) {
+			tpl.Variables[0].Validation.Allowed = append(tpl.Variables[0].Validation.Allowed, "quilt")
+		},
 		"wrong resolver":      func(tpl *Template) { tpl.Launch.Resolver = "java" },
 		"non-java executable": func(tpl *Template) { tpl.Launch.Executable = "sh" },
 		"missing version var": func(tpl *Template) { tpl.Variables = append(tpl.Variables[:1], tpl.Variables[2:]...) },
