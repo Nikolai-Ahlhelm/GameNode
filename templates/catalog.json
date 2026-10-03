@@ -44,7 +44,7 @@
       "file": "minecraft/java/template.json",
       "tags": ["minecraft", "java", "mods", "vanilla", "neoforge", "forge", "fabric"],
       "icon": "minecraft",
-      "minimum_gamenode_version": "0.2.0"
+      "minimum_gamenode_version": "1.2.0"
     },
     {
       "id": "minecraft-neoforge",
