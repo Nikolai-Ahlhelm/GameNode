@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -29,6 +30,16 @@ type consoleMessage struct {
 	Timestamp time.Time `json:"timestamp,omitempty"`
 }
 
+// consoleInputFor converts console input to the server's configured line ending.
+// On a lookup failure the input is passed through unchanged.
+func (s *Server) consoleInputFor(ctx context.Context, id, data string) string {
+	record, err := s.servers.Get(ctx, id)
+	if err != nil {
+		return data
+	}
+	return record.Server.ConsoleInput(data)
+}
+
 func (s *Server) recordConsoleInputAudit(r *http.Request, actor auth.User, serverID, result string, bytes int, errorCode, errorSummary string) {
 	server := serverID
 	metadata, _ := json.Marshal(map[string]int{"bytes": bytes})
@@ -54,7 +65,8 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request, id string) {
 		serverError(w, err, false)
 		return
 	}
-	_ = record
+	// Servers that need CR+LF (Vintage Story) get their line endings converted.
+	inputServer := record.Server
 	upgrader := consoleUpgrader
 	upgrader.CheckOrigin = s.sameOrigin
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -113,7 +125,7 @@ func (s *Server) consoleWS(w http.ResponseWriter, r *http.Request, id string) {
 				}
 				continue
 			}
-			if err := session.Input(in.Data); err != nil {
+			if err := session.Input(inputServer.ConsoleInput(in.Data)); err != nil {
 				s.log.Error("console input delivery failed", "module", "Console.Input", "server_id", id, "user_id", u.ID, "bytes", len([]byte(in.Data)), "error", err)
 				s.recordConsoleInputAudit(r, u, id, audit.Failure, len([]byte(in.Data)), "input_unavailable", "console input is unavailable")
 				select {

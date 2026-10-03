@@ -259,6 +259,19 @@ func TestCancellationStopsSteamCMDAndFinalizesExactlyOnce(t *testing.T) {
 	if job.Status != Cancelled {
 		t.Fatalf("expected cancelled, got %s", job.Status)
 	}
+	// The terminal state is persisted before the worker goroutine removes the job
+	// from the active set and releases the reservation, so wait for that steady
+	// state; asserting immediately races the worker's deferred release.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		service.mu.Lock()
+		_, stillActive := service.active[job.ID]
+		service.mu.Unlock()
+		if !stillActive {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	// A second cancel must not be accepted as if it did something new.
 	if _, err = service.Cancel(context.Background(), job.ID, "actor-1"); !errors.Is(err, ErrJobNotActive) {
 		t.Fatalf("expected ErrJobNotActive on a repeat cancel, got %v", err)

@@ -1,0 +1,360 @@
+{
+  "schema_version": 1,
+  "id": "vintagestory-serverconfig",
+  "version": "1.0.0",
+  "format": "json-key-values",
+  "target": "data/serverconfig.json",
+  "restart_required": true,
+  "post_start_only": true,
+  "fields": [
+    {
+      "key": "VS_SERVER_NAME",
+      "label": "Server name",
+      "description": "Name shown in the server list and to players.",
+      "section": "Identity",
+      "type": "string",
+      "property": "ServerName",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min_length": 1,
+        "max_length": 100
+      }
+    },
+    {
+      "key": "VS_SERVER_DESCRIPTION",
+      "label": "Description",
+      "description": "Short description shown in the server list.",
+      "section": "Identity",
+      "type": "string",
+      "property": "ServerDescription",
+      "required": false,
+      "nullable": true,
+      "sensitive": false,
+      "validation": {
+        "max_length": 500
+      }
+    },
+    {
+      "key": "VS_WELCOME_MESSAGE",
+      "label": "Welcome message",
+      "description": "Sent to players on join. {0} is replaced with the player name.",
+      "section": "Identity",
+      "type": "string",
+      "property": "WelcomeMessage",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "max_length": 500
+      }
+    },
+    {
+      "key": "VS_SERVER_URL",
+      "label": "Server URL",
+      "description": "Optional website shown with the server.",
+      "section": "Identity",
+      "type": "string",
+      "property": "ServerUrl",
+      "required": false,
+      "nullable": true,
+      "sensitive": false,
+      "validation": {
+        "max_length": 256
+      }
+    },
+    {
+      "key": "VS_MAX_CLIENTS",
+      "label": "Maximum players",
+      "description": "Number of players that can be online at once.",
+      "section": "Players & access",
+      "type": "integer",
+      "property": "MaxClients",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min": 1,
+        "max": 1000
+      }
+    },
+    {
+      "key": "VS_MAX_CLIENTS_IN_QUEUE",
+      "label": "Queue size",
+      "description": "Players that may wait in the join queue when the server is full.",
+      "section": "Players & access",
+      "type": "integer",
+      "property": "MaxClientsInQueue",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min": 0,
+        "max": 1000
+      }
+    },
+    {
+      "key": "VS_PASSWORD",
+      "label": "Join password",
+      "description": "Optional password required to join.",
+      "section": "Players & access",
+      "type": "secret",
+      "property": "Password",
+      "required": false,
+      "nullable": true,
+      "sensitive": true,
+      "validation": {
+        "max_length": 128
+      }
+    },
+    {
+      "key": "VS_WHITELIST_MODE",
+      "label": "Whitelist mode",
+      "description": "Matches /serverconfig whitelistmode: 0 = off, 1 = on, 2 = default (the server default, invite-only on new servers).",
+      "section": "Players & access",
+      "type": "integer",
+      "property": "WhitelistMode",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min": 0,
+        "max": 2
+      }
+    },
+    {
+      "key": "VS_ONLY_WHITELISTED",
+      "label": "Only whitelisted players",
+      "description": "Legacy whitelist switch kept by the server.",
+      "section": "Players & access",
+      "type": "boolean",
+      "property": "OnlyWhitelisted",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    },
+    {
+      "key": "VS_VERIFY_PLAYER_AUTH",
+      "label": "Verify player accounts",
+      "description": "Verify players against their Vintage Story account. Disable only for offline play.",
+      "section": "Players & access",
+      "type": "boolean",
+      "property": "VerifyPlayerAuth",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    },
+    {
+      "key": "VS_ADVERTISE_SERVER",
+      "label": "Advertise in the public list",
+      "description": "List the server in the public server browser.",
+      "section": "Network",
+      "type": "boolean",
+      "property": "AdvertiseServer",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    },
+    {
+      "key": "VS_IP",
+      "label": "Bind address",
+      "description": "Network interface to bind. Leave empty to listen on all interfaces. The port is set by the server template and launch arguments.",
+      "section": "Network",
+      "type": "string",
+      "property": "Ip",
+      "required": false,
+      "nullable": true,
+      "sensitive": false,
+      "validation": {
+        "max_length": 64
+      }
+    },
+    {
+      "key": "VS_UPNP",
+      "label": "UPnP port forwarding",
+      "description": "Ask the router to forward the port automatically.",
+      "section": "Network",
+      "type": "boolean",
+      "property": "Upnp",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    },
+    {
+      "key": "VS_COMPRESS_PACKETS",
+      "label": "Compress packets",
+      "description": "Compress network packets.",
+      "section": "Network",
+      "type": "boolean",
+      "property": "CompressPackets",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    },
+    {
+      "key": "VS_CLIENT_CONNECTION_TIMEOUT",
+      "label": "Connection timeout (s)",
+      "description": "Seconds before an unresponsive client is dropped.",
+      "section": "Network",
+      "type": "integer",
+      "property": "ClientConnectionTimeout",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min": 10,
+        "max": 3600
+      }
+    },
+    {
+      "key": "VS_PASS_TIME_WHEN_EMPTY",
+      "label": "Pass time when empty",
+      "description": "Let in-game time advance while nobody is online.",
+      "section": "Gameplay",
+      "type": "boolean",
+      "property": "PassTimeWhenEmpty",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    },
+    {
+      "key": "VS_ALLOW_PVP",
+      "label": "Allow PvP",
+      "description": "Allow players to damage each other.",
+      "section": "Gameplay",
+      "type": "boolean",
+      "property": "AllowPvP",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    },
+    {
+      "key": "VS_ALLOW_FIRE_SPREAD",
+      "label": "Allow fire spread",
+      "description": "Allow fire to spread between blocks.",
+      "section": "Gameplay",
+      "type": "boolean",
+      "property": "AllowFireSpread",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    },
+    {
+      "key": "VS_ALLOW_FALLING_BLOCKS",
+      "label": "Allow falling blocks",
+      "description": "Let unsupported blocks such as gravel fall.",
+      "section": "Gameplay",
+      "type": "boolean",
+      "property": "AllowFallingBlocks",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    },
+    {
+      "key": "VS_MAX_CHUNK_RADIUS",
+      "label": "Maximum chunk radius",
+      "description": "Chunk view distance sent to players. Lower values reduce load.",
+      "section": "Gameplay",
+      "type": "integer",
+      "property": "MaxChunkRadius",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min": 4,
+        "max": 64
+      }
+    },
+    {
+      "key": "VS_SPAWN_CAP_SCALING",
+      "label": "Spawn cap scaling",
+      "description": "How much each extra player raises the creature spawn cap.",
+      "section": "Gameplay",
+      "type": "number",
+      "property": "SpawnCapPlayerScaling",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min": 0,
+        "max": 10
+      }
+    },
+    {
+      "key": "VS_SERVER_LANGUAGE",
+      "label": "Server language",
+      "description": "Language code used for server messages, for example en.",
+      "section": "Gameplay",
+      "type": "string",
+      "property": "ServerLanguage",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min_length": 2,
+        "max_length": 16
+      }
+    },
+    {
+      "key": "VS_CHAT_RATE_LIMIT_MS",
+      "label": "Chat rate limit (ms)",
+      "description": "Minimum milliseconds between chat messages from one player.",
+      "section": "Advanced",
+      "type": "integer",
+      "property": "ChatRateLimitMs",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {
+        "min": 0,
+        "max": 600000
+      }
+    },
+    {
+      "key": "VS_CORRUPTION_PROTECTION",
+      "label": "Corruption protection",
+      "description": "Protect the savegame against detected corruption.",
+      "section": "Advanced",
+      "type": "boolean",
+      "property": "CorruptionProtection",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    },
+    {
+      "key": "VS_LOG_BLOCK_BREAK_PLACE",
+      "label": "Log block changes",
+      "description": "Write every block break and placement to the log.",
+      "section": "Advanced",
+      "type": "boolean",
+      "property": "LogBlockBreakPlace",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    },
+    {
+      "key": "VS_LOGIN_FLOOD_PROTECTION",
+      "label": "Login flood protection",
+      "description": "Throttle repeated login attempts.",
+      "section": "Advanced",
+      "type": "boolean",
+      "property": "LoginFloodProtection",
+      "required": true,
+      "nullable": false,
+      "sensitive": false,
+      "validation": {}
+    }
+  ]
+}

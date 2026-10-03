@@ -374,6 +374,10 @@ func (s *Server) templateHandler(w http.ResponseWriter, r *http.Request) {
 			s.farmingSimulatorTemplateAction(w, r, parts[0], parts[1])
 			return
 		}
+		if parts[0] == hytaleTemplateID {
+			s.hytaleTemplateAction(w, r, parts[0], parts[1])
+			return
+		}
 		s.neoForgeTemplateAction(w, r, parts[0], parts[1])
 		return
 	}

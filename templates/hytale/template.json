@@ -1,0 +1,177 @@
+{
+  "schema_version": 2,
+  "id": "hytale",
+  "name": "Hytale",
+  "description": "Adopt an existing Hytale dedicated server directory and run HytaleServer.jar directly, then manage its mods.",
+  "version": "1.0.0",
+  "category": "hytale",
+  "minimum_gamenode_version": "1.2.1",
+  "known_limitations": [
+    "GameNode cannot install Hytale: the server files come from Hytale's official downloader, which needs an interactive account login. Download them yourself, then adopt the folder.",
+    "The server needs Java 25 and its own account authentication; run /auth login device in the server Console tab after the first start.",
+    "GameNode runs the server from the folder you select, so config.json, mods/ and universe/ live there; move existing data there if you ran it from elsewhere.",
+    "No configuration adapter yet: config.json key names are not documented and have changed between early-access builds. Edit it in the Files tab."
+  ],
+  "icon": "hytale",
+  "source_type": "official",
+  "source_identifier": "hytale",
+  "source_format_version": "2",
+  "tags": [
+    "hytale",
+    "java",
+    "mods",
+    "adopt"
+  ],
+  "source_metadata": {
+    "author": "GameNode",
+    "tags": [
+      "hytale",
+      "java",
+      "mods",
+      "adopt"
+    ]
+  },
+  "installer": {
+    "type": "existing-files"
+  },
+  "launch": {
+    "executable": "java",
+    "arguments": [
+      "-Xms${MIN_MEMORY_MB}M",
+      "-Xmx${MAX_MEMORY_MB}M",
+      "-jar",
+      "Server/HytaleServer.jar",
+      "--assets",
+      "Assets.zip",
+      "--bind",
+      "0.0.0.0:${SERVER_PORT}"
+    ],
+    "working_root": "server_root",
+    "stop_command": "/stop",
+    "stop_method": "stdin_command",
+    "stop_timeout_seconds": 60,
+    "resolver": "java"
+  },
+  "variables": [
+    {
+      "name": "Server port",
+      "description": "UDP port players connect to (QUIC)",
+      "key": "SERVER_PORT",
+      "default_value": "5520",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1024,
+        "max": 65535
+      },
+      "group": "Network"
+    },
+    {
+      "name": "Minimum memory",
+      "description": "Initial Java heap in MiB",
+      "key": "MIN_MEMORY_MB",
+      "default_value": "2048",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 256,
+        "max": 262144
+      },
+      "group": "Java"
+    },
+    {
+      "name": "Maximum memory",
+      "description": "Maximum Java heap in MiB",
+      "key": "MAX_MEMORY_MB",
+      "default_value": "4096",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 512,
+        "max": 262144
+      },
+      "group": "Java"
+    }
+  ],
+  "ports": [
+    {
+      "name": "Hytale UDP",
+      "protocol": "udp",
+      "variable": "SERVER_PORT",
+      "purpose": "Game connections (QUIC over UDP)"
+    }
+  ],
+  "expected_files": [
+    {
+      "path": "Server/HytaleServer.jar",
+      "type": "file",
+      "required": true
+    },
+    {
+      "path": "Assets.zip",
+      "type": "file",
+      "required": true
+    },
+    {
+      "path": "mods",
+      "type": "directory",
+      "required": false
+    }
+  ],
+  "config_files": [
+    {
+      "path": "config.json",
+      "format": "json",
+      "description": "Server configuration created by the server on first start; edit it in the Files tab."
+    },
+    {
+      "path": "whitelist.json",
+      "format": "json",
+      "description": "Whitelist managed by the server."
+    }
+  ],
+  "requirements": [
+    {
+      "type": "java",
+      "level": "hard",
+      "description": "Java (25 recommended by Hytale) must be available through JAVA_HOME or PATH."
+    },
+    {
+      "type": "note",
+      "level": "informational",
+      "description": "Obtain the server with Hytale's official downloader and select the folder containing Server/HytaleServer.jar and Assets.zip."
+    }
+  ],
+  "help": {
+    "summary": "GameNode inspects the selected folder, then launches Java directly with structured arguments; it never downloads Hytale files or handles your account login.",
+    "notes": [
+      "After the first start, run /auth login device in the server Console tab to authenticate the server.",
+      "Mods (.jar plugins and .zip packs) are managed on the server Mods tab."
+    ]
+  },
+  "compatibility": {
+    "status": "compatible",
+    "findings": []
+  },
+  "read_only": true,
+  "platforms": [
+    "windows",
+    "linux"
+  ],
+  "prerequisites": [
+    "An existing Hytale dedicated server folder (Server/HytaleServer.jar and Assets.zip)",
+    "Java available through JAVA_HOME or PATH"
+  ]
+}

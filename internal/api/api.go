@@ -23,9 +23,11 @@ import (
 	"gamenode/internal/filesystem"
 	ftpservice "gamenode/internal/ftp"
 	"gamenode/internal/gameconfig"
+	"gamenode/internal/hytale"
 	"gamenode/internal/identity"
 	"gamenode/internal/logging"
 	"gamenode/internal/minecraft"
+	"gamenode/internal/mods"
 	"gamenode/internal/monitoring"
 	"gamenode/internal/nodeidentity"
 	"gamenode/internal/nodes"
@@ -45,48 +47,52 @@ import (
 	"gamenode/internal/support"
 	"gamenode/internal/templates"
 	"gamenode/internal/tenants"
+	"gamenode/internal/vintagestory"
 )
 
 const sessionCookie = "gamenode_session"
 
 type Server struct {
-	auth              *auth.Service
-	audit             *audit.Service
-	log               *slog.Logger
-	secureCookie      bool
-	trustLocalProxy   bool
-	servers           *servers.Service
-	files             *filesystem.Service
-	mods              *minecraft.ModManager
-	minecraftSource   *minecraft.Source
-	ftp               *ftpservice.Service
-	identity          *identity.Service
-	rbac              *rbac.Service
-	tenants           *tenants.Service
-	ports             *ports.Service
-	settings          *settings.Service
-	diagnostics       *diagnostics.Service
-	support           supportGenerator
-	templates         *templates.Service
-	pelican           *templates.PelicanCatalog
-	provisioning      *provisioning.Service
-	serverUpdates     *serverupdates.Service
-	statusHistory     *statushistory.Store
-	restartSchedules  *scheduler.Store
-	restartScheduler  *scheduler.Scheduler
-	gameConfig        *gameconfig.Service
-	logs              *logging.Manager
-	setupConfig       setupConfigStore
-	steamcmd          steamBootstrapper
-	bootstrapMu       sync.Mutex
-	bootstrap         bootstrapStatus
-	nodeIdentity      *nodeidentity.Service
-	nodes             *nodes.Service
-	remoteClient      remoteNodeClient
-	emailAlerts       *notifications.Service
-	emailVerification *emailverification.Service
-	registration      *registration.Service
-	passwordReset     *passwordreset.Service
+	auth               *auth.Service
+	audit              *audit.Service
+	log                *slog.Logger
+	secureCookie       bool
+	trustLocalProxy    bool
+	servers            *servers.Service
+	files              *filesystem.Service
+	mods               *minecraft.ModManager
+	vintageStoryMods   *mods.Manager
+	hytaleMods         *mods.Manager
+	vintageStorySource *vintagestory.Source
+	minecraftSource    *minecraft.Source
+	ftp                *ftpservice.Service
+	identity           *identity.Service
+	rbac               *rbac.Service
+	tenants            *tenants.Service
+	ports              *ports.Service
+	settings           *settings.Service
+	diagnostics        *diagnostics.Service
+	support            supportGenerator
+	templates          *templates.Service
+	pelican            *templates.PelicanCatalog
+	provisioning       *provisioning.Service
+	serverUpdates      *serverupdates.Service
+	statusHistory      *statushistory.Store
+	restartSchedules   *scheduler.Store
+	restartScheduler   *scheduler.Scheduler
+	gameConfig         *gameconfig.Service
+	logs               *logging.Manager
+	setupConfig        setupConfigStore
+	steamcmd           steamBootstrapper
+	bootstrapMu        sync.Mutex
+	bootstrap          bootstrapStatus
+	nodeIdentity       *nodeidentity.Service
+	nodes              *nodes.Service
+	remoteClient       remoteNodeClient
+	emailAlerts        *notifications.Service
+	emailVerification  *emailverification.Service
+	registration       *registration.Service
+	passwordReset      *passwordreset.Service
 }
 
 // remoteNodeClient is the narrow set of typed Remote Node operations the API
@@ -154,6 +160,8 @@ type Options struct {
 	Filesystem      *filesystem.Service
 	// MinecraftSource overrides the fixed official version source (tests only).
 	MinecraftSource *minecraft.Source
+	// VintageStorySource overrides the fixed official version source (tests only).
+	VintageStorySource *vintagestory.Source
 	// DataDirectory is the GameNode data root used for safe physical
 	// migration of provisioned servers between tenant storage trees.
 	DataDirectory     string
@@ -322,6 +330,10 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	if len(options) > 0 && options[0].Support != nil {
 		supportService = options[0].Support
 	}
+	vintageStorySource := vintagestory.NewSource()
+	if len(options) > 0 && options[0].VintageStorySource != nil {
+		vintageStorySource = options[0].VintageStorySource
+	}
 	minecraftSource := minecraft.NewSource()
 	if len(options) > 0 && options[0].MinecraftSource != nil {
 		minecraftSource = options[0].MinecraftSource
@@ -352,7 +364,7 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	nodesService := nodes.New(a.Database())
 	var remoteClient remoteNodeClient = remote.New()
 	historyStore := statushistory.New(a.Database())
-	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, mods: minecraft.NewModManager(files), minecraftSource: minecraftSource, identity: identityService, rbac: rbac.New(a.Database()), tenants: tenants.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, pelican: templates.NewPelicanCatalog(), provisioning: provisioner, serverUpdates: serverUpdater, statusHistory: historyStore, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie, nodeIdentity: nodeIdentityService, nodes: nodesService, remoteClient: remoteClient}
+	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, mods: minecraft.NewModManager(files), vintageStoryMods: vintagestory.NewModManager(files), hytaleMods: hytale.NewModManager(files), minecraftSource: minecraftSource, vintageStorySource: vintageStorySource, identity: identityService, rbac: rbac.New(a.Database()), tenants: tenants.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, pelican: templates.NewPelicanCatalog(), provisioning: provisioner, serverUpdates: serverUpdater, statusHistory: historyStore, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie, nodeIdentity: nodeIdentityService, nodes: nodesService, remoteClient: remoteClient}
 	result.registration = registration.New(a.Database(), identityService, nil)
 	result.passwordReset = passwordreset.New(a.Database(), identityService, nil)
 	if len(options) > 0 {
@@ -446,6 +458,7 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/templates", s.templatesHandler)
 	mux.HandleFunc("/api/v1/templates/", s.templateHandler)
 	mux.HandleFunc("/api/v1/minecraft/versions", s.minecraftVersionsHandler)
+	mux.HandleFunc("/api/v1/vintagestory/versions", s.vintageStoryVersionsHandler)
 	mux.HandleFunc("/api/v1/template-catalog", s.templateCatalogHandler)
 	mux.HandleFunc("/api/v1/template-catalog/refresh", s.templateCatalogRefreshHandler)
 	mux.HandleFunc("/api/v1/pelican-catalog", s.pelicanCatalogHandler)

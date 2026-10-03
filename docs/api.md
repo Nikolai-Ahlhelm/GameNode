@@ -154,6 +154,14 @@ The typed surface includes `monitoring.sample_interval_seconds` (1–300), `moni
 
 `GET|POST|DELETE /api/v1/servers/{id}/mods` manage jars in the server's `mods` directory. GET (`Files.View`) returns `{available, loader?, mods[], max_upload_bytes}`; POST (`Files.Upload`, CSRF) takes one multipart `file` part and optional `?overwrite=true`; DELETE (`Files.Delete`, CSRF) takes `?file=<name>.jar`. PATCH (`Files.Rename`, CSRF) takes `{"file":"x.jar"|"x.jar.disabled","enabled":bool}` and renames between `x.jar` and `x.jar.disabled` (disabled mods stay installed but are not loaded; `disabled:true` in the list). DELETE accepts either name. Errors: `invalid_mod`, `invalid_mod_archive`, `not_found`, `file_conflict`. See ADR 0013.
 
+## Vintage Story and Hytale
+
+`GET /api/v1/vintagestory/versions` (global `Templates.View`) returns `versions` (`version`, `channel` = `stable` or `rc`, `latest` on the newest stable; 1.21.0 and newer) and `dotnet` (`found`, `installed_majors`, `required_major` per version, advisory). Errors: `502 vintagestory_source_unavailable`.
+
+`POST /api/v1/templates/hytale/resolve|adopt` (global `Templates.View`; adopt also CSRF and global `Server.Create`) takes `{"server_name","server_root","variables":{"SERVER_PORT","MIN_MEMORY_MB","MAX_MEMORY_MB"}}`. Resolve returns the direct Java launch, ports and stop semantics; it fails with `422 hytale_resolution_failed` unless `Server/HytaleServer.jar`, `Assets.zip` and Java are present. Hytale cannot be installed by GameNode (its files require an account login).
+
+`GET /api/v1/servers/{id}/mods` also reports `game`, `directory` and `extensions` for the server's profile (`minecraft`: `.jar` in `mods`; `vintagestory`: `.zip` in `data/Mods`; `hytale`: `.jar`/`.zip` in `mods`). Servers expose `console_line_ending` (`lf` or `crlf`). See ADR 0014.
+
 ## Server ports
 
 Port records contain `id`, `name`, `protocol`, `bind_address`, `port`, and dynamic `status`. Protocol is `tcp` or `udp`; ports are 1–65535. Bind addresses may be empty/wildcard, `0.0.0.0`, `::`, or concrete IPv4/IPv6 literals. Hostnames are unsupported. `Ports.View` and `Ports.Manage` are independent server-scoped permissions: global grants apply everywhere and server grants only at that server. Mutations require the normal CSRF token. Validation can reject invalid ports, protocols or addresses, an internal registry collision, or an externally occupied OS port; unknown servers/ports and missing permissions use the normal API errors.

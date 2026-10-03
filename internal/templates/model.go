@@ -18,6 +18,7 @@ const (
 	InstallerExistingFiles   = "existing-files"
 	InstallerSteamCMD        = "steamcmd"
 	InstallerMinecraft       = "minecraft"
+	InstallerVintageStory    = "vintagestory"
 	InstallerUnsupported     = "unsupported"
 	Compatible               = "compatible"
 	PartiallyCompatible      = "partially_compatible"
@@ -246,15 +247,17 @@ type SteamCMDPlan struct {
 }
 
 type LaunchDefinition struct {
-	Executable       string            `json:"executable"`
-	Arguments        []string          `json:"arguments"`
-	WorkingRoot      string            `json:"working_root"`
-	WorkingDirectory string            `json:"working_directory,omitempty"`
-	StopCommand      string            `json:"stop_command,omitempty"`
-	StopMethod       string            `json:"stop_method,omitempty"`
-	StopTimeout      int               `json:"stop_timeout_seconds,omitempty"`
-	Resolver         string            `json:"resolver,omitempty"`
-	Environment      map[string]string `json:"environment,omitempty"`
+	Executable       string   `json:"executable"`
+	Arguments        []string `json:"arguments"`
+	WorkingRoot      string   `json:"working_root"`
+	WorkingDirectory string   `json:"working_directory,omitempty"`
+	StopCommand      string   `json:"stop_command,omitempty"`
+	StopMethod       string   `json:"stop_method,omitempty"`
+	StopTimeout      int      `json:"stop_timeout_seconds,omitempty"`
+	Resolver         string   `json:"resolver,omitempty"`
+	// ConsoleLineEnding is "lf" (default) or "crlf"; see servers.Server.
+	ConsoleLineEnding string            `json:"console_line_ending,omitempty"`
+	Environment       map[string]string `json:"environment,omitempty"`
 }
 
 type TemplatePort struct {

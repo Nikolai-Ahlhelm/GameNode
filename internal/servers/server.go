@@ -99,13 +99,16 @@ type Server struct {
 	RestartPolicy                 string            `json:"restart_policy"`
 	StopMethod                    string            `json:"stop_method"`
 	StopCommand                   string            `json:"stop_command"`
-	StopTimeoutSeconds            int               `json:"stop_timeout_seconds"`
-	AutoRestartEnabled            bool              `json:"auto_restart_enabled"`
-	AutoRestartMaxAttempts        int               `json:"auto_restart_max_attempts"`
-	AutoRestartWindowSeconds      int               `json:"auto_restart_window_seconds"`
-	AutoRestartDelaySeconds       int               `json:"auto_restart_delay_seconds"`
-	CreatedAt                     time.Time         `json:"created_at"`
-	UpdatedAt                     time.Time         `json:"updated_at"`
+	// ConsoleLineEnding is "lf" (default) or "crlf": how console input and the
+	// stdin stop command terminate a line for this server.
+	ConsoleLineEnding        string    `json:"console_line_ending"`
+	StopTimeoutSeconds       int       `json:"stop_timeout_seconds"`
+	AutoRestartEnabled       bool      `json:"auto_restart_enabled"`
+	AutoRestartMaxAttempts   int       `json:"auto_restart_max_attempts"`
+	AutoRestartWindowSeconds int       `json:"auto_restart_window_seconds"`
+	AutoRestartDelaySeconds  int       `json:"auto_restart_delay_seconds"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
 }
 
 type RuntimeState struct {
@@ -131,6 +134,21 @@ type Record struct {
 	Server  Server       `json:"server"`
 	Runtime RuntimeState `json:"runtime"`
 }
+
+const (
+	ConsoleLineEndingLF   = "lf"
+	ConsoleLineEndingCRLF = "crlf"
+)
+
+// ConsoleInput converts the line endings of text for this server's console. A
+// "crlf" server receives every line break as CR+LF; any other value keeps LF.
+func (s Server) ConsoleInput(text string) string {
+	if s.ConsoleLineEnding != ConsoleLineEndingCRLF {
+		return text
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\n", "\r\n")
+}
+
 type Store struct{ db *sql.DB }
 
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
@@ -215,6 +233,12 @@ func (s *Server) Validate() error {
 		}
 	} else if s.StopCommand != "" {
 		return errors.New("stop command requires stdin_command stop method")
+	}
+	if s.ConsoleLineEnding == "" {
+		s.ConsoleLineEnding = ConsoleLineEndingLF
+	}
+	if s.ConsoleLineEnding != ConsoleLineEndingLF && s.ConsoleLineEnding != ConsoleLineEndingCRLF {
+		return errors.New("console line ending must be lf or crlf")
 	}
 	if s.StopTimeoutSeconds == 0 {
 		s.StopTimeoutSeconds = 15
@@ -327,7 +351,7 @@ func (store *Store) Create(ctx context.Context, server Server) (Record, error) {
 	server.UpdatedAt = now
 	args, _ := json.Marshal(server.Arguments)
 	env, _ := json.Marshal(server.EnvironmentVariables)
-	_, err = store.db.ExecContext(ctx, `INSERT INTO servers(id,tenant_id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.TenantID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
+	_, err = store.db.ExecContext(ctx, `INSERT INTO servers(id,tenant_id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,console_line_ending,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.TenantID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.ConsoleLineEnding, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
 	if err != nil {
 		// classifyNameConstraint is a sanitized safety net for the race
 		// window NameAvailable cannot close (two concurrent creates can both
@@ -435,7 +459,7 @@ func (store *Store) CreateProvisioned(ctx context.Context, server Server, templa
 	if nameCount > 0 {
 		return Record{}, ErrDuplicateName
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO servers(id,tenant_id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.TenantID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
+	_, err = tx.ExecContext(ctx, `INSERT INTO servers(id,tenant_id,creation_mode,name,description,working_directory,executable,arguments_json,environment_json,runtime_type,auto_start,restart_policy,stop_method,stop_command,stop_timeout_seconds,console_line_ending,auto_restart_enabled,auto_restart_max_attempts,auto_restart_window_seconds,auto_restart_delay_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, server.ID, server.TenantID, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.ConsoleLineEnding, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(now), stamp(now))
 	if err != nil {
 		if classified := classifyNameConstraint(err); classified != nil {
 			return Record{}, classified
@@ -659,13 +683,16 @@ func (store *Store) Update(ctx context.Context, id string, server Server) (Recor
 			}
 		}
 	}
+	if server.ConsoleLineEnding == "" {
+		server.ConsoleLineEnding = existing.Server.ConsoleLineEnding
+	}
 	if err = server.Validate(); err != nil {
 		return Record{}, err
 	}
 	server.UpdatedAt = time.Now().UTC()
 	args, _ := json.Marshal(server.Arguments)
 	env, _ := json.Marshal(server.EnvironmentVariables)
-	_, err = store.db.ExecContext(ctx, `UPDATE servers SET creation_mode=?,name=?,description=?,working_directory=?,executable=?,arguments_json=?,environment_json=?,runtime_type=?,auto_start=?,restart_policy=?,stop_method=?,stop_command=?,stop_timeout_seconds=?,auto_restart_enabled=?,auto_restart_max_attempts=?,auto_restart_window_seconds=?,auto_restart_delay_seconds=?,updated_at=? WHERE id=?`, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(server.UpdatedAt), id)
+	_, err = store.db.ExecContext(ctx, `UPDATE servers SET creation_mode=?,name=?,description=?,working_directory=?,executable=?,arguments_json=?,environment_json=?,runtime_type=?,auto_start=?,restart_policy=?,stop_method=?,stop_command=?,stop_timeout_seconds=?,console_line_ending=?,auto_restart_enabled=?,auto_restart_max_attempts=?,auto_restart_window_seconds=?,auto_restart_delay_seconds=?,updated_at=? WHERE id=?`, server.CreationMode, server.Name, server.Description, server.WorkingDirectory, server.Executable, string(args), string(env), server.RuntimeType, server.AutoStart, server.RestartPolicy, server.StopMethod, server.StopCommand, server.StopTimeoutSeconds, server.ConsoleLineEnding, server.AutoRestartEnabled, server.AutoRestartMaxAttempts, server.AutoRestartWindowSeconds, server.AutoRestartDelaySeconds, stamp(server.UpdatedAt), id)
 	if err != nil {
 		return Record{}, err
 	}
@@ -729,7 +756,7 @@ func (store *Store) SaveRuntime(ctx context.Context, id string, state RuntimeSta
 	return err
 }
 
-const selectSQL = `SELECT s.id,s.tenant_id,s.creation_mode,s.name,s.description,s.working_directory,s.executable,s.arguments_json,s.environment_json,s.runtime_type,s.auto_start,s.restart_policy,s.stop_method,s.stop_command,s.stop_timeout_seconds,s.auto_restart_enabled,s.auto_restart_max_attempts,s.auto_restart_window_seconds,s.auto_restart_delay_seconds,s.created_at,s.updated_at,r.pid,r.process_start_key,r.process_started_at,r.last_start_at,r.last_stop_at,r.last_exit_at,r.exit_code,r.last_crash_at,r.crash_count,r.restart_count,r.last_error,r.current_state FROM servers s JOIN server_runtime_state r ON r.server_id=s.id`
+const selectSQL = `SELECT s.id,s.tenant_id,s.creation_mode,s.name,s.description,s.working_directory,s.executable,s.arguments_json,s.environment_json,s.runtime_type,s.auto_start,s.restart_policy,s.stop_method,s.stop_command,s.stop_timeout_seconds,s.console_line_ending,s.auto_restart_enabled,s.auto_restart_max_attempts,s.auto_restart_window_seconds,s.auto_restart_delay_seconds,s.created_at,s.updated_at,r.pid,r.process_start_key,r.process_started_at,r.last_start_at,r.last_stop_at,r.last_exit_at,r.exit_code,r.last_crash_at,r.crash_count,r.restart_count,r.last_error,r.current_state FROM servers s JOIN server_runtime_state r ON r.server_id=s.id`
 
 type scanner interface{ Scan(...any) error }
 
@@ -742,7 +769,7 @@ func scan(row scanner) (Record, error) {
 	var processStart, lastStart, lastStop, lastExit, lastCrash sql.NullString
 	var exit sql.NullInt64
 	var created, updated string
-	err := row.Scan(&r.Server.ID, &r.Server.TenantID, &r.Server.CreationMode, &r.Server.Name, &r.Server.Description, &r.Server.WorkingDirectory, &r.Server.Executable, &args, &env, &r.Server.RuntimeType, &auto, &r.Server.RestartPolicy, &r.Server.StopMethod, &r.Server.StopCommand, &r.Server.StopTimeoutSeconds, &autoRestart, &r.Server.AutoRestartMaxAttempts, &r.Server.AutoRestartWindowSeconds, &r.Server.AutoRestartDelaySeconds, &created, &updated, &pid, &key, &processStart, &lastStart, &lastStop, &lastExit, &exit, &lastCrash, &r.Runtime.CrashCount, &r.Runtime.RestartCount, &r.Runtime.LastError, &r.Runtime.CurrentState)
+	err := row.Scan(&r.Server.ID, &r.Server.TenantID, &r.Server.CreationMode, &r.Server.Name, &r.Server.Description, &r.Server.WorkingDirectory, &r.Server.Executable, &args, &env, &r.Server.RuntimeType, &auto, &r.Server.RestartPolicy, &r.Server.StopMethod, &r.Server.StopCommand, &r.Server.StopTimeoutSeconds, &r.Server.ConsoleLineEnding, &autoRestart, &r.Server.AutoRestartMaxAttempts, &r.Server.AutoRestartWindowSeconds, &r.Server.AutoRestartDelaySeconds, &created, &updated, &pid, &key, &processStart, &lastStart, &lastStop, &lastExit, &exit, &lastCrash, &r.Runtime.CrashCount, &r.Runtime.RestartCount, &r.Runtime.LastError, &r.Runtime.CurrentState)
 	if err != nil {
 		return Record{}, err
 	}
@@ -1653,7 +1680,7 @@ func (s *Service) signalWithRestart(ctx context.Context, id string, kill, restar
 		if !ok || process.identity != identity {
 			err = errors.New("console input is unavailable for the detached process")
 		} else {
-			err = process.session.Input(record.Server.StopCommand + "\n")
+			err = process.session.Input(record.Server.ConsoleInput(record.Server.StopCommand + "\n"))
 		}
 	} else if record.Server.StopMethod == StopMethodConsoleInterrupt {
 		process, ok := instance.(*processInstance)

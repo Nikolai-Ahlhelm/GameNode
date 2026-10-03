@@ -39,6 +39,7 @@ import (
 	"gamenode/internal/statushistory"
 	"gamenode/internal/steamcmd"
 	"gamenode/internal/templates"
+	"gamenode/internal/vintagestory"
 )
 
 //go:embed webassets
@@ -228,6 +229,7 @@ func main() {
 	steamManager.SetLogger(logging.WithCategory(log, logging.CategorySteamCMD))
 	provisioner = provisioning.NewWithOptions(db, templateService, steamManager, serverService, cfg.Data.Directory, provisioning.Options{Log: logging.WithCategory(log, logging.CategoryProvisioning), ContainerInstaller: runtime.NewContainerInstaller(dockerEngine), ImagePolicy: provisioning.ImagePolicy{AllowedRegistries: currentSettings.Runtime.ContainerImageAllowlist}})
 	provisioner.SetMinecraftInstaller(minecraft.NewInstaller(minecraft.NewSource()))
+	provisioner.SetVintageStoryInstaller(vintagestory.NewInstaller(vintagestory.NewSource()))
 	// serverupdates reuses the same managed steamManager instance as
 	// provisioning: one bootstrap/download implementation, one SteamCMD
 	// invocation path, for both initial installation and manual updates.

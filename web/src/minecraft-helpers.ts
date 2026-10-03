@@ -63,8 +63,25 @@ export function formatModSize(bytes: number): string {
   return `${bytes} B`;
 }
 
-export function validModFileName(name: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9 ._+()[\]-]{0,150}\.jar$/i.test(name);
+/** True when name has a safe base name and one of the accepted extensions (default: .jar). */
+export function validModFileName(name: string, extensions: string[] = ['.jar']): boolean {
+  const lower = name.toLowerCase();
+  const extension = extensions.find(candidate => lower.endsWith(candidate));
+  return !!extension && /^[A-Za-z0-9][A-Za-z0-9 ._+()[\]-]{0,150}$/.test(name.slice(0, name.length - extension.length));
+}
+
+export type ModsLayout = { game: string; directory: string; extensions: string[] };
+
+export const defaultModsLayout: ModsLayout = { game: 'minecraft', directory: 'mods', extensions: ['.jar'] };
+
+/** "a .jar file", "a .jar or .zip file". */
+export function modsExtensionText(extensions: string[]): string {
+  return extensions.length === 1 ? extensions[0] : extensions.slice(0, -1).join(', ') + ' or ' + extensions[extensions.length - 1];
+}
+
+/** Value for the file input's accept attribute. */
+export function modsAcceptAttribute(extensions: string[]): string {
+  return extensions.join(',');
 }
 
 /** A mod whose declared loaders exclude the server's loader will be ignored or fail at start. */
@@ -80,7 +97,7 @@ export function filterMods(mods: MinecraftMod[], query: string): MinecraftMod[] 
 }
 
 export function modDisplayName(mod: MinecraftMod): string {
-  return mod.name || mod.id || mod.file_name.replace(/\.jar(\.disabled)?$/i, '');
+  return mod.name || mod.id || mod.file_name.replace(/\.(jar|zip)(\.disabled)?$/i, '');
 }
 
 export const disabledSuffix = '.disabled';
