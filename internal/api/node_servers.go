@@ -300,7 +300,7 @@ func (s *Server) nodeServerConsoleHandler(w http.ResponseWriter, r *http.Request
 			errorOut(w, http.StatusConflict, "invalid_state", "console is not attached")
 			return
 		}
-		if err := session.Input(in.Data); err != nil {
+		if err := session.Input(s.consoleInputFor(r.Context(), id, in.Data)); err != nil {
 			errorOut(w, http.StatusConflict, "invalid_state", "console input could not be delivered")
 			return
 		}
@@ -368,7 +368,7 @@ func (s *Server) nodeServerConsoleWebSocketHandler(w http.ResponseWriter, r *htt
 			if in.Type != "input" || in.Data == "" || len([]byte(in.Data)) > console.MaxInputBytes {
 				continue
 			}
-			_ = session.Input(in.Data)
+			_ = session.Input(s.consoleInputFor(r.Context(), id, in.Data))
 		}
 	}()
 	for {

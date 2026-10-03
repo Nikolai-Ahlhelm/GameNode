@@ -78,3 +78,18 @@ test('disabled mods are counted, named and excluded from loader mismatches', asy
   assert.equal(modDisplayName(mods[1]), 'b');
   assert.equal(modsStatePath('s1'), '/servers/s1/mods');
 });
+
+test('mod file names honor the game profile extensions', async () => {
+  const { modsAcceptAttribute, modsExtensionText, validModFileName, modDisplayName } = await import('../src/minecraft-helpers.ts');
+  assert.equal(validModFileName('a.zip', ['.zip']), true);
+  assert.equal(validModFileName('a.jar', ['.zip']), false);
+  assert.equal(validModFileName('a.jar', ['.jar', '.zip']), true);
+  assert.equal(validModFileName('A.ZIP', ['.jar', '.zip']), true);
+  assert.equal(validModFileName('.zip', ['.zip']), false);
+  assert.equal(validModFileName('../a.zip', ['.zip']), false);
+  assert.equal(validModFileName('a.jar'), true);
+  assert.equal(modsExtensionText(['.jar']), '.jar');
+  assert.equal(modsExtensionText(['.jar', '.zip']), '.jar or .zip');
+  assert.equal(modsAcceptAttribute(['.jar', '.zip']), '.jar,.zip');
+  assert.equal(modDisplayName({ file_name: 'pack_1.0.zip.disabled', size: 1, modified_at: '' }), 'pack_1.0');
+});

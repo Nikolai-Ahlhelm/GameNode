@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"gamenode/internal/minecraft"
+	"gamenode/internal/vintagestory"
 )
 
 // ResolvedLaunch is the only template output consumed by provisioning. Every
@@ -22,6 +23,8 @@ type ResolvedLaunch struct {
 	StopMethod       string
 	StopCommand      string
 	StopTimeout      int
+	// ConsoleLineEnding is "lf" or "crlf" (empty means lf).
+	ConsoleLineEnding string
 }
 
 func ResolveLaunch(template Template, platform string, values map[string]string, serverRoot string) (ResolvedLaunch, error) {
@@ -61,6 +64,9 @@ func ResolveLaunch(template Template, platform string, values map[string]string,
 
 	if launch.Resolver == "minecraft" {
 		return resolveMinecraftLaunch(template, platform, values, serverRoot)
+	}
+	if launch.Resolver == "vintagestory" {
+		return resolveVintageStoryLaunch(template, platform, values, serverRoot)
 	}
 
 	known := make(map[string]bool, len(values))
@@ -125,7 +131,7 @@ func ResolveLaunch(template Template, platform string, values map[string]string,
 	if stopTimeout == 0 {
 		stopTimeout = 15
 	}
-	return ResolvedLaunch{Executable: executable, Arguments: arguments, WorkingDirectory: workingDirectory, Environment: environment, StopMethod: stopMethod, StopCommand: launch.StopCommand, StopTimeout: stopTimeout}, nil
+	return ResolvedLaunch{Executable: executable, Arguments: arguments, WorkingDirectory: workingDirectory, Environment: environment, StopMethod: stopMethod, StopCommand: launch.StopCommand, StopTimeout: stopTimeout, ConsoleLineEnding: launch.ConsoleLineEnding}, nil
 }
 
 // MinecraftPlan builds the installer plan from resolved template values. Only
@@ -152,6 +158,29 @@ func resolveMinecraftLaunch(template Template, platform string, values map[strin
 		return ResolvedLaunch{}, err
 	}
 	return ResolvedLaunch{Executable: resolved.Executable, Arguments: resolved.Arguments, WorkingDirectory: resolved.WorkingDirectory, Environment: map[string]string{}, StopMethod: resolved.StopMethod, StopCommand: resolved.StopCommand, StopTimeout: resolved.StopTimeout}, nil
+}
+
+// VintageStoryPlan builds the installer plan from resolved template values.
+func VintageStoryPlan(values map[string]string) vintagestory.Plan {
+	return vintagestory.Plan{Version: values["VS_VERSION"]}
+}
+
+func resolveVintageStoryLaunch(template Template, platform string, values map[string]string, serverRoot string) (ResolvedLaunch, error) {
+	port, err := strconv.Atoi(values["SERVER_PORT"])
+	if err != nil {
+		return ResolvedLaunch{}, validationError(CodeInvalidVariable, "Vintage Story port variable is invalid")
+	}
+	resolved, err := vintagestory.ResolveLaunch(serverRoot, port)
+	if err != nil {
+		return ResolvedLaunch{}, validationError(CodeInvalidPlatformLaunch, "Vintage Story launch files could not be resolved safely")
+	}
+	if !resolved.DotnetFound {
+		return ResolvedLaunch{}, validationError(CodeRequirementUnavailable, ".NET runtime not found")
+	}
+	if err = ValidateExpectedFiles(template, platform, values, serverRoot); err != nil {
+		return ResolvedLaunch{}, err
+	}
+	return ResolvedLaunch{Executable: resolved.Executable, Arguments: resolved.Arguments, WorkingDirectory: resolved.WorkingDirectory, Environment: map[string]string{}, StopMethod: resolved.StopMethod, StopCommand: resolved.StopCommand, StopTimeout: resolved.StopTimeout, ConsoleLineEnding: resolved.ConsoleLineEnding}, nil
 }
 
 // ValidateExpectedFiles checks required artifacts after installation. Symlinks

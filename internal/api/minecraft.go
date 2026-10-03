@@ -10,6 +10,7 @@ import (
 
 	"gamenode/internal/audit"
 	"gamenode/internal/minecraft"
+	"gamenode/internal/mods"
 )
 
 // minecraftVersionsHandler lists installable versions for the Minecraft
@@ -65,10 +66,31 @@ func minecraftSourceError(w http.ResponseWriter, err error) {
 }
 
 type serverModsResponse struct {
-	Available bool            `json:"available"`
-	Loader    string          `json:"loader,omitempty"`
-	Mods      []minecraft.Mod `json:"mods"`
-	MaxUpload int64           `json:"max_upload_bytes"`
+	Available bool `json:"available"`
+	// Game, Directory and Extensions describe the layout the server's mod
+	// manager uses, so the UI can validate files and word its help correctly.
+	Game       string          `json:"game,omitempty"`
+	Directory  string          `json:"directory,omitempty"`
+	Extensions []string        `json:"extensions,omitempty"`
+	Loader     string          `json:"loader,omitempty"`
+	Mods       []minecraft.Mod `json:"mods"`
+	MaxUpload  int64           `json:"max_upload_bytes"`
+}
+
+// modsFor selects the mod manager for a server from its creation-time template.
+// A server without a recognized template keeps the historical behavior: the
+// Minecraft layout, offered only when it already holds mod jars.
+func (s *Server) modsFor(ctx context.Context, id string) (manager *mods.Manager, known bool) {
+	templateID, _ := s.servers.TemplateID(ctx, id)
+	switch {
+	case templateID == "vintage-story":
+		return s.vintageStoryMods, true
+	case templateID == "hytale":
+		return s.hytaleMods, true
+	case strings.Contains(templateID, "minecraft"):
+		return s.mods, true
+	}
+	return s.mods, false
 }
 
 // serverModsHandler manages the mod jars in a server's mods directory. It adds
@@ -87,14 +109,15 @@ func (s *Server) serverModsHandler(w http.ResponseWriter, r *http.Request, id st
 			return
 		}
 		root := record.Server.WorkingDirectory
-		mods, err := s.mods.List(root)
+		manager, known := s.modsFor(r.Context(), id)
+		installed, err := manager.List(root)
 		if err != nil {
 			filesystemError(w, err)
 			return
 		}
-		templateID, _ := s.servers.TemplateID(r.Context(), id)
-		response := serverModsResponse{Available: strings.Contains(templateID, "minecraft") || len(mods) > 0, Mods: mods, MaxUpload: s.files.MaxUploadBytes()}
-		if response.Available {
+		profile := manager.Profile()
+		response := serverModsResponse{Available: known || len(installed) > 0, Game: profile.Game, Directory: profile.Directory, Extensions: profile.Extensions, Mods: installed, MaxUpload: s.files.MaxUploadBytes()}
+		if response.Available && profile.Game == "minecraft" {
 			response.Loader = minecraft.DetectLoader(root)
 		}
 		jsonOut(w, http.StatusOK, response)
@@ -125,13 +148,14 @@ func (s *Server) serverModsHandler(w http.ResponseWriter, r *http.Request, id st
 			return
 		}
 		defer part.Close()
-		mod, err := s.mods.Add(record.Server.WorkingDirectory, part.FileName(), part, overwrite)
+		manager, _ := s.modsFor(r.Context(), id)
+		mod, err := manager.Add(record.Server.WorkingDirectory, part.FileName(), part, overwrite)
 		if err != nil {
 			s.recordFileAudit(r, u, audit.FileUpload, audit.Failure, id, "", nil, err)
 			modError(w, err)
 			return
 		}
-		relative := minecraft.ModsDirectory + "/" + mod.FileName
+		relative := manager.Profile().Directory + "/" + mod.FileName
 		s.recordFileAudit(r, u, audit.FileUpload, audit.Success, id, relative, map[string]any{"path": relative, "filename": mod.FileName, "size": mod.Size}, nil)
 		s.logFileMutation("file.upload", id)
 		jsonOut(w, http.StatusCreated, mod)
@@ -159,14 +183,15 @@ func (s *Server) serverModsHandler(w http.ResponseWriter, r *http.Request, id st
 			return
 		}
 		before := input.File
-		mod, err := s.mods.SetEnabled(record.Server.WorkingDirectory, input.File, *input.Enabled)
+		manager, _ := s.modsFor(r.Context(), id)
+		mod, err := manager.SetEnabled(record.Server.WorkingDirectory, input.File, *input.Enabled)
 		if err != nil {
 			s.recordFileAudit(r, u, audit.FileRename, audit.Failure, id, "", nil, err)
 			modError(w, err)
 			return
 		}
 		if mod.FileName != before {
-			from, to := minecraft.ModsDirectory+"/"+before, minecraft.ModsDirectory+"/"+mod.FileName
+			from, to := manager.Profile().Directory+"/"+before, manager.Profile().Directory+"/"+mod.FileName
 			s.recordFileAudit(r, u, audit.FileRename, audit.Success, id, to, map[string]any{"from": from, "to": to}, nil)
 			s.logFileMutation(audit.FileRename, id)
 		}
@@ -182,12 +207,13 @@ func (s *Server) serverModsHandler(w http.ResponseWriter, r *http.Request, id st
 			return
 		}
 		name := r.URL.Query().Get("file")
-		if err = s.mods.Remove(record.Server.WorkingDirectory, name); err != nil {
+		manager, _ := s.modsFor(r.Context(), id)
+		if err = manager.Remove(record.Server.WorkingDirectory, name); err != nil {
 			s.recordFileAudit(r, u, audit.FileDelete, audit.Failure, id, "", nil, err)
 			modError(w, err)
 			return
 		}
-		relative := path.Join(minecraft.ModsDirectory, name)
+		relative := path.Join(manager.Profile().Directory, name)
 		s.recordFileAudit(r, u, audit.FileDelete, audit.Success, id, relative, map[string]any{"path": relative, "recursive": false}, nil)
 		s.logFileMutation("file.delete", id)
 		w.WriteHeader(http.StatusNoContent)

@@ -1,0 +1,152 @@
+{
+  "schema_version": 2,
+  "id": "vintage-story",
+  "name": "Vintage Story",
+  "description": "Install a Vintage Story dedicated server at an exact stable or release-candidate version from the official source, then manage its configuration and mods.",
+  "version": "1.0.0",
+  "category": "vintagestory",
+  "minimum_gamenode_version": "1.3.0",
+  "known_limitations": [
+    "Requires the .NET runtime matching the server version (.NET 8 for 1.21, .NET 10 for 1.22); GameNode does not install it.",
+    "Only versions 1.21.0 and newer are offered.",
+    "The configuration file is created by the server on first start, so the Configuration tab becomes available after the first start.",
+    "World seed, play style and other nested world settings are not managed here; use the in-game or console tools.",
+    "Mods are .zip archives in data/Mods added by upload; loose .dll/.cs mods are not managed."
+  ],
+  "icon": "vintagestory",
+  "source_type": "official",
+  "source_identifier": "vintage-story",
+  "source_format_version": "2",
+  "tags": [
+    "vintagestory",
+    "survival",
+    "mods",
+    "dotnet"
+  ],
+  "source_metadata": {
+    "author": "GameNode",
+    "tags": [
+      "vintagestory",
+      "survival",
+      "mods",
+      "dotnet"
+    ]
+  },
+  "installer": {
+    "type": "vintagestory"
+  },
+  "launch": {
+    "executable": "dotnet",
+    "arguments": [],
+    "working_root": "server_root",
+    "stop_command": "/stop",
+    "stop_method": "stdin_command",
+    "stop_timeout_seconds": 60,
+    "resolver": "vintagestory"
+  },
+  "variables": [
+    {
+      "name": "Version",
+      "description": "Exact Vintage Story server version, for example 1.22.7 or 1.22.0-rc.10",
+      "key": "VS_VERSION",
+      "default_value": "1.22.7",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "string",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min_length": 5,
+        "max_length": 24
+      },
+      "group": "Vintage Story"
+    },
+    {
+      "name": "Server port",
+      "description": "Port players connect to (TCP and UDP)",
+      "key": "SERVER_PORT",
+      "default_value": "42420",
+      "user_viewable": true,
+      "user_editable": true,
+      "type": "integer",
+      "sensitive": false,
+      "required": true,
+      "nullable": false,
+      "validation": {
+        "min": 1024,
+        "max": 65535
+      },
+      "group": "Network"
+    }
+  ],
+  "ports": [
+    {
+      "name": "Vintage Story TCP",
+      "protocol": "tcp",
+      "variable": "SERVER_PORT",
+      "purpose": "Game connections"
+    },
+    {
+      "name": "Vintage Story UDP",
+      "protocol": "udp",
+      "variable": "SERVER_PORT",
+      "purpose": "Game connections"
+    }
+  ],
+  "expected_files": [
+    {
+      "path": "VintagestoryServer.dll",
+      "type": "file",
+      "required": true
+    }
+  ],
+  "config_files": [
+    {
+      "path": "data/serverconfig.json",
+      "format": "json",
+      "description": "Server configuration created by the server on first start; managed by the GameNode adapter."
+    }
+  ],
+  "configuration": {
+    "adapters": [
+      {
+        "id": "vintagestory-serverconfig",
+        "schema_version": 1,
+        "file": "serverconfig.adapter.json"
+      }
+    ]
+  },
+  "requirements": [
+    {
+      "type": "note",
+      "level": "informational",
+      "description": "A matching .NET runtime must be installed and reachable through DOTNET_ROOT or PATH."
+    },
+    {
+      "type": "note",
+      "level": "informational",
+      "description": "Installation downloads only from the official Vintage Story servers and verifies the published checksum; mods are added by upload, never from a URL."
+    }
+  ],
+  "help": {
+    "summary": "GameNode downloads the selected server archive, verifies its checksum, extracts it safely, and launches dotnet directly with structured arguments.",
+    "notes": [
+      "Mods are managed on the server Mods tab.",
+      "Start the server once so it creates data/serverconfig.json, then use the Configuration tab."
+    ]
+  },
+  "compatibility": {
+    "status": "compatible",
+    "findings": []
+  },
+  "read_only": true,
+  "platforms": [
+    "windows",
+    "linux"
+  ],
+  "prerequisites": [
+    ".NET runtime matching the server version (DOTNET_ROOT or PATH)",
+    "Network access to the official Vintage Story download servers"
+  ]
+}

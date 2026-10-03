@@ -52,7 +52,8 @@
       "oneOf": [
         {"type": "object", "additionalProperties": false, "required": ["type", "steamcmd"], "properties": {"type": {"const": "steamcmd"}, "steamcmd": {"$ref": "#/$defs/steamcmd"}}},
         {"type": "object", "additionalProperties": false, "required": ["type"], "properties": {"type": {"const": "existing-files"}}},
-        {"type": "object", "additionalProperties": false, "required": ["type"], "properties": {"type": {"const": "minecraft"}}}
+        {"type": "object", "additionalProperties": false, "required": ["type"], "properties": {"type": {"const": "minecraft"}}},
+        {"type": "object", "additionalProperties": false, "required": ["type"], "properties": {"type": {"const": "vintagestory"}}}
       ]
     },
     "steamcmd": {
@@ -72,7 +73,7 @@
         "working_root": {"const": "server_root"}, "working_directory": {"type": "string", "maxLength": 240},
         "environment": {"type": "object", "maxProperties": 64, "propertyNames": {"pattern": "^[A-Z][A-Z0-9_]{0,63}$"}, "additionalProperties": {"type": "string", "maxLength": 16384}},
         "stop_method": {"enum": ["terminate", "stdin_command", "console_interrupt"]}, "stop_command": {"type": "string", "maxLength": 256},
-        "stop_timeout_seconds": {"type": "integer", "minimum": 0, "maximum": 300}, "resolver": {"enum": ["java", "neoforge"]}
+        "stop_timeout_seconds": {"type": "integer", "minimum": 0, "maximum": 300}, "resolver": {"enum": ["java", "neoforge", "minecraft", "vintagestory"]}, "console_line_ending": {"enum": ["lf", "crlf"]}
       }
     },
     "variable": {

@@ -337,12 +337,28 @@ func (NativeRunner) Run(ctx context.Context, command Command) (Result, error) {
 
 func sanitized(_ error) error { return errors.New("download unavailable") }
 
+// ExtractLimits bounds archive extraction: entry count and total extracted bytes.
+type ExtractLimits struct {
+	MaxEntries int
+	MaxBytes   int64
+}
+
+var defaultExtractLimits = ExtractLimits{MaxEntries: MaxArchiveEntries, MaxBytes: MaxExtractedBytes}
+
+// Extract unpacks a zip or tar.gz below destination using the SteamCMD limits.
 func Extract(kind, archive, destination string) error {
+	return ExtractWithLimits(kind, archive, destination, defaultExtractLimits)
+}
+
+// ExtractWithLimits is Extract with caller-chosen bounds for larger, fixed-source
+// game archives. Path safety, link/special-file rejection and exclusive file
+// creation are identical.
+func ExtractWithLimits(kind, archive, destination string, limits ExtractLimits) error {
 	switch kind {
 	case "zip":
-		return extractZIP(archive, destination)
+		return extractZIP(archive, destination, limits)
 	case "tar.gz":
-		return extractTarGZ(archive, destination)
+		return extractTarGZ(archive, destination, limits)
 	default:
 		return errors.New("unsupported SteamCMD archive format")
 	}
@@ -368,13 +384,13 @@ func safeArchivePath(destination, name string) (string, error) {
 	}
 	return target, nil
 }
-func extractZIP(archive, destination string) error {
+func extractZIP(archive, destination string, limits ExtractLimits) error {
 	reader, err := zip.OpenReader(archive)
 	if err != nil {
 		return errors.New("invalid zip archive")
 	}
 	defer reader.Close()
-	if len(reader.File) > MaxArchiveEntries {
+	if len(reader.File) > limits.MaxEntries {
 		return errors.New("archive has too many entries")
 	}
 	var total int64
@@ -396,7 +412,7 @@ func extractZIP(archive, destination string) error {
 			return errors.New("archive special files are not allowed")
 		}
 		total += int64(entry.UncompressedSize64)
-		if total > MaxExtractedBytes {
+		if total > limits.MaxBytes {
 			return errors.New("extracted archive exceeds size limit")
 		}
 		if err = writeZIPEntry(entry, target); err != nil {
@@ -425,7 +441,7 @@ func writeZIPEntry(entry *zip.File, target string) error {
 	}
 	return nil
 }
-func extractTarGZ(archive, destination string) error {
+func extractTarGZ(archive, destination string, limits ExtractLimits) error {
 	file, err := os.Open(archive)
 	if err != nil {
 		return err
@@ -448,7 +464,7 @@ func extractTarGZ(archive, destination string) error {
 			return errors.New("invalid tar archive")
 		}
 		entries++
-		if entries > MaxArchiveEntries {
+		if entries > limits.MaxEntries {
 			return errors.New("archive has too many entries")
 		}
 		target, err := safeArchivePath(destination, header.Name)
@@ -465,7 +481,7 @@ func extractTarGZ(archive, destination string) error {
 				return errors.New("invalid archive entry size")
 			}
 			total += header.Size
-			if total > MaxExtractedBytes {
+			if total > limits.MaxBytes {
 				return errors.New("extracted archive exceeds size limit")
 			}
 			if err = writeTarEntry(reader, target, header.Size); err != nil {

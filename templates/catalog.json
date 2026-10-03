@@ -33,6 +33,34 @@
       "minimum_gamenode_version": "0.2.0"
     },
     {
+      "id": "hytale",
+      "name": "Hytale",
+      "description": "Adopt an existing Hytale dedicated server directory and run HytaleServer.jar directly, then manage its mods.",
+      "category": "hytale",
+      "version": "1.0.0",
+      "template_schema_version": 2,
+      "platforms": ["windows", "linux"],
+      "installer": "existing-files",
+      "file": "hytale/template.json",
+      "tags": ["hytale", "java", "mods", "adopt"],
+      "icon": "hytale",
+      "minimum_gamenode_version": "1.3.0"
+    },
+    {
+      "id": "vintage-story",
+      "name": "Vintage Story",
+      "description": "Install a Vintage Story dedicated server at an exact stable or release-candidate version from the official source, then manage its configuration and mods.",
+      "category": "vintagestory",
+      "version": "1.0.0",
+      "template_schema_version": 2,
+      "platforms": ["windows", "linux"],
+      "installer": "vintagestory",
+      "file": "vintagestory/template.json",
+      "tags": ["vintagestory", "survival", "mods", "dotnet"],
+      "icon": "vintagestory",
+      "minimum_gamenode_version": "1.3.0"
+    },
+    {
       "id": "minecraft-java",
       "name": "Minecraft Java Edition",
       "description": "Install a Minecraft Java Edition server - vanilla, NeoForge, Forge, or Fabric - at an exact Minecraft and loader version, then manage its mods.",

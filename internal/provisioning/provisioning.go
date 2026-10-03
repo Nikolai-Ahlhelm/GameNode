@@ -28,6 +28,7 @@ import (
 	"gamenode/internal/steamcmd"
 	"gamenode/internal/templates"
 	"gamenode/internal/tenants"
+	"gamenode/internal/vintagestory"
 )
 
 const (
@@ -180,6 +181,12 @@ type Installer interface {
 type MinecraftInstaller interface {
 	Install(context.Context, string, minecraft.Plan, io.Writer, func(minecraft.Event)) error
 }
+
+// VintageStoryInstaller installs a Vintage Story server from the fixed official
+// source into an already-reserved server root.
+type VintageStoryInstaller interface {
+	Install(context.Context, string, vintagestory.Plan, io.Writer, func(vintagestory.Event)) error
+}
 type ContainerInstaller interface {
 	Available(context.Context) error
 	PullImage(context.Context, string) error
@@ -287,14 +294,15 @@ func (s *Store) TenantExists(ctx context.Context, id string) (bool, error) {
 }
 
 type Service struct {
-	store              *Store
-	templates          TemplateSource
-	installer          Installer
-	minecraftInstaller MinecraftInstaller
-	containerInstaller ContainerInstaller
-	imagePolicy        ImagePolicy
-	containerTimeout   time.Duration
-	servers            ServerCreator
+	store                 *Store
+	templates             TemplateSource
+	installer             Installer
+	minecraftInstaller    MinecraftInstaller
+	vintageStoryInstaller VintageStoryInstaller
+	containerInstaller    ContainerInstaller
+	imagePolicy           ImagePolicy
+	containerTimeout      time.Duration
+	servers               ServerCreator
 	// ports reuses internal/ports' authoritative collision and best-effort
 	// availability logic for the early preflight in Start. Provisioning
 	// never duplicates that policy.
@@ -326,6 +334,8 @@ type run struct {
 	// minecraft is the validated installer plan for a minecraft-installer
 	// template; nil for SteamCMD and container jobs.
 	minecraft *minecraft.Plan
+	// vintagestory is the validated plan for a vintagestory-installer template.
+	vintagestory *vintagestory.Plan
 	// finalizing closes cancellation before the transactional server insert.
 	finalizing bool
 	recovering bool
@@ -439,6 +449,13 @@ func NewWithOptions(db *sql.DB, source TemplateSource, installer Installer, crea
 	return &Service{store: NewStore(db), templates: source, installer: installer, containerInstaller: options.ContainerInstaller, imagePolicy: policy, containerTimeout: timeout, servers: creator, ports: ports.New(db), dataRoot: filepath.Clean(dataDirectory), hostOS: host, ctx: ctx, cancel: cancel, active: map[string]*run{}, roots: map[string]string{}, outputs: map[string]*installerOutput{}, now: func() time.Time { return time.Now().UTC() }, log: log}
 }
 
+// SetVintageStoryInstaller enables provisioning of the "vintagestory" installer type.
+func (s *Service) SetVintageStoryInstaller(installer VintageStoryInstaller) {
+	s.mu.Lock()
+	s.vintageStoryInstaller = installer
+	s.mu.Unlock()
+}
+
 // SetMinecraftInstaller enables provisioning of the "minecraft" installer type.
 func (s *Service) SetMinecraftInstaller(installer MinecraftInstaller) {
 	s.mu.Lock()
@@ -511,6 +528,7 @@ func (s *Service) Start(ctx context.Context, request Request) (Job, error) {
 	}
 	var plan steamcmd.InstallPlan
 	var minecraftPlan *minecraft.Plan
+	var vintageStoryPlan *vintagestory.Plan
 	var containerPlan *templates.ContainerEggRuntimePlan
 	selectedImage := ""
 	if runtimeType == RuntimeContainer {
@@ -538,6 +556,8 @@ func (s *Service) Start(ctx context.Context, request Request) (Job, error) {
 	} else if runtimeType == RuntimeNative {
 		if template.Installer.Type == templates.InstallerMinecraft {
 			minecraftPlan, err = s.checkMinecraft(template, values)
+		} else if template.Installer.Type == templates.InstallerVintageStory {
+			vintageStoryPlan, err = s.checkVintageStory(template, values)
 		} else {
 			plan, err = CheckProvisionable(template, values, s.hostOS)
 		}
@@ -632,7 +652,7 @@ func (s *Service) Start(ctx context.Context, request Request) (Job, error) {
 		return Job{}, err
 	}
 	jobCtx, cancel := context.WithCancel(s.ctx)
-	current := &run{cancel: cancel, job: job, root: root, minecraft: minecraftPlan, recovering: request.RecoverExisting}
+	current := &run{cancel: cancel, job: job, root: root, minecraft: minecraftPlan, vintagestory: vintageStoryPlan, recovering: request.RecoverExisting}
 	s.active[id] = current
 	s.roots[root] = id
 	s.outputs[id] = &installerOutput{}
@@ -1034,6 +1054,19 @@ func (s *Service) Check(ctx context.Context, templateID string) (Provisionabilit
 	for _, variable := range template.Variables {
 		values[variable.Key] = variable.DefaultValue
 	}
+	if template.Installer.Type == templates.InstallerVintageStory {
+		if _, vsErr := s.checkVintageStory(template, values); vsErr != nil {
+			result.Code, result.Summary = provisionabilityFailure(vsErr)
+			return result, nil
+		}
+		launch, _ := templates.LaunchForPlatform(template, s.hostOS)
+		result.NativeCompatibility = template.Compatibility
+		result.Provisionable = true
+		result.Summary = "Vintage Story server installation from the official source and structured .NET launch are available"
+		result.Installer = templates.InstallerVintageStory
+		result.LaunchExecutable = launch.Executable
+		return result, nil
+	}
 	if template.Installer.Type == templates.InstallerMinecraft {
 		if _, mcErr := s.checkMinecraft(template, values); mcErr != nil {
 			result.Code, result.Summary = provisionabilityFailure(mcErr)
@@ -1141,6 +1174,79 @@ func (s *Service) installMinecraft(ctx context.Context, current *run, template t
 	return true
 }
 
+// checkVintageStory validates a vintagestory-installer request without network
+// access; whether upstream offers the version is established when the job runs.
+func (s *Service) checkVintageStory(template templates.Template, values map[string]string) (*vintagestory.Plan, error) {
+	if template.Compatibility.Status == templates.Unsupported {
+		return nil, ErrNotProvisionable
+	}
+	s.mu.Lock()
+	installer := s.vintageStoryInstaller
+	s.mu.Unlock()
+	if installer == nil {
+		return nil, fmt.Errorf("%w: %w", ErrNotProvisionable, &templates.ValidationError{Code: templates.CodeUnsupportedInstaller, Message: "Vintage Story installation is unavailable"})
+	}
+	if s.hostOS != "windows" && s.hostOS != "linux" {
+		return nil, ErrNotProvisionable
+	}
+	if err := templates.CheckHostRequirements(template, s.hostOS, runtime.GOARCH); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrNotProvisionable, err)
+	}
+	if _, ok := templates.LaunchForPlatform(template, s.hostOS); !ok {
+		return nil, ErrNotProvisionable
+	}
+	plan := templates.VintageStoryPlan(values)
+	if err := plan.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrNotProvisionable, &templates.ValidationError{Code: templates.CodeInvalidVariable, Message: "Vintage Story version selection is invalid"})
+	}
+	return &plan, nil
+}
+
+// installVintageStory runs the compiled installer. It reports false after
+// finishing the job on cancellation or failure.
+func (s *Service) installVintageStory(ctx context.Context, current *run, template templates.Template, values map[string]string, sensitive map[string]bool) bool {
+	s.mu.Lock()
+	installer := s.vintageStoryInstaller
+	s.mu.Unlock()
+	plan := *current.vintagestory
+	log := s.log.With("module", "VintageStory.Install")
+	log.Info("Vintage Story installation started", "job_id", current.job.ID, "template_id", template.ID, "version", plan.Version)
+	err := installer.Install(ctx, current.root, plan, s.outputWriter(current.job.ID, values, sensitive), func(event vintagestory.Event) {
+		log.Info(event.Summary, "job_id", current.job.ID, "template_id", template.ID, "phase", event.Phase)
+		if event.Phase != vintagestory.PhaseResolving {
+			s.phase(current, Installing, event.Summary)
+		}
+	})
+	if ctx.Err() != nil {
+		s.finish(current, Cancelled, "Provisioning was cancelled", "", true, "")
+		return false
+	}
+	if err != nil {
+		code, summary := vintageStoryFailure(err)
+		log.Error("Vintage Story installation failed", "job_id", current.job.ID, "template_id", template.ID, "code", code, "error", err)
+		s.fail(current, Installing, code, "Game installation failed", summary, true)
+		return false
+	}
+	s.installationCompleted(current)
+	return true
+}
+
+func vintageStoryFailure(err error) (string, string) {
+	switch {
+	case errors.Is(err, vintagestory.ErrVersionNotFound):
+		return "VINTAGESTORY_VERSION_NOT_FOUND", "The selected version is not offered by the official source"
+	case errors.Is(err, vintagestory.ErrSourceUnavailable):
+		return "VINTAGESTORY_SOURCE_UNAVAILABLE", "The official Vintage Story download source could not be reached; try again later"
+	case errors.Is(err, vintagestory.ErrDigestMismatch):
+		return "VINTAGESTORY_DIGEST_MISMATCH", "The downloaded archive did not match its published checksum and was discarded"
+	case errors.Is(err, vintagestory.ErrRuntimeMissing):
+		return "VINTAGESTORY_RUNTIME_MISSING", "The .NET runtime this server version requires is not installed; install it and provision again (the extracted files may remain)"
+	case errors.Is(err, vintagestory.ErrExtractFailed), errors.Is(err, vintagestory.ErrIncompleteServer):
+		return "VINTAGESTORY_ARCHIVE_INVALID", "The server archive was invalid or incomplete; target files may remain"
+	}
+	return "VINTAGESTORY_INSTALL_FAILED", "The Vintage Story server could not be installed; target files may remain"
+}
+
 func minecraftFailure(err error) (string, string) {
 	switch {
 	case errors.Is(err, minecraft.ErrVersionNotFound):
@@ -1213,6 +1319,10 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 		}
 		if current.minecraft != nil {
 			if !s.installMinecraft(ctx, current, template, values, sensitive) {
+				return
+			}
+		} else if current.vintagestory != nil {
+			if !s.installVintageStory(ctx, current, template, values, sensitive) {
 				return
 			}
 		} else {
@@ -1312,7 +1422,7 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 		s.fail(current, ResolvingLaunch, templates.ValidationCode(err), "Launch resolution failed", "Game files and configuration were validated, but GameNode could not resolve the native server launch", true)
 		return
 	}
-	server, metadata, err := buildServer(template, resolvedLaunch, current.job.ServerName, current.job.TenantID, values, sensitive, managedKeys, current.minecraft != nil)
+	server, metadata, err := buildServer(template, resolvedLaunch, current.job.ServerName, current.job.TenantID, values, sensitive, managedKeys, current.minecraft != nil || current.vintagestory != nil)
 	if err != nil {
 		s.log.With("module", "Provisioning.ServerConfig").Error("server configuration could not be built", "job_id", current.job.ID, "template_id", template.ID, "error", err)
 		s.fail(current, ResolvingLaunch, "LAUNCH_RESOLUTION_FAILED", "Launch resolution failed", "Game files were installed successfully, but GameNode could not resolve the native server launch", true)
@@ -1320,7 +1430,7 @@ func (s *Service) execute(ctx context.Context, current *run, template templates.
 	}
 	steamCMDInfo := servers.ProvisionedSteamCMD{InstallerType: template.Installer.Type, AppID: plan.AppID, LoginMode: "anonymous", Validate: plan.Validate, BetaBranch: plan.BetaBranch, TemplateID: template.ID, TemplateVersion: template.Version, TemplateSource: template.SourceType}
 	var steamCMDRecord *servers.ProvisionedSteamCMD
-	if current.minecraft == nil {
+	if current.minecraft == nil && current.vintagestory == nil {
 		// Only SteamCMD-managed servers carry the manual-update provenance row;
 		// a Minecraft server has no SteamCMD App ID and is not update-eligible.
 		steamCMDRecord = &steamCMDInfo
@@ -1711,7 +1821,7 @@ func buildServer(template templates.Template, launch templates.ResolvedLaunch, n
 	if err != nil {
 		return servers.Server{}, nil, errors.New("server identity could not be created")
 	}
-	server := servers.Server{ID: serverID, TenantID: tenantID, CreationMode: servers.CreationTemplate, Name: name, Description: template.Description, WorkingDirectory: launch.WorkingDirectory, Executable: launch.Executable, Arguments: launch.Arguments, EnvironmentVariables: environment, RuntimeType: "native", RestartPolicy: "never", StopMethod: launch.StopMethod, StopCommand: launch.StopCommand, StopTimeoutSeconds: launch.StopTimeout, AutoRestartMaxAttempts: 3, AutoRestartWindowSeconds: 300, AutoRestartDelaySeconds: 5}
+	server := servers.Server{ID: serverID, TenantID: tenantID, CreationMode: servers.CreationTemplate, Name: name, Description: template.Description, WorkingDirectory: launch.WorkingDirectory, Executable: launch.Executable, Arguments: launch.Arguments, EnvironmentVariables: environment, RuntimeType: "native", RestartPolicy: "never", StopMethod: launch.StopMethod, StopCommand: launch.StopCommand, StopTimeoutSeconds: launch.StopTimeout, ConsoleLineEnding: launch.ConsoleLineEnding, AutoRestartMaxAttempts: 3, AutoRestartWindowSeconds: 300, AutoRestartDelaySeconds: 5}
 	if err = server.Validate(); err != nil {
 		return servers.Server{}, nil, errors.New("installed server definition is invalid")
 	}

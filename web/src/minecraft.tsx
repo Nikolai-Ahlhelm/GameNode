@@ -3,7 +3,8 @@ import { CircleAlert, Package, Power, PowerOff, RefreshCw, Trash2, Upload } from
 import { EmptyState, SectionHeader, SkeletonRows } from './ui';
 import {
   defaultLoaderVersion, filterMods, formatModSize, javaAdvice, loaderDescription, loaderLabel, loaderNeedsVersion, minecraftLoaders, minecraftSelectionError, minecraftVersionsPath,
-  loadedModMismatches, modCompatibility, modCountLabel, modDisplayName, modEnabled, modsDeletePath, modsStatePath, modsUploadPath, validModFileName,
+  loadedModMismatches, modCompatibility, modCountLabel, modDisplayName, modEnabled, modsDeletePath, modsStatePath, modsUploadPath, validModFileName, defaultModsLayout, modsAcceptAttribute, modsExtensionText,
+  type ModsLayout,
   type JavaInfo, type LoaderVersion, type MinecraftMod,
 } from './minecraft-helpers';
 import './files.css';
@@ -106,14 +107,15 @@ export function MinecraftVersionPicker({ values, setValues }: { values: Values; 
 export function MinecraftModsTab({ serverID, token, canUpload, canDelete, canToggle, running }: { serverID: string; token: string; canUpload: boolean; canDelete: boolean; canToggle: boolean; running: boolean }) {
   const [mods, setMods] = useState<MinecraftMod[]>();
   const [loader, setLoader] = useState<string>();
+  const [layout, setLayout] = useState<ModsLayout>(defaultModsLayout);
   const [maxUpload, setMaxUpload] = useState(0);
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
-  const load = useCallback(() => minecraftAPI<{ available: boolean; loader?: string; mods: MinecraftMod[]; max_upload_bytes?: number }>(`/servers/${serverID}/mods`, token)
-    .then(result => { setMods(result.mods ?? []); setLoader(result.loader || undefined); setMaxUpload(result.max_upload_bytes ?? 0); })
+  const load = useCallback(() => minecraftAPI<{ available: boolean; game?: string; directory?: string; extensions?: string[]; loader?: string; mods: MinecraftMod[]; max_upload_bytes?: number }>(`/servers/${serverID}/mods`, token)
+    .then(result => { setMods(result.mods ?? []); setLoader(result.loader || undefined); setLayout(result.game && result.directory && result.extensions?.length ? { game: result.game, directory: result.directory, extensions: result.extensions } : defaultModsLayout); setMaxUpload(result.max_upload_bytes ?? 0); })
     .catch(reason => { setMods(current => current ?? []); setError(reason instanceof Error ? reason.message : 'Mods could not be loaded'); }), [serverID, token]);
   useEffect(() => { setMods(undefined); void load(); }, [load]);
 
@@ -125,7 +127,7 @@ export function MinecraftModsTab({ serverID, token, canUpload, canDelete, canTog
     const added: string[] = [];
     try {
       for (const file of files) {
-        if (!validModFileName(file.name)) throw new Error(`${file.name} is not a valid mod file name; only .jar files are accepted.`);
+        if (!validModFileName(file.name, layout.extensions)) throw new Error(`${file.name} is not a valid mod file name; only ${modsExtensionText(layout.extensions)} files are accepted.`);
         if (maxUpload && file.size > maxUpload) throw new Error(`${file.name} exceeds the ${formatModSize(maxUpload)} upload limit.`);
         const send = (overwrite: boolean) => { const body = new FormData(); body.append('file', file, file.name); return minecraftAPI<MinecraftMod>(modsUploadPath(serverID, overwrite), token, { method: 'POST', body }); };
         try { await send(false); }
@@ -165,34 +167,34 @@ export function MinecraftModsTab({ serverID, token, canUpload, canDelete, canTog
   const visible = useMemo(() => filterMods(mods ?? [], query), [mods, query]);
   const mismatches = loadedModMismatches(loader, mods ?? []);
   return <section className="files-panel mods-panel">
-    <SectionHeader title="Mods" description={`Jar files in the server's mods folder${loader ? ` · ${loaderLabel(loader)} server` : ''}`} actions={<button className="quiet" onClick={() => { setError(''); setNotice(''); void load(); }}><RefreshCw />Refresh</button>} />
+    <SectionHeader title="Mods" description={`${modsExtensionText(layout.extensions)} files in ${layout.directory}${loader ? ` · ${loaderLabel(loader)} server` : ''}`} actions={<button className="quiet" onClick={() => { setError(''); setNotice(''); void load(); }}><RefreshCw />Refresh</button>} />
     {running && <p className="notice notice--warning">The server is running. Mod changes take effect after a restart, and some files may be locked until it stops.</p>}
     {error && <p className="error notice" role="alert">{error}</p>}
     {notice && <p className="notice" role="status">{notice}</p>}
     {mismatches > 0 && <p className="notice notice--warning"><CircleAlert /> {mismatches} mod{mismatches === 1 ? '' : 's'} declare{mismatches === 1 ? 's' : ''} no support for this server's {loaderLabel(loader ?? '')} loader and will likely be ignored or fail to load.</p>}
     <div className="files-toolbar">
-      {canUpload && <label className="upload-button"><Upload /><span>{busy === 'upload' ? 'Uploading…' : 'Add mods'}</span><input type="file" accept=".jar,application/java-archive" multiple onChange={upload} disabled={busy !== ''} /></label>}
+      {canUpload && <label className="upload-button"><Upload /><span>{busy === 'upload' ? 'Uploading…' : 'Add mods'}</span><input type="file" accept={modsAcceptAttribute(layout.extensions)} multiple onChange={upload} disabled={busy !== ''} /></label>}
       <input className="mods-search" type="search" placeholder="Filter by name, id or version" aria-label="Filter mods" value={query} onChange={event => setQuery(event.target.value)} />
       <span className="muted mods-count">{mods ? modCountLabel(mods) : ''}</span>
     </div>
     <div className="files-table mods-table">
       {mods === undefined ? <SkeletonRows count={4} label="Loading mods…" />
-        : mods.length === 0 ? <EmptyState compact icon={Package} title="No mods installed" description={canUpload ? 'Add mod jar files that match this server\'s loader and Minecraft version.' : 'No mod jar files are present in the mods folder.'} />
+        : mods.length === 0 ? <EmptyState compact icon={Package} title="No mods installed" description={canUpload ? `Add ${modsExtensionText(layout.extensions)} mod files that match this server's game version${layout.game === 'minecraft' ? ' and loader' : ''}.` : `No mod files are present in ${layout.directory}.`} />
         : visible.length === 0 ? <EmptyState compact icon={Package} title="No matching mods" description="Change the filter to see the installed mods." />
         : <>
-          <div className="files-header mods-row" role="row"><span>Mod</span><span>Version</span><span>Loader</span><span>Size</span><span>Actions</span></div>
+          <div className="files-header mods-row" role="row"><span>Mod</span><span>Version</span><span>{layout.game === 'minecraft' ? 'Loader' : 'Type'}</span><span>Size</span><span>Actions</span></div>
           {visible.map(mod => {
             const compatibility = modEnabled(mod) ? modCompatibility(loader, mod) : 'unknown';
             return <div className={`files-row mods-row${modEnabled(mod) ? '' : ' mod-disabled'}`} role="row" key={mod.file_name}>
               <span className="mod-name"><strong>{modDisplayName(mod)}{!modEnabled(mod) && <span className="status mod-badge">Disabled</span>}</strong><small title={mod.description}>{mod.file_name}</small></span>
               <span>{mod.version || '—'}</span>
-              <span>{mod.loaders?.length ? mod.loaders.map(loaderLabel).join(', ') : 'Unknown'}{compatibility === 'mismatch' && <small className="error"> · not for {loaderLabel(loader ?? '')}</small>}</span>
+              <span>{mod.loaders?.length ? mod.loaders.map(loaderLabel).join(', ') : layout.game === 'minecraft' ? 'Unknown' : '—'}{compatibility === 'mismatch' && <small className="error"> · not for {loaderLabel(loader ?? '')}</small>}</span>
               <span>{formatModSize(mod.size)}</span>
               <span className="file-actions">{canToggle && <button className="quiet" disabled={busy !== ''} onClick={() => void toggle(mod)} aria-label={`${modEnabled(mod) ? 'Disable' : 'Enable'} ${mod.file_name}`}>{modEnabled(mod) ? <PowerOff /> : <Power />}{busy === mod.file_name ? 'Working…' : modEnabled(mod) ? 'Disable' : 'Enable'}</button>}{canDelete && <button className="quiet danger" disabled={busy !== ''} onClick={() => void remove(mod)} aria-label={`Remove ${mod.file_name}`}><Trash2 />Remove</button>}</span>
             </div>;
           })}
         </>}
     </div>
-    <p className="muted mods-footnote">Disabled mods stay on disk as .jar.disabled and are not loaded. Mods are added by upload only; GameNode never downloads a mod from a URL and does not check mods against the Minecraft or loader version.</p>
+    <p className="muted mods-footnote">Disabled mods stay on disk with a .disabled suffix and are not loaded. Mods are added by upload only; GameNode never downloads a mod from a URL and does not check mods against the game version.</p>
   </section>;
 }

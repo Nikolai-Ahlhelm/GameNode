@@ -362,7 +362,7 @@ func decodeCatalog(data []byte) (CatalogManifest, error) {
 				return CatalogManifest{}, errors.New("catalog platform is unsupported")
 			}
 		}
-		if entry.Installer != InstallerExisting && entry.Installer != InstallerExistingFiles && entry.Installer != InstallerSteamCMD && entry.Installer != InstallerMinecraft {
+		if entry.Installer != InstallerExisting && entry.Installer != InstallerExistingFiles && entry.Installer != InstallerSteamCMD && entry.Installer != InstallerMinecraft && entry.Installer != InstallerVintageStory {
 			return CatalogManifest{}, errors.New("catalog installer is unsupported")
 		}
 		seen[entry.ID] = true
@@ -512,6 +512,21 @@ func validateOfficial(template Template) error {
 		if err := validateMinecraftVariables(definitions); err != nil {
 			return err
 		}
+	} else if template.Installer.Type == InstallerVintageStory {
+		if template.Installer.SteamCMD != nil || template.Launch == nil || len(template.PlatformLaunches) != 0 || template.Launch.Resolver != "vintagestory" || template.Launch.Executable != "dotnet" {
+			return validationError(CodeUnsupportedInstaller, "vintagestory installer launch shape is invalid")
+		}
+		for _, platform := range template.Platforms {
+			if err := validateOfficialLaunch(*template.Launch, known, platform); err != nil {
+				return err
+			}
+		}
+		if err := validateLaunchSensitive(*template.Launch, definitions); err != nil {
+			return err
+		}
+		if err := validateVintageStoryVariables(definitions); err != nil {
+			return err
+		}
 	} else if template.Installer.Type == InstallerSteamCMD {
 		plan := template.Installer.SteamCMD
 		if plan == nil || plan.AppID <= 0 || plan.LoginMode != "anonymous" || plan.InstallTarget != "server_root" || plan.Platform != "native" || plan.UsernameVariable != "" || plan.PasswordVariable != "" || plan.AuthVariable != "" || plan.PlatformVariable != "" || plan.BetaPasswordVariable != "" || template.Launch != nil || len(template.PlatformLaunches) == 0 {
@@ -565,6 +580,18 @@ func validateOfficial(template Template) error {
 	}
 	if err := validateConfigurationReferences(template.Configuration); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateVintageStoryVariables pins the variable contract the compiled
+// "vintagestory" installer and resolver read.
+func validateVintageStoryVariables(definitions map[string]TemplateVariable) error {
+	for key, kind := range map[string]string{"VS_VERSION": "string", "SERVER_PORT": "integer"} {
+		variable, found := definitions[key]
+		if !found || variable.Type != kind || !variable.UserEditable || variable.Sensitive {
+			return validationError(CodeInvalidVariable, "vintagestory template variable "+key+" is invalid")
+		}
 	}
 	return nil
 }
@@ -884,6 +911,9 @@ func validateOfficialLaunch(launch LaunchDefinition, known map[string]bool, plat
 	}
 	if launch.StopTimeout < 0 || launch.StopTimeout > 300 {
 		return errors.New("official template stop timeout is invalid")
+	}
+	if launch.ConsoleLineEnding != "" && launch.ConsoleLineEnding != "lf" && launch.ConsoleLineEnding != "crlf" {
+		return errors.New("official template console line ending is invalid")
 	}
 	values := append([]string{launch.Executable}, launch.Arguments...)
 	for index, value := range values {
