@@ -40,6 +40,9 @@ func (s *templateSource) Get(context.Context, string) (templates.Template, error
 }
 
 type fakeInstaller struct {
+	// planMu guards plan: tests that provision two targets in parallel call
+	// Install concurrently on one fake.
+	planMu           sync.Mutex
 	err              error
 	wait             chan struct{}
 	started          chan struct{}
@@ -75,7 +78,9 @@ func (i *fakeContainerInstaller) RunInstaller(_ context.Context, spec gameRuntim
 
 func (i *fakeInstaller) Install(ctx context.Context, root string, plan steamcmd.InstallPlan, output io.Writer, sink steamcmd.EventSink) error {
 	i.calls.Add(1)
+	i.planMu.Lock()
 	i.plan = plan
+	i.planMu.Unlock()
 	if output != nil {
 		_, _ = io.WriteString(output, "Steam> Downloading depot 1...\nSteam> Success\n")
 		if i.output != "" {
