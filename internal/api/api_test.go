@@ -405,13 +405,26 @@ func TestServerAndPortAuditMutations(t *testing.T) {
 		t.Fatalf("update: %d %s", updatedResponse.Code, updatedResponse.Body.String())
 	}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	// The test later switches this port from TCP to UDP, so it must be free for
+	// both; another process on a CI machine may already hold the UDP twin of a
+	// free TCP port.
+	port := 0
+	for attempt := 0; attempt < 50 && port == 0; attempt++ {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidate := listener.Addr().(*net.TCPAddr).Port
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if packet, err := net.ListenPacket("udp", "127.0.0.1:"+strconv.Itoa(candidate)); err == nil {
+			packet.Close()
+			port = candidate
+		}
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
+	if port == 0 {
+		t.Fatal("no port free for both TCP and UDP")
 	}
 	portResponse := request(http.MethodPost, "/api/v1/servers/"+created.Server.ID+"/ports", `{"name":"Game","protocol":"tcp","bind_address":"127.0.0.1","port":`+strconv.Itoa(port)+`}`)
 	if portResponse.Code != http.StatusCreated {

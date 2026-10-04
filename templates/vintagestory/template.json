@@ -5,7 +5,7 @@
   "description": "Install a Vintage Story dedicated server at an exact stable or release-candidate version from the official source, then manage its configuration and mods.",
   "version": "1.0.0",
   "category": "vintagestory",
-  "minimum_gamenode_version": "1.2.1",
+  "minimum_gamenode_version": "1.3.0",
   "known_limitations": [
     "Requires the .NET runtime matching the server version (.NET 8 for 1.21, .NET 10 for 1.22); GameNode does not install it.",
     "Only versions 1.21.0 and newer are offered.",
