@@ -218,6 +218,14 @@ func (s *Server) serverHandler(w http.ResponseWriter, r *http.Request) {
 		s.serverModsHandler(w, r, id)
 		return
 	}
+	if len(parts) >= 2 && parts[1] == "minecraft-startup" && (len(parts) == 2 || len(parts) == 3 && parts[2] == "import") {
+		s.minecraftStartupHandler(w, r, id, len(parts) == 3)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "minecraft-messages" {
+		s.minecraftMessagesHandler(w, r, id)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "monitoring" {
 		s.monitoringHandler(w, r, id)
 		return

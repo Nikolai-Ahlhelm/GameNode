@@ -8,6 +8,13 @@
 .minecraft-loaders small{color:var(--text-muted)}
 .mods-panel .notice{margin:10px 0}
 .mods-search{flex:1;min-width:180px;min-height:34px}
+.minecraft-message-card{display:grid;gap:12px;margin:14px 0;padding:14px;border:1px solid var(--border);border-radius:var(--radius-md)}
+.minecraft-message-card legend{padding:0 6px;font-weight:650}
+.minecraft-message-card .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.minecraft-message-card .form-grid label{display:grid;gap:5px}
+.minecraft-message-card .form-grid .check-row{display:flex;align-items:center;gap:8px}
+.minecraft-message-card .wide-field{grid-column:1/-1}
+.minecraft-message-preview{padding:12px;border:1px dashed var(--border);border-radius:var(--radius-md);background:#111827;font-family:monospace;overflow-wrap:anywhere}
 .mods-count{align-self:center;margin-left:auto;font-size:12px}
 .mods-row{grid-template-columns:minmax(200px,2.2fr) minmax(70px,.8fr) minmax(110px,1fr) 90px minmax(190px,1fr)}
 .mod-name{display:grid;min-width:0}

@@ -61,6 +61,8 @@ type Server struct {
 	servers            *servers.Service
 	files              *filesystem.Service
 	mods               *minecraft.ModManager
+	minecraftStartup   *minecraft.StartupStore
+	minecraftMessages  *minecraft.MessageStore
 	vintageStoryMods   *mods.Manager
 	hytaleMods         *mods.Manager
 	vintageStorySource *vintagestory.Source
@@ -159,7 +161,9 @@ type Options struct {
 	TrustLocalProxy bool
 	Filesystem      *filesystem.Service
 	// MinecraftSource overrides the fixed official version source (tests only).
-	MinecraftSource *minecraft.Source
+	MinecraftSource   *minecraft.Source
+	MinecraftStartup  *minecraft.StartupStore
+	MinecraftMessages *minecraft.MessageStore
 	// VintageStorySource overrides the fixed official version source (tests only).
 	VintageStorySource *vintagestory.Source
 	// DataDirectory is the GameNode data root used for safe physical
@@ -365,6 +369,12 @@ func New(a *auth.Service, serverService *servers.Service, log *slog.Logger, secu
 	var remoteClient remoteNodeClient = remote.New()
 	historyStore := statushistory.New(a.Database())
 	result := &Server{auth: a, audit: audit.New(a.Database()), servers: serverService, files: files, mods: minecraft.NewModManager(files), vintageStoryMods: vintagestory.NewModManager(files), hytaleMods: hytale.NewModManager(files), minecraftSource: minecraftSource, vintageStorySource: vintageStorySource, identity: identityService, rbac: rbac.New(a.Database()), tenants: tenants.New(a.Database()), ports: ports.New(a.Database()), settings: settingService, diagnostics: diagnosticService, support: supportService, templates: templateService, pelican: templates.NewPelicanCatalog(), provisioning: provisioner, serverUpdates: serverUpdater, statusHistory: historyStore, gameConfig: gameConfigService, logs: logManager, log: log, secureCookie: secureCookie, nodeIdentity: nodeIdentityService, nodes: nodesService, remoteClient: remoteClient}
+	if len(options) > 0 && options[0].MinecraftStartup != nil {
+		result.minecraftStartup = options[0].MinecraftStartup
+	}
+	if len(options) > 0 && options[0].MinecraftMessages != nil {
+		result.minecraftMessages = options[0].MinecraftMessages
+	}
 	result.registration = registration.New(a.Database(), identityService, nil)
 	result.passwordReset = passwordreset.New(a.Database(), identityService, nil)
 	if len(options) > 0 {

@@ -294,11 +294,26 @@ creating a second job system.
 controlled `HH:MM` wall-clock time, an IANA timezone, and enabled state;
 multiple rows may belong to one server. On startup the scheduler loads enabled
 rows, calculates the next strictly-future occurrence, and skips missed times.
-When a timer fires it re-reads the row and then calls only
-`servers.Service.Restart`; it never calls Native, Container, Docker, Egg, or
-OS process APIs. The existing per-server lifecycle lock and state rules decide
-whether the server is eligible. Schedule updates replace timers, disabling and
-deleting cancel them, and deletion of a server cascades the rows.
+When a timer fires it re-reads the row and calls the composition-root
+`minecraft.ScheduledRestarter`, which delegates all lifecycle work to
+`servers.Service`. Stopped servers are skipped. For Minecraft templates, the
+adapter sends `save-all flush` over the current stdin-backed console and
+requires a fresh `Saved the game` output event before invoking the ordinary
+restart path. A detached console or missing acknowledgement fails safely.
+Non-Minecraft servers use the ordinary lifecycle restart. Schedule updates
+replace timers, disabling and deleting cancel them, and deletion of a server
+cascades the rows. Restart recurrence remains daily/weekly, with multiple
+schedule rows permitting several restart times per day.
+
+Minecraft warnings and repeating MOTDs are stored in
+`minecraft_message_settings` and dispatched by the Minecraft-specific
+`internal/minecraft.MessageService` through the existing attached console
+stdin. `minecraft_message_deliveries` persists warning occurrence keys and
+each MOTD's last-send timestamp, preventing repeated milestones across backend
+restarts. Messages become JSON-encoded Minecraft text components; allowed
+channel, color, and formatting settings are explicit fields rather than raw
+commands. A stopped or detached server does not receive delivery; due warning
+milestones are skipped and the next restart occurrence is considered.
 
 DST behavior is deterministic: nonexistent local times are skipped and the
 in-process occurrence guard prevents a repeated fall-back wall-clock time from

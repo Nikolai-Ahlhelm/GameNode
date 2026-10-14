@@ -19,6 +19,8 @@ import (
 
 var ErrEngineUnavailable = errors.New("container engine is unavailable")
 
+const containerWorkingDirectory = "/home/container"
+
 // ContainerEngine is deliberately small and transport-free. Docker is the
 // sole v0.3 implementation; the interface exists for lifecycle tests, not as
 // a provider/plugin system.
@@ -357,7 +359,7 @@ func (e *dockerEngine) Create(ctx context.Context, c ContainerOptions, start Sta
 	if c.TmpfsSizeBytes > 0 {
 		hostConfig["Tmpfs"] = map[string]string{"/tmp": "rw,nosuid,nodev,noexec,size=" + strconv.FormatInt(c.TmpfsSizeBytes, 10)}
 	}
-	body := map[string]any{"Image": c.Image, "Cmd": c.Command, "Env": containerEnvironment(start.Environment), "OpenStdin": true, "StdinOnce": false, "AttachStdout": true, "AttachStderr": true, "Labels": map[string]string{"io.gamenode.managed": "true", "io.gamenode.server_id": c.ServerID, "io.gamenode.instance_generation": c.Generation, "io.gamenode.ownership_token": c.OwnershipToken}, "ExposedPorts": exposed, "HostConfig": hostConfig}
+	body := map[string]any{"Image": c.Image, "Cmd": c.Command, "WorkingDir": containerWorkingDirectory, "Env": containerEnvironment(start.Environment), "OpenStdin": true, "StdinOnce": false, "AttachStdout": true, "AttachStderr": true, "Labels": map[string]string{"io.gamenode.managed": "true", "io.gamenode.server_id": c.ServerID, "io.gamenode.instance_generation": c.Generation, "io.gamenode.ownership_token": c.OwnershipToken}, "ExposedPorts": exposed, "HostConfig": hostConfig}
 	var out struct {
 		ID string `json:"Id"`
 	}

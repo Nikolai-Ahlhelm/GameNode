@@ -162,6 +162,10 @@ The typed surface includes `monitoring.sample_interval_seconds` (1–300), `moni
 
 `GET /api/v1/servers/{id}/mods` also reports `game`, `directory` and `extensions` for the server's profile (`minecraft`: `.jar` in `mods`; `vintagestory`: `.zip` in `data/Mods`; `hytale`: `.jar`/`.zip` in `mods`). Servers expose `console_line_ending` (`lf` or `crlf`). See ADR 0014.
 
+`GET|PATCH /api/v1/servers/{id}/minecraft-startup` reads or updates Minecraft Java startup settings. GET requires `Server.View`; PATCH requires `Server.Edit` plus CSRF and the server must be stopped. The JSON carries `configuration` (`distribution`, `java_executable`, `xms_mb`, `xmx_mb`, `jvm_arguments[]`, `program_arguments[]`) and the structured preview (`executable`, `arguments[]`, `working_directory`). Supported installed distributions are Vanilla, NeoForge, Forge, Fabric, and Paper. NeoForge/Forge launch argument files are discovered below the validated server root; `user_jvm_args.txt` is parsed and its unrelated JVM arguments are retained while managed Xms/Xmx take precedence. Container memory limits are enforced and container commands use the existing open-stdin runtime. `POST /api/v1/servers/{id}/minecraft-startup/import` imports the sandboxed `user_jvm_args.txt` file and requires `Server.Edit` plus CSRF. Errors include `minecraft_startup_invalid`, `server_running`, and `jvm_arguments_unavailable`.
+
+`GET|PUT /api/v1/servers/{id}/minecraft-messages` reads or replaces Minecraft restart warnings and repeating MOTDs. GET requires `Server.View`; PUT requires `Server.Edit` plus CSRF. Settings support multiple independently configurable warnings and MOTDs, including interval, message template, chat/title/subtitle channel, color, and text formatting. User text is encoded as Minecraft JSON text components, never interpreted as commands. Delivery uses attached console stdin and pauses while the console is detached or the server is stopped.
+
 ## Server ports
 
 Port records contain `id`, `name`, `protocol`, `bind_address`, `port`, and dynamic `status`. Protocol is `tcp` or `udp`; ports are 1–65535. Bind addresses may be empty/wildcard, `0.0.0.0`, `::`, or concrete IPv4/IPv6 literals. Hostnames are unsupported. `Ports.View` and `Ports.Manage` are independent server-scoped permissions: global grants apply everywhere and server grants only at that server. Mutations require the normal CSRF token. Validation can reject invalid ports, protocols or addresses, an internal registry collision, or an externally occupied OS port; unknown servers/ports and missing permissions use the normal API errors.
@@ -287,6 +291,8 @@ POST   /api/v1/servers/{id}/restart-schedules
 PATCH  /api/v1/servers/{id}/restart-schedules/{scheduleID}
 DELETE /api/v1/servers/{id}/restart-schedules/{scheduleID}
 ```
+
+Multiple daily schedule records can be created for one server, such as 06:00 and 18:00.
 
 Reads require `Server.View`; create, update/enable/disable, and delete require
 `Server.Edit`, authentication, same-origin, and CSRF for mutations. A schedule

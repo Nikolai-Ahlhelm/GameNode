@@ -155,7 +155,8 @@ func main() {
 	transportTLS := cfg.Server.TLSCert != ""
 	secureCookie := transportTLS || cfg.Server.TrustLocalProxy
 	dockerEngine := runtime.NewDockerEngine()
-	serverService := servers.NewServiceWithMonitoring(servers.NewStore(db), runtime.NewHybridWithEngine(dockerEngine), console.NewManager(), monitoring.Options{Interval: time.Duration(currentSettings.Monitoring.SampleIntervalSeconds) * time.Second, HistoryLimit: currentSettings.Monitoring.HistoryLimit})
+	consoleManager := console.NewManager()
+	serverService := servers.NewServiceWithMonitoring(servers.NewStore(db), runtime.NewHybridWithEngine(dockerEngine), consoleManager, monitoring.Options{Interval: time.Duration(currentSettings.Monitoring.SampleIntervalSeconds) * time.Second, HistoryLimit: currentSettings.Monitoring.HistoryLimit})
 	serverService.SetLogger(logging.WithCategory(log, logging.CategoryRuntime))
 	emailAlerts := notifications.New(db, logging.WithCategory(log, logging.CategoryGeneral))
 	defer emailAlerts.Close()
@@ -251,13 +252,19 @@ func main() {
 	}
 	log.Info("server update recovery completed", "module", "ServerUpdates.Recovery", "category", logging.CategoryProvisioning)
 	restartScheduleStore := scheduler.NewStore(db)
-	restartScheduler := scheduler.New(restartScheduleStore, serverService, scheduler.Options{Audit: audit.New(db), Log: logging.WithCategory(log, logging.CategoryGeneral)})
+	minecraftStartupStore := minecraft.NewStartupStore(db)
+	minecraftMessageStore := minecraft.NewMessageStore(db)
+	minecraftMessaging := &minecraft.MessageService{Store: minecraftMessageStore, Schedules: restartScheduleStore, Servers: serverService, Console: consoleManager, Log: logging.WithCategory(log, logging.CategoryGeneral)}
+	minecraftMessagingContext, stopMinecraftMessaging := context.WithCancel(context.Background())
+	defer stopMinecraftMessaging()
+	go minecraftMessaging.Run(minecraftMessagingContext)
+	restartScheduler := scheduler.New(restartScheduleStore, minecraft.ScheduledRestarter{Servers: serverService, Console: consoleManager}, scheduler.Options{Audit: audit.New(db), Log: logging.WithCategory(log, logging.CategoryGeneral)})
 	if err = restartScheduler.Start(context.Background()); err != nil {
 		log.Error("restart scheduler initialization failed", "module", "RestartScheduler", "error", err.Error())
 		os.Exit(1)
 	}
 	defer restartScheduler.Stop()
-	apiServer := api.New(auth.New(db), serverService, log, secureCookie, api.Options{TrustLocalProxy: cfg.Server.TrustLocalProxy, Filesystem: files, DataDirectory: cfg.Data.Directory, FTP: ftpService, Settings: settingService, Diagnostics: diagnosticService, Templates: templateService, Provisioning: provisioner, ServerUpdates: serverUpdater, StatusHistory: statusHistory, GameConfig: gameConfigService, Logs: logManager, SetupConfig: configFile, SteamCMD: steamManager, RestartSchedules: restartScheduleStore, RestartScheduler: restartScheduler, EmailAlerts: emailAlerts, EmailVerification: emailVerification})
+	apiServer := api.New(auth.New(db), serverService, log, secureCookie, api.Options{TrustLocalProxy: cfg.Server.TrustLocalProxy, Filesystem: files, DataDirectory: cfg.Data.Directory, FTP: ftpService, Settings: settingService, Diagnostics: diagnosticService, Templates: templateService, Provisioning: provisioner, ServerUpdates: serverUpdater, StatusHistory: statusHistory, GameConfig: gameConfigService, Logs: logManager, SetupConfig: configFile, SteamCMD: steamManager, RestartSchedules: restartScheduleStore, RestartScheduler: restartScheduler, MinecraftStartup: minecraftStartupStore, MinecraftMessages: minecraftMessageStore, EmailAlerts: emailAlerts, EmailVerification: emailVerification})
 	// Remote Node Foundation (v0.5A): a bounded, periodic status refresh for
 	// this installation's own remote node registry. It never blocks startup
 	// and is stopped cleanly on shutdown; see internal/api/node_refresh.go.

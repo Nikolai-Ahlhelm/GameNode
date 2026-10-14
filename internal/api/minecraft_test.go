@@ -5,17 +5,26 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	goRuntime "runtime"
 	"strings"
 	"testing"
 
+	"gamenode/internal/api"
+	"gamenode/internal/auth"
+	"gamenode/internal/filesystem"
 	"gamenode/internal/identity"
+	"gamenode/internal/minecraft"
 	"gamenode/internal/rbac"
+	gamenoderuntime "gamenode/internal/runtime"
+	"gamenode/internal/servers"
 )
 
 func modJar(t *testing.T, id, name string) []byte {
@@ -28,6 +37,107 @@ func modJar(t *testing.T, id, name string) []byte {
 		t.Fatal(err)
 	}
 	return buffer.Bytes()
+}
+
+func TestMinecraftStartupAPIResolvesStructuredLaunchAndGuardsHeapFlags(t *testing.T) {
+	fixture := newFilesFixture(t)
+	if err := os.WriteFile(filepath.Join(fixture.root, "server.jar"), []byte("jar"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	javaName := "java"
+	if goRuntime.GOOS == "windows" {
+		javaName += ".exe"
+	}
+	java := filepath.Join(fixture.root, javaName)
+	if err := os.WriteFile(java, []byte("java"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	service := servers.NewService(servers.NewStore(fixture.db), gamenoderuntime.NewNative())
+	handler := api.New(auth.New(fixture.db), service, slog.New(slog.NewTextHandler(io.Discard, nil)), false, api.Options{Filesystem: filesystem.New(filesystem.Options{}), MinecraftStartup: minecraft.NewStartupStore(fixture.db)}).Handler(http.NotFoundHandler())
+	path := "/api/v1/servers/" + fixture.server + "/minecraft-startup"
+	read := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.AddCookie(fixture.cookie)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	if got := read(); got.Code != http.StatusOK {
+		t.Fatalf("GET startup: %d %s", got.Code, got.Body.String())
+	}
+	body, _ := json.Marshal(minecraft.StartupConfiguration{Distribution: "vanilla", JavaExecutable: java, XmsMB: 4096, XmxMB: 8192, JVMArguments: []string{"-XX:+UseG1GC"}, ProgramArguments: []string{"nogui"}})
+	request := httptest.NewRequest(http.MethodPatch, path, bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", fixture.csrf)
+	request.AddCookie(fixture.cookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("PATCH startup: %d %s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Arguments  []string `json:"arguments"`
+		Executable string   `json:"executable"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Executable != java || len(result.Arguments) != 6 || result.Arguments[0] != "-Xms4096M" || result.Arguments[1] != "-Xmx8192M" || result.Arguments[2] != "-XX:+UseG1GC" || result.Arguments[3] != "-jar" || result.Arguments[4] != "server.jar" || result.Arguments[5] != "nogui" {
+		t.Fatalf("resolved launch = %#v", result)
+	}
+	body, _ = json.Marshal(minecraft.StartupConfiguration{Distribution: "vanilla", JavaExecutable: java, XmsMB: 4096, XmxMB: 8192, JVMArguments: []string{"-Xmx16G"}})
+	request = httptest.NewRequest(http.MethodPatch, path, bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", fixture.csrf)
+	request.AddCookie(fixture.cookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate managed heap flag status %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestMinecraftMessagesAPIRequiresAuthorizationAndPersistsSettings(t *testing.T) {
+	fixture := newFilesFixture(t)
+	if err := os.WriteFile(filepath.Join(fixture.root, "server.jar"), []byte("jar"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := servers.NewService(servers.NewStore(fixture.db), gamenoderuntime.NewNative())
+	handler := api.New(auth.New(fixture.db), service, slog.New(slog.NewTextHandler(io.Discard, nil)), false, api.Options{Filesystem: filesystem.New(filesystem.Options{}), MinecraftMessages: minecraft.NewMessageStore(fixture.db)}).Handler(http.NotFoundHandler())
+	path := "/api/v1/servers/" + fixture.server + "/minecraft-messages"
+	request := httptest.NewRequest(http.MethodGet, path, nil)
+	request.AddCookie(fixture.cookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET messages: %d %s", response.Code, response.Body.String())
+	}
+	body := `{"restart_warnings":[{"id":"custom","enabled":true,"seconds":300,"message":"Restart in {minutes}","channel":"chat_title","color":"gold","bold":true,"italic":false}],"motds":[{"id":"welcome","enabled":true,"interval_seconds":600,"message":"Welcome!","channel":"chat","color":"aqua","bold":false,"italic":false}]}`
+	request = httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", fixture.csrf)
+	request.AddCookie(fixture.cookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("PUT messages: %d %s", response.Code, response.Body.String())
+	}
+	stored, err := minecraft.NewMessageStore(fixture.db).Get(context.Background(), fixture.server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.RestartWarnings) != 1 || len(stored.MOTDs) != 1 || stored.MOTDs[0].Interval != 600 {
+		t.Fatalf("persisted settings=%#v", stored)
+	}
+	request = httptest.NewRequest(http.MethodPut, path, strings.NewReader(strings.Replace(body, "\"channel\":\"chat_title\"", "\"channel\":\"command\"", 1)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", fixture.csrf)
+	request.AddCookie(fixture.cookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unsafe channel status=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func (f filesFixture) uploadMod(filename string, data []byte, overwrite bool) *httptest.ResponseRecorder {
