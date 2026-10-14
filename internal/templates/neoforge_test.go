@@ -88,6 +88,45 @@ func TestResolveNeoForgeMissingFilesAndMemory(t *testing.T) {
 	}
 }
 
+func TestValidateNeoForgeArgfileSupportsGeneratedServerMetadataVariants(t *testing.T) {
+	cases := []struct {
+		name    string
+		data    string
+		wantErr bool
+	}{
+		{
+			name: "direct server main with separate version flag",
+			data: "net.neoforged.fml.startup.Server\n--fml.neoForgeVersion\n21.1.256\n",
+		},
+		{
+			name: "direct server main with equals version flag",
+			data: "net.neoforged.fml.startup.Server --fml.neoForgeVersion=21.1.256\n",
+		},
+		{
+			name: "bootstrap launcher with explicit server target",
+			data: "cpw.mods.bootstraplauncher.BootstrapLauncher\n--launchTarget\nforgeserver\n",
+		},
+		{
+			name:    "bootstrap launcher with client target",
+			data:    "cpw.mods.bootstraplauncher.BootstrapLauncher\n--launchTarget\nforgeclient\n--fml.neoForgeVersion\n21.1.256\n",
+			wantErr: true,
+		},
+		{
+			name:    "bootstrap launcher without a target",
+			data:    "cpw.mods.bootstraplauncher.BootstrapLauncher\n--fml.neoForgeVersion\n21.1.256\n",
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateNeoForgeArgfile([]byte(tc.data))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateNeoForgeArgfile() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestLocalNeoForgeReferenceWhenPresent(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", "..", "server-test"))
 	if err != nil {

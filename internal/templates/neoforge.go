@@ -129,21 +129,44 @@ func validateNeoForgeArgfile(data []byte) error {
 	if err != nil {
 		return errors.New("NeoForge platform argument file cannot be safely parsed")
 	}
-	mainFound, versionFound := false, false
+	serverMainFound, bootstrapMainFound, serverTargetFound, versionFound := false, false, false, false
 	for _, token := range tokens {
 		lower := strings.ToLower(token)
 		normalized := strings.ReplaceAll(token, "\\", "/")
 		if token == "net.neoforged.fml.startup.Server" {
-			mainFound = true
+			serverMainFound = true
 		}
-		if token == "--fml.neoForgeVersion" {
+		// NeoForge's generated argfiles have used both its direct server
+		// entry point and the BootstrapLauncher/launchTarget form. Accept the
+		// latter only when it explicitly selects the server target.
+		if token == "cpw.mods.bootstraplauncher.BootstrapLauncher" || token == "cpw.mods.modlauncher.Launcher" {
+			bootstrapMainFound = true
+		}
+		if strings.HasPrefix(token, "--fml.neoForgeVersion=") && strings.TrimSpace(strings.TrimPrefix(token, "--fml.neoForgeVersion=")) != "" {
 			versionFound = true
+		}
+		if token == "--launchTarget=forgeserver" || token == "--launchTarget=neoforgeserver" {
+			serverTargetFound = true
 		}
 		if strings.HasPrefix(token, "@") || strings.HasPrefix(lower, "-javaagent") || strings.HasPrefix(lower, "-agentlib") || strings.HasPrefix(lower, "-agentpath") || absoluteExecutable(token) || normalized == ".." || strings.Contains(normalized, "/../") || strings.HasPrefix(normalized, "../") {
 			return errors.New("NeoForge platform argument file contains an unsafe path or JVM agent")
 		}
 	}
-	if !mainFound || !versionFound {
+	for index, token := range tokens {
+		if token == "--fml.neoForgeVersion" && index+1 < len(tokens) && strings.TrimSpace(tokens[index+1]) != "" {
+			versionFound = true
+		}
+		if token == "--launchTarget" && index+1 < len(tokens) && (tokens[index+1] == "forgeserver" || tokens[index+1] == "neoforgeserver") {
+			serverTargetFound = true
+		}
+	}
+	entrypointFound := serverMainFound || (bootstrapMainFound && serverTargetFound)
+	// Some NeoForge releases encode the version marker as --key=value or
+	// omit it from the server argfile. The canonical neoforged/<version>
+	// location plus an explicit server launch target still identifies that
+	// generated server launch unambiguously.
+	versionMetadataFound := versionFound || (entrypointFound && serverTargetFound)
+	if !entrypointFound || !versionMetadataFound {
 		return errors.New("NeoForge platform argument file lacks expected launch metadata")
 	}
 	return nil
